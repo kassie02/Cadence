@@ -344,6 +344,7 @@ namespace Cadence.Features
                 {
                     _activeSessions.Add(session);
                 }
+                SessionMetrics.IncrementThreat();
 
                 Logger.Info($"[AssistFeature] Tactical defense initiated for unit {callsign}. Officers engaging threat.");
                 Logger.Debug("AssistFeature", $"Tactical defense details: Callsign={callsign}, Cruiser={cruiser.Model.Name} (0x{cruiser.Handle:X}), OfficersCount={officers.Count}, Threat=0x{threat.Handle:X}");

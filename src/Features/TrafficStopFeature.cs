@@ -273,6 +273,7 @@ namespace Cadence.Features
                         {
                             _activeStops.Add(stop);
                         }
+                        SessionMetrics.IncrementTrafficStop();
                         Logger.Info($"[TrafficStopFeature] Ambient traffic stop {stop.Callsign} (Scenario {stop.Scenario}) spawned at {candidatePos} (Total: {_activeStops.Count}/{Settings.MaxTrafficStops}).");
                     }
                 }

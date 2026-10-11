@@ -125,6 +125,7 @@ namespace Cadence.Core
                     _isOnDuty = false;
 
                     Logger.Info("[Main] Cadence OffDuty transition triggered. Stopping features and purging units.");
+                    SessionMetrics.LogSummary();
 
                     CadenceMenu.Close();
                     CadenceMenu.StopAllFeatures();

@@ -272,6 +272,7 @@ namespace Cadence.Features
                         {
                             _activeUnits.Add(unit);
                         }
+                        SessionMetrics.IncrementStationary();
                         Logger.Info($"[StationaryFeature] Ambient stationary unit {unit.Callsign} (Scenario {unit.Scenario}) spawned at {spawnPos} (Total: {_activeUnits.Count}/{Settings.MaxStationaryUnits}).");
                     }
                 }

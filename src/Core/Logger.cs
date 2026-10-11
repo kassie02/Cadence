@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Threading;
@@ -126,6 +127,7 @@ namespace Cadence.Core
             {
                 try
                 {
+                    SessionMetrics.LogSummary();
                     DrainQueueToFile();
                     if (_fileWriter != null)
                     {
@@ -290,9 +292,42 @@ namespace Cadence.Core
                 try
                 {
                     _fileWriter.Flush();
+                    CheckMidSessionRotation();
                 }
                 catch { }
             }
+        }
+
+        private static void CheckMidSessionRotation()
+        {
+            try
+            {
+                if (_fileWriter != null && _fileWriter.BaseStream != null)
+                {
+                    // 10 MB maximum log file size before automatic mid-session rotation
+                    if (_fileWriter.BaseStream.Length > 10 * 1024 * 1024)
+                    {
+                        _fileWriter.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] [INFO] [Logger] Session log exceeded 10MB limit. Rotating archive...");
+                        _fileWriter.Flush();
+                        _fileWriter.Dispose();
+                        _fileWriter = null;
+
+                        string timeStamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                        string rotatedPath = Path.Combine(_logsDirectory, $"Cadence_Archive_{timeStamp}.log");
+                        if (File.Exists(_activeLogPath))
+                        {
+                            File.Move(_activeLogPath, rotatedPath);
+                        }
+
+                        EnforceArchiveRetention();
+
+                        FileStream fs = new FileStream(_activeLogPath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite);
+                        _fileWriter = new StreamWriter(fs, Encoding.UTF8) { AutoFlush = true };
+                        WriteSessionHeader();
+                    }
+                }
+            }
+            catch { }
         }
 
         private static void WriteSessionHeader()
@@ -380,13 +415,22 @@ namespace Cadence.Core
                 if (!Directory.Exists(_logsDirectory)) return;
 
                 DirectoryInfo dir = new DirectoryInfo(_logsDirectory);
-                FileInfo[] archives = dir.GetFiles("Cadence_Archive_*.log");
+                FileInfo[] allLogs = dir.GetFiles("*.log");
 
-                if (archives.Length > MaxArchiveFiles)
+                List<FileInfo> archives = new List<FileInfo>();
+                foreach (FileInfo f in allLogs)
                 {
-                    Array.Sort(archives, (a, b) => DateTime.Compare(a.CreationTimeUtc, b.CreationTimeUtc));
+                    if (!f.Name.Equals("Cadence.log", StringComparison.OrdinalIgnoreCase))
+                    {
+                        archives.Add(f);
+                    }
+                }
 
-                    int toDelete = archives.Length - MaxArchiveFiles;
+                if (archives.Count > MaxArchiveFiles)
+                {
+                    archives.Sort((a, b) => DateTime.Compare(a.CreationTimeUtc, b.CreationTimeUtc));
+
+                    int toDelete = archives.Count - MaxArchiveFiles;
                     for (int i = 0; i < toDelete; i++)
                     {
                         try
@@ -421,6 +465,44 @@ namespace Cadence.Core
             }
 
             return sb.ToString();
+        }
+    }
+
+    /// <summary>
+    /// Thread-safe lifetime session telemetry counter.
+    /// Emits structured session summaries upon plugin unload or duty transitions.
+    /// </summary>
+    public static class SessionMetrics
+    {
+        private static long _totalPatrol;
+        private static long _totalStops;
+        private static long _totalStationary;
+        private static long _totalEmergency;
+        private static long _totalPursuit;
+        private static long _totalThreat;
+        private static readonly DateTime _sessionStart = DateTime.Now;
+
+        public static void IncrementPatrol() => Interlocked.Increment(ref _totalPatrol);
+        public static void IncrementTrafficStop() => Interlocked.Increment(ref _totalStops);
+        public static void IncrementStationary() => Interlocked.Increment(ref _totalStationary);
+        public static void IncrementEmergencyRun() => Interlocked.Increment(ref _totalEmergency);
+        public static void IncrementPursuit() => Interlocked.Increment(ref _totalPursuit);
+        public static void IncrementThreat() => Interlocked.Increment(ref _totalThreat);
+
+        public static void LogSummary()
+        {
+            TimeSpan uptime = DateTime.Now - _sessionStart;
+            string bar = new string('=', 78);
+            Logger.Info("Session", bar);
+            Logger.Info("Session", "  Cadence Session Telemetry & Statistics Summary");
+            Logger.Info("Session", $"  Session Uptime            : {uptime.Hours:D2}h {uptime.Minutes:D2}m {uptime.Seconds:D2}s");
+            Logger.Info("Session", $"  Patrol Units Deployed     : {_totalPatrol}");
+            Logger.Info("Session", $"  Traffic Stops Executed    : {_totalStops}");
+            Logger.Info("Session", $"  Speed Traps Deployed      : {_totalStationary}");
+            Logger.Info("Session", $"  Emergency 911 Dispatches  : {_totalEmergency}");
+            Logger.Info("Session", $"  Pursuits Assisted         : {_totalPursuit}");
+            Logger.Info("Session", $"  Threat Defenses Engaged   : {_totalThreat}");
+            Logger.Info("Session", bar);
         }
     }
 }

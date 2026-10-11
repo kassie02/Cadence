@@ -413,7 +413,7 @@ namespace Cadence.Features
                     _activeSessions.Add(session);
                     _lastJoinTime = Game.GameTime;
                 }
-
+                SessionMetrics.IncrementPursuit();
                 Logger.Info($"[PursuitFeature] Ambient cruiser {callsign} successfully drafted into pursuit (Total active: {_activeSessions.Count}/{Settings.MaxPursuitUnits}).");
             }
             catch (Exception ex)

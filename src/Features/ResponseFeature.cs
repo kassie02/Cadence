@@ -195,6 +195,7 @@ namespace Cadence.Features
                         {
                             _activeUnits.Add(unit);
                         }
+                        SessionMetrics.IncrementEmergencyRun();
                         Logger.Info($"[ResponseFeature] Unit {unit.Callsign} successfully dispatched Code 3 to rejected callout scene.");
                     }
                 }
@@ -381,6 +382,7 @@ namespace Cadence.Features
                         _activeUnits.Add(unit);
                         _lastAutonomousRunTime = Game.GameTime;
                     }
+                    SessionMetrics.IncrementEmergencyRun();
                     Logger.Info($"[ResponseFeature] Autonomous {(isCode3 ? "Code 3" : "Code 2")} {unit.ServiceType} response run dispatched for unit {unit.Callsign} to {targetPos}.");
                 }
             }

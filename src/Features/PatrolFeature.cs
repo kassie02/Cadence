@@ -254,6 +254,7 @@ namespace Cadence.Features
                         _activeUnits.Add(unit);
                         _lastSpawnTime = Game.GameTime;
                     }
+                    SessionMetrics.IncrementPatrol();
                     Logger.Info($"[PatrolFeature] Ambient patrol unit {unit.Callsign} spawned successfully at {spawnPos} (Total: {_activeUnits.Count}/{Settings.MaxPatrolUnits}).");
                 }
             }
