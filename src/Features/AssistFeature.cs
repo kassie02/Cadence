@@ -92,8 +92,8 @@ namespace Cadence.Features
         {
             lock (_syncLock)
             {
-                _activeSessions.RemoveAll(s => s == null || !s.IsValid());
-                return _activeSessions.Count;
+                _activeSessions.RemoveAll(s => s == null || !s.IsValid() || s.State == CombatDefenseSession.CombatState.Completed);
+                return _activeSessions.Count(s => s.State == CombatDefenseSession.CombatState.Engaging || s.State == CombatDefenseSession.CombatState.MountingCruiser);
             }
         }
 
@@ -157,6 +157,7 @@ namespace Cadence.Features
                     if (session.State == CombatDefenseSession.CombatState.Completed)
                     {
                         Logger.Info($"[AssistFeature] Combat engagement completed for unit {session.Callsign}. Resumed normal patrol.");
+                        session.Dispose(immediateDelete: false);
                         _activeSessions.RemoveAt(i);
                     }
                 }
@@ -290,7 +291,7 @@ namespace Cadence.Features
                 NativeFunction.Natives.SET_VEHICLE_HANDBRAKE(cruiser, true);
 
                 // 2. Activates emergency lights
-                NativeTasks.SetSilentEmergencyLights(cruiser, true);
+                NativeTasks.SetSilentSiren(cruiser, true);
 
                 // 3. Officers dismount, unholster sidearms, take cover, and engage
                 List<Ped> officers = new List<Ped>();
@@ -385,10 +386,11 @@ namespace Cadence.Features
             public string Callsign { get; }
             public uint StartTime { get; }
 
-            public enum CombatState { Engaging, StandingDown, Completed }
+            public enum CombatState { Engaging, MountingCruiser, StandingDownPatrol, Completed }
             public CombatState State { get; private set; }
 
             private uint _standDownStartTime;
+            private uint _standDownPatrolStartTime;
             private uint _lastCoverCheckTime;
 
             public CombatDefenseSession(Vehicle cruiser, List<Ped> officers, Ped threat, Blip blip, string callsign)
@@ -462,7 +464,7 @@ namespace Cadence.Features
                         }
                         break;
 
-                    case CombatState.StandingDown:
+                    case CombatState.MountingCruiser:
                         // Wait for officers to mount cruiser, with timeout of 12 seconds
                         bool allMounted = Officers.Where(o => o != null && o.Exists() && o.IsAlive).All(o => o.IsInVehicle(Cruiser, false));
                         if (allMounted || (now - _standDownStartTime > 12000))
@@ -470,12 +472,22 @@ namespace Cadence.Features
                             FinishStandDown();
                         }
                         break;
+
+                    case CombatState.StandingDownPatrol:
+                        // Stand-down patrol for 15 seconds or out of range, then cleanly dispose blip and entities
+                        Ped player = Game.LocalPlayer?.Character;
+                        float dist = player != null && player.Exists() ? Cruiser.Position.DistanceTo(player.Position) : 0f;
+                        if (now - _standDownPatrolStartTime > 15000 || dist > Settings.DespawnDistance)
+                        {
+                            Dispose(immediateDelete: false);
+                        }
+                        break;
                 }
             }
 
             private void InitiateStandDown()
             {
-                State = CombatState.StandingDown;
+                State = CombatState.MountingCruiser;
                 _standDownStartTime = Game.GameTime;
 
                 Logger.Info($"[AssistFeature] Threat neutralized! Unit {Callsign} officers standing down and holstering sidearms.");
@@ -521,8 +533,7 @@ namespace Cadence.Features
 
                     // Release handbrake and extinguish emergency lights
                     NativeFunction.Natives.SET_VEHICLE_HANDBRAKE(Cruiser, false);
-                    Cruiser.IsSirenOn = false;
-                    Cruiser.IsSirenSilent = false;
+                    NativeTasks.SetSilentSiren(Cruiser, false);
 
                     // Resume normal cruising patrol
                     Ped driver = Cruiser.Driver;
@@ -530,32 +541,24 @@ namespace Cadence.Features
                     {
                         NativeTasks.ConfigurePatrolDriver(driver, Cruiser);
                         driver.Tasks.CruiseWithVehicle(Cruiser, 16.0f, NativeTasks.CruisingFlags);
-                        driver.Dismiss();
                     }
-
-                    foreach (var pass in Officers.Where(o => o != driver))
-                    {
-                        if (pass != null && pass.Exists()) pass.Dismiss();
-                    }
-                    Cruiser.Dismiss();
 
                     // Restore Navy Blue routine patrol blip
-                    BlipService.SafeDeleteBlip(ref RadarBlip);
-                    RadarBlip = BlipService.AttachPatrolBlip(Cruiser, Callsign);
+                    BlipService.TransitionToPatrol(RadarBlip, Callsign);
+
+                    _standDownPatrolStartTime = Game.GameTime;
+                    State = CombatState.StandingDownPatrol;
                 }
                 catch (Exception ex)
                 {
                     Logger.Debug($"[AssistFeature] FinishStandDown error: {ex.Message}");
-                }
-                finally
-                {
                     State = CombatState.Completed;
                 }
             }
 
             public void Dispose(bool immediateDelete)
             {
-                // 1. Zero-leak blip destructor
+                // 1. Zero-leak blip destructor (4-step protocol)
                 BlipService.SafeDeleteBlip(ref RadarBlip);
 
                 // 2. Entities clean up
@@ -564,8 +567,7 @@ namespace Cadence.Features
                     if (Cruiser != null && Cruiser.Exists())
                     {
                         NativeFunction.Natives.SET_VEHICLE_HANDBRAKE(Cruiser, false);
-                        Cruiser.IsSirenOn = false;
-                        Cruiser.IsSirenSilent = false;
+                        NativeTasks.SetSilentSiren(Cruiser, false);
                     }
 
                     foreach (var ofc in Officers)
@@ -587,6 +589,10 @@ namespace Cadence.Features
                 catch (Exception ex)
                 {
                     Logger.Debug($"[AssistFeature] Error disposing combat unit {Callsign}: {ex.Message}");
+                }
+                finally
+                {
+                    State = CombatState.Completed;
                 }
             }
         }

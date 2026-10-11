@@ -89,8 +89,8 @@ namespace Cadence.Features
         {
             lock (_syncLock)
             {
-                _activeSessions.RemoveAll(s => s == null || !s.IsValid());
-                return _activeSessions.Count;
+                _activeSessions.RemoveAll(s => s == null || !s.IsValid() || s.State == PursuitUnitSession.SessionState.Completed);
+                return _activeSessions.Count(s => s.State == PursuitUnitSession.SessionState.InPursuit);
             }
         }
 
@@ -131,30 +131,23 @@ namespace Cadence.Features
 
                     if (!isPursuitRunning)
                     {
-                        // Pursuit has terminated or Code 4 was called
-                        int sessionCount;
-                        lock (_syncLock)
-                        {
-                            sessionCount = _activeSessions.Count;
-                        }
-
-                        if (sessionCount > 0)
-                        {
-                            Logger.Info($"[PursuitFeature] Active pursuit ended / Code 4 called. Releasing {sessionCount} drafted units back to patrol.");
-                            ReleaseAllPursuitUnits(immediateDelete: false);
-                        }
-
-                        continue;
+                        // Pursuit has terminated or Code 4 was called: stand down active units to patrol
+                        InitiateCode4StandDown();
                     }
 
-                    // Pursuit is active: prune invalid/dead units first
-                    PruneInvalidSessions();
+                    // Watchdog: prune invalid sessions and process stand-down expiration
+                    PruneAndWatchSessions(player.Position);
+
+                    if (!isPursuitRunning)
+                    {
+                        continue;
+                    }
 
                     // Evaluate cruiser involvement count vs MaxPursuitUnits
                     int draftedCount;
                     lock (_syncLock)
                     {
-                        draftedCount = _activeSessions.Count;
+                        draftedCount = _activeSessions.Count(s => s != null && s.State == PursuitUnitSession.SessionState.InPursuit);
                     }
 
                     int distinctCruiserCount = GetActivePursuitCruiserCount(activePursuit);
@@ -230,8 +223,31 @@ namespace Cadence.Features
             return player != null && player.Exists() ? player.Position : Vector3.Zero;
         }
 
-        private static void PruneInvalidSessions()
+        private static void InitiateCode4StandDown()
         {
+            lock (_syncLock)
+            {
+                for (int i = _activeSessions.Count - 1; i >= 0; i--)
+                {
+                    var s = _activeSessions[i];
+                    if (s == null || !s.IsValid())
+                    {
+                        if (s != null) s.Dispose(immediateDelete: false);
+                        _activeSessions.RemoveAt(i);
+                        continue;
+                    }
+
+                    if (s.State == PursuitUnitSession.SessionState.InPursuit)
+                    {
+                        s.BeginStandDown();
+                    }
+                }
+            }
+        }
+
+        private static void PruneAndWatchSessions(Vector3 playerPos)
+        {
+            uint now = Game.GameTime;
             lock (_syncLock)
             {
                 for (int i = _activeSessions.Count - 1; i >= 0; i--)
@@ -243,6 +259,22 @@ namespace Cadence.Features
                         {
                             s.Dispose(immediateDelete: false);
                         }
+                        _activeSessions.RemoveAt(i);
+                        continue;
+                    }
+
+                    if (s.State == PursuitUnitSession.SessionState.StandingDown)
+                    {
+                        float dist = s.Cruiser.Position.DistanceTo(playerPos);
+                        if (now - s.StandDownStartTime > 15000 || dist > Settings.DespawnDistance)
+                        {
+                            s.Dispose(immediateDelete: false);
+                            _activeSessions.RemoveAt(i);
+                        }
+                    }
+                    else if (s.State == PursuitUnitSession.SessionState.Completed)
+                    {
+                        s.Dispose(immediateDelete: false);
                         _activeSessions.RemoveAt(i);
                     }
                 }
@@ -441,6 +473,8 @@ namespace Cadence.Features
 
         private class PursuitUnitSession
         {
+            public enum SessionState { InPursuit, StandingDown, Completed }
+
             public Vehicle Cruiser { get; }
             public Ped Driver { get; }
             public Ped Passenger { get; }
@@ -448,6 +482,8 @@ namespace Cadence.Features
             public string Callsign { get; }
             public uint JoinTime { get; }
             public bool WasAmbientSpawned { get; }
+            public SessionState State { get; private set; }
+            public uint StandDownStartTime { get; private set; }
 
             public PursuitUnitSession(Vehicle cruiser, Ped driver, Ped passenger, Blip blip, string callsign, bool wasSpawned)
             {
@@ -458,6 +494,7 @@ namespace Cadence.Features
                 Callsign = callsign;
                 JoinTime = Game.GameTime;
                 WasAmbientSpawned = wasSpawned;
+                State = SessionState.InPursuit;
             }
 
             public bool IsValid()
@@ -466,12 +503,49 @@ namespace Cadence.Features
                        Driver != null && Driver.Exists() && Driver.IsAlive;
             }
 
+            public void BeginStandDown()
+            {
+                State = SessionState.StandingDown;
+                StandDownStartTime = Game.GameTime;
+
+                try
+                {
+                    if (Cruiser != null && Cruiser.Exists())
+                    {
+                        Cruiser.IsSirenOn = false;
+                        Cruiser.IsSirenSilent = false;
+                    }
+
+                    if (Driver != null && Driver.Exists() && Driver.IsAlive)
+                    {
+                        Driver.BlockPermanentEvents = false;
+                        if (Cruiser != null && Cruiser.Exists())
+                        {
+                            NativeTasks.ConfigurePatrolDriver(Driver, Cruiser);
+                            Driver.Tasks.CruiseWithVehicle(Cruiser, 16.0f, NativeTasks.CruisingFlags);
+                        }
+                    }
+
+                    if (Passenger != null && Passenger.Exists() && Passenger.IsAlive)
+                    {
+                        Passenger.BlockPermanentEvents = false;
+                    }
+
+                    // Restore Navy Blue routine patrol blip
+                    BlipService.TransitionToPatrol(RadarBlip, Callsign);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Debug($"[PursuitFeature] Error in BeginStandDown for {Callsign}: {ex.Message}");
+                }
+            }
+
             public void Dispose(bool immediateDelete)
             {
-                // 1. Zero-leak blip destructor
+                // 1. Zero-leak blip destructor (4-step protocol)
                 BlipService.SafeDeleteBlip(ref RadarBlip);
 
-                // 2. Entities clean up or restore to patrol
+                // 2. Entities clean up
                 try
                 {
                     if (Cruiser != null && Cruiser.Exists())
@@ -496,15 +570,6 @@ namespace Cadence.Features
                         }
                         else
                         {
-                            // Restore normal cruising AI (NativeTasks.CruisingFlags = 786603)
-                            if (Cruiser != null && Cruiser.Exists())
-                            {
-                                NativeTasks.ConfigurePatrolDriver(Driver, Cruiser);
-                                Driver.Tasks.CruiseWithVehicle(Cruiser, 16.0f, NativeTasks.CruisingFlags);
-
-                                // Restore Navy Blue routine patrol blip
-                                RadarBlip = BlipService.AttachPatrolBlip(Cruiser, Callsign);
-                            }
                             Driver.Dismiss();
                         }
                     }
@@ -518,6 +583,10 @@ namespace Cadence.Features
                 catch (Exception ex)
                 {
                     Logger.Debug($"[PursuitFeature] Error disposing pursuit unit {Callsign}: {ex.Message}");
+                }
+                finally
+                {
+                    State = SessionState.Completed;
                 }
             }
         }

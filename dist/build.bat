@@ -142,6 +142,4 @@ echo.
 echo ============================================================
 echo   [BUILD SUCCESS] Release archive ready: dist\Cadence_v1.0.0.zip
 echo ============================================================
-echo.
-pause
 exit /b 0

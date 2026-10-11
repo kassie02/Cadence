@@ -944,6 +944,7 @@ namespace Cadence.Features
 
                     if (Officer != null && Officer.Exists())
                     {
+                        Officer.Tasks.Clear();
                         Officer.BlockPermanentEvents = false;
                         if (immediateDelete) Officer.Delete();
                         else Officer.Dismiss();
