@@ -79,7 +79,7 @@ if errorlevel 1 (
 
 :: Package output into clean zip archive using temporary staging
 echo.
-echo [PACKAGE] Assembling distribution release into Cadence_v1.0.0.zip...
+echo [PACKAGE] Assembling distribution release into Cadence_v1.1.0.zip...
 
 if exist "%STAGE%" rmdir /s /q "%STAGE%" >nul 2>nul
 mkdir "%STAGE%\plugins\LSPDFR" >nul 2>nul
@@ -107,7 +107,7 @@ echo   Staged plugins\LSPDFR\Cadence\Logs\
 :: Create README.txt in staging
 (
 echo ============================================================
-echo   Cadence v1.0.0 - Ambient Policing System for LSPDFR
+echo   Cadence v1.1.0 - Ambient Policing System for LSPDFR
 echo ============================================================
 echo.
 echo INSTALLATION:
@@ -124,16 +124,16 @@ echo   Fully compatible with Ultimate Backup, StopThePed, and custom callout pac
 ) > "%STAGE%\README.txt"
 
 :: Remove old zip before packaging
-if exist "%DIST%\Cadence_v1.0.0.zip" del /f /q "%DIST%\Cadence_v1.0.0.zip" >nul 2>nul
+if exist "%DIST%\Cadence_v1.1.0.zip" del /f /q "%DIST%\Cadence_v1.1.0.zip" >nul 2>nul
 
 :: Create clean release archive
 where tar >nul 2>nul
 if %errorlevel%==0 (
-    tar -a -c -f "%DIST%\Cadence_v1.0.0.zip" -C "%STAGE%" plugins README.txt
-    echo   Created release archive -^> dist\Cadence_v1.0.0.zip
+    tar -a -c -f "%DIST%\Cadence_v1.1.0.zip" -C "%STAGE%" plugins README.txt
+    echo   Created release archive -^> dist\Cadence_v1.1.0.zip
 ) else (
-    powershell -NoProfile -Command "Compress-Archive -Path '%STAGE%\*' -DestinationPath '%DIST%\Cadence_v1.0.0.zip' -Force"
-    echo   Created release archive via PowerShell -^> dist\Cadence_v1.0.0.zip
+    powershell -NoProfile -Command "Compress-Archive -Path '%STAGE%\*' -DestinationPath '%DIST%\Cadence_v1.1.0.zip' -Force"
+    echo   Created release archive via PowerShell -^> dist\Cadence_v1.1.0.zip
 )
 
 :: Clean up all temporary staging folders and loose files in dist
@@ -143,7 +143,7 @@ if exist "%DIST%\README.txt" del /f /q "%DIST%\README.txt" >nul 2>nul
 
 echo.
 echo ============================================================
-echo   [BUILD SUCCESS] Release archive ready: dist\Cadence_v1.0.0.zip
+echo   [BUILD SUCCESS] Release archive ready: dist\Cadence_v1.1.0.zip
 echo ============================================================
 echo.
 if not "%1"=="--nopause" pause
