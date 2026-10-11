@@ -204,7 +204,7 @@ namespace Cadence.Features
 
                     if (!unit.IsValid())
                     {
-                        Logger.Debug($"[StationaryFeature] Removing invalid/dead unit {unit.Callsign}.");
+                        Logger.Debug("StationaryFeature", $"Removing invalid/dead unit {unit.Callsign}. Active remaining: {_activeUnits.Count - 1}/{Settings.MaxStationaryUnits}");
                         unit.Dispose(immediateDelete: false);
                         _activeUnits.RemoveAt(i);
                         continue;
@@ -214,7 +214,7 @@ namespace Cadence.Features
                     float dist = unit.GetDistanceTo(playerPos);
                     if (dist > Settings.DespawnDistance)
                     {
-                        Logger.Debug($"[StationaryFeature] Unit {unit.Callsign} out of range ({dist:F0}m > {Settings.DespawnDistance:F0}m). Cleaning up.");
+                        Logger.Debug("StationaryFeature", $"Unit {unit.Callsign} out of range ({dist:F0}m > {Settings.DespawnDistance:F0}m). Cleaning up. Active remaining: {_activeUnits.Count - 1}/{Settings.MaxStationaryUnits}");
                         unit.Dispose(immediateDelete: false);
                         _activeUnits.RemoveAt(i);
                         continue;
@@ -343,44 +343,55 @@ namespace Cadence.Features
                     spawnPos.Z = groundZ + 0.35f;
                 }
 
-                // 1. Create Police Cruiser
-                string policeModelName = ZoneSpawnData.GetDefaultPoliceVehicleForPosition(spawnPos);
-                Model vehModel = new Model(policeModelName);
-                Model pedModel = new Model("s_m_y_cop_01");
-
-                vehModel.LoadAndWait();
-                pedModel.LoadAndWait();
-
-                cruiser = new Vehicle(vehModel, spawnPos, heading);
-                vehModel.Dismiss();
-
-                if (cruiser == null || !cruiser.Exists())
+                // 1. Create Police Cruiser & Officer (UB Tier 1 or Native Fallback Tier 2)
+                if (Settings.UseUltimateBackup && UltimateBackupService.IsAvailable)
                 {
-                    pedModel.Dismiss();
+                    bool isHighway = spawnPos.Y > 1000f;
+                    var ubResult = isHighway
+                        ? UltimateBackupService.SpawnStatePatrol(spawnPos, 1)
+                        : UltimateBackupService.SpawnLocalPatrol(spawnPos, 1);
+
+                    if (ubResult != null && ubResult.Item1 != null && ubResult.Item1.Exists() && ubResult.Item2 != null && ubResult.Item2.Count > 0)
+                    {
+                        cruiser = ubResult.Item1;
+                        officer = ubResult.Item2.FirstOrDefault(p => p != null && p.Exists());
+                    }
+                }
+
+                if (cruiser == null || !cruiser.Exists() || officer == null || !officer.Exists())
+                {
+                    string policeModelName = ZoneSpawnData.GetDefaultPoliceVehicleForPosition(spawnPos);
+                    var nativeResult = UltimateBackupService.SpawnNativePatrolUnit(spawnPos, heading, policeModelName, "s_m_y_cop_01");
+                    if (nativeResult != null && nativeResult.Item1 != null && nativeResult.Item1.Exists() && nativeResult.Item2 != null && nativeResult.Item2.Count > 0)
+                    {
+                        cruiser = nativeResult.Item1;
+                        officer = nativeResult.Item2[0];
+
+                        if (Settings.EnableEupOutfits)
+                        {
+                            EupService.ApplyBodyArmor(officer);
+                        }
+                    }
+                }
+
+                if (cruiser == null || !cruiser.Exists() || officer == null || !officer.Exists())
+                {
+                    Logger.Warn($"[StationaryFeature] Failed to spawn stationary unit at {spawnPos}.");
                     return null;
                 }
 
-                cruiser.IsPersistent = false;
+                cruiser.Heading = heading;
+                cruiser.MakePersistent();
                 cruiser.IsEngineOn = true;
                 NativeFunction.Natives.SET_VEHICLE_HANDBRAKE(cruiser, true);
+                try { cruiser.PlaceOnGroundProperly(); } catch { }
                 WorldUtils.SecureEntityGround(cruiser);
 
-                // 2. Create Officer Ped
-                officer = new Ped(pedModel, spawnPos, heading);
-                pedModel.Dismiss();
-
-                if (officer == null || !officer.Exists())
-                {
-                    cruiser.Delete();
-                    return null;
-                }
-
-                officer.WarpIntoVehicle(cruiser, -1);
+                officer.MakePersistent();
                 officer.BlockPermanentEvents = true;
-
-                if (Settings.EnableEupOutfits)
+                if (officer.CurrentVehicle != cruiser)
                 {
-                    EupService.ApplyBodyArmor(officer);
+                    officer.WarpIntoVehicle(cruiser, -1);
                 }
 
                 // 3. Scenario Selection
@@ -416,6 +427,9 @@ namespace Cadence.Features
 
                 // 4. Attach Mint Green Standby Radar Blip
                 blip = BlipService.AttachStandbyBlip(cruiser, callsign);
+
+                string scName = scenario == 0 ? "RadarWatch" : scenario == 1 ? "Leaning" : scenario == 2 ? "Coffee" : scenario == 3 ? "Phone" : "SpeedGunLidar";
+                Logger.Debug("StationaryFeature", $"Configured stationary unit {callsign} [{scName}]: Cruiser={cruiser.Model.Name} (0x{cruiser.Handle:X}), Officer={officer.Model.Name} (0x{officer.Handle:X}), Pos={spawnPos}");
 
                 return new StationaryUnitInstance(cruiser, officer, blip, callsign, scenario, spawnPos);
             }

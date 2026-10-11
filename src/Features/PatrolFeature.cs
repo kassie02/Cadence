@@ -191,7 +191,7 @@ namespace Cadence.Features
 
                     if (!unit.IsValid())
                     {
-                        Logger.Debug($"[PatrolFeature] Removing invalid/dead unit {unit.Callsign}.");
+                        Logger.Debug("PatrolFeature", $"Removing invalid/dead unit {unit.Callsign}. Active remaining: {_activeUnits.Count - 1}/{Settings.MaxPatrolUnits}");
                         unit.Dispose(immediateDelete: false);
                         _activeUnits.RemoveAt(i);
                         continue;
@@ -200,7 +200,7 @@ namespace Cadence.Features
                     // Subterranean watchdog
                     if (WorldUtils.IsSubterraneanOrVoid(unit.Cruiser.Position))
                     {
-                        Logger.Warn($"[PatrolFeature] Unit {unit.Callsign} fell into subterranean void (Z={unit.Cruiser.Position.Z:F1}). Removing.");
+                        Logger.Warn("PatrolFeature", $"Unit {unit.Callsign} fell into subterranean void (Z={unit.Cruiser.Position.Z:F1}). Removing. Active remaining: {_activeUnits.Count - 1}");
                         unit.Dispose(immediateDelete: true);
                         _activeUnits.RemoveAt(i);
                         continue;
@@ -210,7 +210,7 @@ namespace Cadence.Features
                     float dist = unit.Cruiser.Position.DistanceTo(playerPos);
                     if (dist > Settings.DespawnDistance)
                     {
-                        Logger.Debug($"[PatrolFeature] Unit {unit.Callsign} exceeded despawn distance ({dist:F0}m > {Settings.DespawnDistance:F0}m). Cleaning up.");
+                        Logger.Debug("PatrolFeature", $"Unit {unit.Callsign} exceeded despawn distance ({dist:F0}m > {Settings.DespawnDistance:F0}m). Cleaning up. Active remaining: {_activeUnits.Count - 1}");
                         unit.Dispose(immediateDelete: false);
                         _activeUnits.RemoveAt(i);
                         continue;
@@ -353,7 +353,9 @@ namespace Cadence.Features
                 // Ground stabilization & configuration
                 cruiser.Heading = heading;
                 WorldUtils.SecureEntityGround(cruiser);
-                cruiser.IsPersistent = false;
+                cruiser.MakePersistent();
+                driver.MakePersistent();
+                if (passenger != null && passenger.Exists()) passenger.MakePersistent();
                 cruiser.IsEngineOn = true;
                 NativeTasks.ConfigurePatrolDriver(driver, cruiser);
 
@@ -364,6 +366,8 @@ namespace Cadence.Features
 
                 // Attach Navy Blue radar blip
                 blip = BlipService.AttachPatrolBlip(cruiser, callsign);
+
+                Logger.Debug("PatrolFeature", $"Configured patrol unit {callsign}: Cruiser={cruiser.Model.Name} (0x{cruiser.Handle:X}), Driver={driver.Model.Name} (0x{driver.Handle:X}), CruisingSpeed={cruisingSpeed:F1}m/s");
 
                 return new PatrolUnitInstance(cruiser, driver, passenger, blip, callsign);
             }

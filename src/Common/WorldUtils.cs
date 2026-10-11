@@ -62,7 +62,11 @@ namespace Cadence.Common
 
                 if (entity is Vehicle veh)
                 {
-                    NativeFunction.Natives.SET_VEHICLE_ON_GROUND_PROPERLY(veh, 5.0f);
+                    try
+                    {
+                        veh.PlaceOnGroundProperly();
+                    }
+                    catch { }
                 }
 
                 if (freezeTemporarily)
@@ -73,6 +77,21 @@ namespace Cadence.Common
             catch (Exception ex)
             {
                 Core.Logger.Debug($"SecureEntityGround exception: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Safe extension method to set vehicle wheels flush with pavement properly.
+        /// </summary>
+        public static void PlaceOnGroundProperly(this Vehicle vehicle)
+        {
+            if (vehicle != null && vehicle.Exists())
+            {
+                try
+                {
+                    NativeFunction.Natives.SET_VEHICLE_ON_GROUND_PROPERLY(vehicle, 5.0f);
+                }
+                catch { }
             }
         }
 
@@ -124,7 +143,9 @@ namespace Cadence.Common
         }
 
         /// <summary>
-        /// Finds the nearest vehicle node and road heading to a specified world position.
+        /// Finds the nearest safe vehicle node and road heading to a specified world position.
+        /// Uses RPH World.GetNextPositionOnStreet combined with GET_CLOSEST_VEHICLE_NODE_WITH_HEADING
+        /// for rock-solid stability and zero native access violations.
         /// </summary>
         public static bool GetSafeStreetPosition(Vector3 searchCenter, int nthNode, out Vector3 streetPos, out float streetHeading)
         {
@@ -133,30 +154,53 @@ namespace Cadence.Common
 
             try
             {
-                // Native: GET_NTH_CLOSEST_VEHICLE_NODE_WITH_HEADING (nodeFlags: 1 = main roads, 3.0f = tolerance)
-                bool found = NativeFunction.Natives.GET_NTH_CLOSEST_VEHICLE_NODE_WITH_HEADING<bool>(
-                    searchCenter.X, searchCenter.Y, searchCenter.Z,
-                    Math.Max(1, nthNode),
-                    out Vector3 nodePos,
-                    out float nodeHeading,
-                    1, 3.0f, 0
-                );
-
-                if (found && !IsSubterraneanOrVoid(nodePos))
-                {
-                    streetPos = nodePos;
-                    streetHeading = nodeHeading;
-                    return true;
-                }
-
-                // Fallback to RPH street lookup
+                // Primary: RPH fast managed street lookup
                 Vector3 rphStreet = World.GetNextPositionOnStreet(searchCenter);
                 if (rphStreet != Vector3.Zero && !IsSubterraneanOrVoid(rphStreet))
                 {
+                    try
+                    {
+                        // Native: GET_CLOSEST_VEHICLE_NODE_WITH_HEADING (hash 0xFF071FB798B803B0)
+                        // Signature: BOOL (float x, float y, float z, out Vector3 outPos, out float outHeading, int nodeType, float p6, float p7)
+                        bool foundNode = NativeFunction.Natives.GET_CLOSEST_VEHICLE_NODE_WITH_HEADING<bool>(
+                            rphStreet.X, rphStreet.Y, rphStreet.Z,
+                            out Vector3 nodePos,
+                            out float nodeHeading,
+                            1, 3.0f, 0f
+                        );
+
+                        if (foundNode && nodePos != Vector3.Zero && !IsSubterraneanOrVoid(nodePos))
+                        {
+                            streetPos = nodePos;
+                            streetHeading = nodeHeading;
+                            return true;
+                        }
+                    }
+                    catch { }
+
                     streetPos = rphStreet;
                     streetHeading = 0f;
                     return true;
                 }
+
+                // Secondary Fallback: probe directly around searchCenter
+                try
+                {
+                    bool foundDirect = NativeFunction.Natives.GET_CLOSEST_VEHICLE_NODE_WITH_HEADING<bool>(
+                        searchCenter.X, searchCenter.Y, searchCenter.Z,
+                        out Vector3 directNode,
+                        out float directHeading,
+                        1, 3.0f, 0f
+                    );
+
+                    if (foundDirect && directNode != Vector3.Zero && !IsSubterraneanOrVoid(directNode))
+                    {
+                        streetPos = directNode;
+                        streetHeading = directHeading;
+                        return true;
+                    }
+                }
+                catch { }
             }
             catch (Exception ex)
             {

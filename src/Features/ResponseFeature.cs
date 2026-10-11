@@ -453,7 +453,9 @@ namespace Cadence.Features
         {
             try
             {
-                cruiser.IsPersistent = false;
+                cruiser.MakePersistent();
+                driver.MakePersistent();
+                if (passenger != null && passenger.Exists()) passenger.MakePersistent();
                 cruiser.IsEngineOn = true;
                 NativeTasks.ConfigureEmergencyDriver(driver, cruiser);
 
@@ -468,6 +470,8 @@ namespace Cadence.Features
 
                 // Attach Red flashing radar blip
                 Blip blip = BlipService.AttachEmergencyBlip(cruiser, callsign);
+
+                Logger.Debug("ResponseFeature", $"Configured response unit {callsign} [{(isCode3 ? "Code 3" : "Code 2")}]: Cruiser={cruiser.Model.Name} (0x{cruiser.Handle:X}), Driver={driver.Model.Name} (0x{driver.Handle:X}), Target={destination}");
 
                 return new ResponseUnitInstance(cruiser, driver, passenger, destination, blip, callsign, isCode3);
             }

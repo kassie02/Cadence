@@ -378,7 +378,9 @@ namespace Cadence.Features
             {
                 string callsign = GenerateCallsign();
 
-                cruiser.IsPersistent = false;
+                cruiser.MakePersistent();
+                driver.MakePersistent();
+                if (passenger != null && passenger.Exists()) passenger.MakePersistent();
                 cruiser.IsEngineOn = true;
                 cruiser.IsSirenOn = true;
                 cruiser.IsSirenSilent = false;

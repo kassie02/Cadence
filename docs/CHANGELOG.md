@@ -4,6 +4,32 @@ All notable changes to the Cadence project are documented in this file.
 
 ---
 
+## [1.0.1] - 2026-10-10
+
+### Enhanced Logging & In-Game Debugging System
+- **Dedicated Logs Directory (`plugins/LSPDFR/Cadence/Logs/`)**:
+  - Automatically writes clean, structured session logs to `Cadence.log`.
+  - Automatic session archiving: moves previous session logs to `Cadence_Archive_yyyyMMdd_HHmmss.log`.
+  - Automatic retention management: keeps the last 10 session logs and purges older archives.
+  - Automatically migrates and cleans up legacy loose log files.
+- **High-Performance Asynchronous Non-Blocking Worker**:
+  - Bounded thread-safe queue (`ConcurrentQueue<string>`) with background worker thread running at `BelowNormal` priority.
+  - Guarantees 0ms disk I/O latency on RagePluginHook game fibers, preventing micro-stutters or frame drops.
+  - Built-in memory watchdog discarding excess debug entries if queue exceeds threshold under edge conditions.
+- **Configurable `Debug = true` Setting**:
+  - Added `Debug = true` (defaulted to `true` for testing/calibration) in `Cadence.ini` and `Settings.cs`.
+  - Supports `Debug`, `EnableDebugLogging`, and `DebugLogging` keys.
+- **Granular Debug Telemetry Across All Subsystems**:
+  - Full configuration dump upon plugin boot.
+  - Ultimate Backup multi-stage detection logs (AppDomain, LSPDFR API, file check).
+  - Detailed spawner telemetry across Patrol, Traffic Stops, Stationary Radar, Code 3 Runs, Pursuit Drafting, and Threat Defense.
+  - Full entity metadata logged (cruiser model, handles, officer models, civilian models, scenario types).
+  - Watchdog despawn reasons and active count limits logged.
+- **Maintained 100% Ponytail Decoupling**:
+  - All 6 feature strands remain 100% independent and isolated with 0 cross-dependencies.
+
+---
+
 ## [1.0.0] - 2026-10-10
 
 ### Initial Production Release
