@@ -44,19 +44,19 @@
     <Reference Include="System.Windows.Forms" />
     <Reference Include="Microsoft.CSharp" />
     <Reference Include="RagePluginHook">
-      <HintPath>..\lib\RagePluginHook.dll</HintPath>
+      <HintPath>lib\RagePluginHook.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="LSPD First Response">
-      <HintPath>..\lib\LSPD First Response.dll</HintPath>
+      <HintPath>lib\LSPD First Response.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="RAGENativeUI">
-      <HintPath>..\lib\RAGENativeUI.dll</HintPath>
+      <HintPath>lib\RAGENativeUI.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="UltimateBackup">
-      <HintPath>..\lib\UltimateBackup.dll</HintPath>
+      <HintPath>lib\UltimateBackup.dll</HintPath>
       <Private>False</Private>
     </Reference>
   </ItemGroup>

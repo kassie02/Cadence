@@ -14,7 +14,7 @@ for %%I in ("%SCRIPT_DIR%\..") do set "ROOT=%%~fI"
 set "SRC=%ROOT%\src"
 set "DIST=%ROOT%\dist"
 set "DIST_LSPDFR=%DIST%\plugins\LSPDFR"
-set "SLN=%ROOT%\Cadence.sln"
+set "SLN=%SRC%\Cadence.sln"
 set "PROJ=%SRC%\Cadence.csproj"
 
 echo ============================================================
@@ -88,8 +88,8 @@ if defined BUILT_DLL (
     echo   [WARN] Could not find compiled Cadence.dll to copy to dist.
 )
 
-if exist "%ROOT%\Cadence.ini" (
-    copy /y "%ROOT%\Cadence.ini" "%DIST_LSPDFR%\Cadence.ini" >nul
+if exist "%SRC%\Cadence.ini" (
+    copy /y "%SRC%\Cadence.ini" "%DIST_LSPDFR%\Cadence.ini" >nul
     echo   Copied Cadence.ini -^> dist\plugins\LSPDFR\
 )
 

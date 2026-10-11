@@ -2,7 +2,7 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Cadence", "src\Cadence.csproj", "{4B9A1E02-86C3-4E81-A59B-5CF1D77C9862}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Cadence", "Cadence.csproj", "{4B9A1E02-86C3-4E81-A59B-5CF1D77C9862}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
