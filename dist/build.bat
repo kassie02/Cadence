@@ -43,6 +43,8 @@ if not defined MSBUILD_CMD (
 
 if not defined MSBUILD_CMD (
     echo [ERROR] MSBuild.exe was not found. Please verify Visual Studio 2022 or Build Tools is installed.
+    echo.
+    pause
     exit /b 1
 )
 
@@ -54,6 +56,8 @@ if exist "%SLN%" (
     set "BUILD_TARGET=%PROJ%"
 ) else (
     echo [ERROR] Neither src\Cadence.sln nor src\Cadence.csproj was found.
+    echo.
+    pause
     exit /b 1
 )
 
@@ -62,12 +66,14 @@ echo Target: "%BUILD_TARGET%"
 echo Compiler: "%MSBUILD_CMD%"
 echo.
 
-"%MSBUILD_CMD%" "%BUILD_TARGET%" /p:Configuration=Release /p:Platform=x64 /nologo /v:m
+"%MSBUILD_CMD%" "%BUILD_TARGET%" /p:Configuration=Release /p:Platform=x64 /p:TreatWarningsAsErrors=true /warnaserror /nologo /v:m
 if errorlevel 1 (
     echo.
     echo ============================================================
     echo   [BUILD ERROR] Compilation failed with error code %errorlevel%.
     echo ============================================================
+    echo.
+    pause
     exit /b %errorlevel%
 )
 
@@ -136,4 +142,6 @@ echo.
 echo ============================================================
 echo   [BUILD SUCCESS] Release archive ready: dist\Cadence_v1.0.0.zip
 echo ============================================================
+echo.
+pause
 exit /b 0
