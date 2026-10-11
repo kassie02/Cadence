@@ -13,7 +13,7 @@ for %%I in ("%SCRIPT_DIR%\..") do set "ROOT=%%~fI"
 
 set "SRC=%ROOT%\src"
 set "DIST=%ROOT%\dist"
-set "DIST_LSPDFR=%DIST%\plugins\LSPDFR"
+set "STAGE=%DIST%\_staging"
 set "SLN=%SRC%\Cadence.sln"
 set "PROJ=%SRC%\Cadence.csproj"
 
@@ -53,7 +53,7 @@ if exist "%SLN%" (
 ) else if exist "%PROJ%" (
     set "BUILD_TARGET=%PROJ%"
 ) else (
-    echo [ERROR] Neither Cadence.sln nor src\Cadence.csproj was found.
+    echo [ERROR] Neither src\Cadence.sln nor src\Cadence.csproj was found.
     exit /b 1
 )
 
@@ -71,10 +71,12 @@ if errorlevel 1 (
     exit /b %errorlevel%
 )
 
-:: Package output into dist/
+:: Package output into clean zip archive using temporary staging
 echo.
-echo [PACKAGE] Assembling distribution release in dist\...
-if not exist "%DIST_LSPDFR%" mkdir "%DIST_LSPDFR%" >nul 2>nul
+echo [PACKAGE] Assembling distribution release into Cadence_v1.0.0.zip...
+
+if exist "%STAGE%" rmdir /s /q "%STAGE%" >nul 2>nul
+mkdir "%STAGE%\plugins\LSPDFR" >nul 2>nul
 
 set "BUILT_DLL="
 if exist "%SRC%\bin\Release\Cadence.dll" set "BUILT_DLL=%SRC%\bin\Release\Cadence.dll"
@@ -82,28 +84,56 @@ if exist "%SRC%\bin\Release\net48\Cadence.dll" set "BUILT_DLL=%SRC%\bin\Release\
 if exist "%ROOT%\bin\Release\Cadence.dll" set "BUILT_DLL=%ROOT%\bin\Release\Cadence.dll"
 
 if defined BUILT_DLL (
-    copy /y "%BUILT_DLL%" "%DIST_LSPDFR%\Cadence.dll" >nul
-    echo   Copied Cadence.dll -^> dist\plugins\LSPDFR\
+    copy /y "%BUILT_DLL%" "%STAGE%\plugins\LSPDFR\Cadence.dll" >nul
+    echo   Staged Cadence.dll
 ) else (
-    echo   [WARN] Could not find compiled Cadence.dll to copy to dist.
+    echo   [WARN] Could not find compiled Cadence.dll to package.
 )
 
 if exist "%SRC%\Cadence.ini" (
-    copy /y "%SRC%\Cadence.ini" "%DIST_LSPDFR%\Cadence.ini" >nul
-    echo   Copied Cadence.ini -^> dist\plugins\LSPDFR\
+    copy /y "%SRC%\Cadence.ini" "%STAGE%\plugins\LSPDFR\Cadence.ini" >nul
+    echo   Staged Cadence.ini
 )
 
-:: Create Release Zip Archive
+:: Create README.txt in staging
+(
+echo ============================================================
+echo   Cadence v1.0.0 - Ambient Policing System for LSPDFR
+echo ============================================================
+echo.
+echo INSTALLATION:
+echo 1. Drag the "plugins" folder from this zip into your Grand Theft Auto V root folder.
+echo 2. Verify that Cadence.dll and Cadence.ini reside in:
+echo      Grand Theft Auto V\plugins\LSPDFR\
+echo 3. Launch GTA V via RagePluginHook and go On Duty.
+echo.
+echo IN-GAME MENU:
+echo   Press F8 (configurable in Cadence.ini^) to open the Cadence menu.
+echo.
+echo COMPATIBILITY:
+echo   Fully compatible with Ultimate Backup, StopThePed, and custom callout packs.
+) > "%STAGE%\README.txt"
+
+:: Remove old zip before packaging
+if exist "%DIST%\Cadence_v1.0.0.zip" del /f /q "%DIST%\Cadence_v1.0.0.zip" >nul 2>nul
+
+:: Create clean release archive
 where tar >nul 2>nul
 if %errorlevel%==0 (
-    if exist "%DIST%\README.txt" (
-        tar -a -c -f "%DIST%\Cadence_v1.0.0.zip" -C "%DIST%" plugins README.txt
-        echo   Created release archive -^> dist\Cadence_v1.0.0.zip
-    )
+    tar -a -c -f "%DIST%\Cadence_v1.0.0.zip" -C "%STAGE%" plugins README.txt
+    echo   Created release archive -^> dist\Cadence_v1.0.0.zip
+) else (
+    powershell -NoProfile -Command "Compress-Archive -Path '%STAGE%\*' -DestinationPath '%DIST%\Cadence_v1.0.0.zip' -Force"
+    echo   Created release archive via PowerShell -^> dist\Cadence_v1.0.0.zip
 )
+
+:: Clean up all temporary staging folders and loose files in dist
+if exist "%STAGE%" rmdir /s /q "%STAGE%" >nul 2>nul
+if exist "%DIST%\plugins" rmdir /s /q "%DIST%\plugins" >nul 2>nul
+if exist "%DIST%\README.txt" del /f /q "%DIST%\README.txt" >nul 2>nul
 
 echo.
 echo ============================================================
-echo   [BUILD SUCCESS] Cadence compiled ^& packaged successfully!
+echo   [BUILD SUCCESS] Release archive ready: dist\Cadence_v1.0.0.zip
 echo ============================================================
 exit /b 0
