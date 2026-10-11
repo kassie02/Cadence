@@ -124,20 +124,42 @@ Cadence includes an in-game dashboard powered by RAGENativeUI.
      - Emergency 911 Runs
      - Pursuit Drafting
      - Nearby Threat Defense
-3. **Instant Testing & Spawner**:
+3. **Settings & Customization Submenu**:
+   - On-the-fly customization of density, limits, and service varieties:
+     - **Preset Profile**: Toggle between `Realistic (Default)` (balanced, authentic density) and `Chaos (Living City)` (high density, faster pacing, living city feel).
+     - **Max Patrol Cruisers**: Dynamic slider (1 to 16 cruisers; default: 4).
+     - **Max Traffic Stops**: Dynamic slider (0 to 8 stops; default: 2).
+     - **Max Speed Traps**: Dynamic slider (0 to 8 standby units; default: 2).
+     - **Max Emergency Runs**: Dynamic slider (0 to 8 runs; default: 2).
+     - **Emergency Run Variety**: Choose between `Police, Fire & EMS (Default)`, `Police & EMS`, `Police & Fire`, or `Police Only`.
+     - **Highway vs City Balance**: Adjust State/Highway Patrol ratio vs Local Police (Balanced 50/50, Heavy Highway 75/25, Heavy Local 25/75, Only Local, Only Highway).
+     - **Allow Native Fallback**: Checkbox toggle for vanilla GTA vehicle fallback.
+4. **Instant Testing & Spawner**:
    - Trigger instant spawns for testing or immediate immersion:
      - `[Spawn Patrol Cruiser]`
      - `[Spawn Roadside Pullover]`
      - `[Spawn Radar Speed Trap]`
      - `[Trigger Code 3 Emergency Run]`
-4. **Purge All Cadence Units**:
-   - Emergency reset button: safely clears every active Cadence vehicle, officer, canine, accessory prop, and radar blip in a single tick.
-5. **Reload Cadence.ini**:
-   - Re-reads `Cadence.ini` settings from disk and updates all running parameters and menu toggles immediately.
+5. **Purge All Cadence Units**:
+   - Safely wipes all active Cadence vehicles, officers, canines, accessory props, and radar blips in a single tick.
+   - Cleans up and silences all lingering emergency vehicle sirens within 350m to prevent GTA V audio engine ghost loops.
+   - Enforces an active 35–45 second spawner grace period so replacement cruisers do not immediately respawn.
+6. **Reload Cadence.ini**:
+   - Re-reads `Cadence.ini` settings from disk and updates all running parameters, limits, and menu toggles immediately.
 
 ---
 
-## 5. Installation Instructions
+## 5. Dedicated In-Game Logging & Diagnostics
+
+Cadence includes an enterprise-grade asynchronous logging subsystem:
+- **Log Path**: `Grand Theft Auto V\plugins\LSPDFR\Cadence\Logs\Cadence.log`
+- **Zero Disk Stutters**: Operates on a dedicated low-priority background worker thread (`ThreadPriority.BelowNormal`) with a thread-safe queue. Disk writes never block RagePluginHook game fibers (0ms fiber overhead).
+- **Session Archiving**: Each new game session automatically archives the previous session log to `Cadence_Archive_yyyyMMdd_HHmmss.log`, maintaining a clean 10-session rolling retention.
+- **Configurable Verbosity**: Set `Debug = true` in `Cadence.ini` for detailed telemetry (spawns, road nodes, UB queries, state transitions, despawns) or `Debug = false` for standard silent gameplay.
+
+---
+
+## 6. Installation Instructions
 
 ### Requirements
 - Grand Theft Auto V (latest retail/Steam/Epic release)
@@ -162,17 +184,19 @@ Cadence includes an in-game dashboard powered by RAGENativeUI.
 
 ---
 
-## 6. Compatibility & Ecosystem
+## 7. Compatibility & Ecosystem
 
 Cadence was engineered from the start to be a peaceful, unobtrusive neighbor in your mod directory:
-- **Ultimate Backup (UB)**: Fully supported! Cadence dynamically probes for Ultimate Backup via AppDomain reflection, pulling local jurisdiction vehicle models and ped components when available. If UB is absent, it gracefully falls back to native LSPDFR spawners.
+- **Ultimate Backup (UB)**: Fully supported! Cadence dynamically probes for Ultimate Backup via AppDomain reflection, pulling local jurisdiction vehicle models and ped components when available.
+  - **Strict Fleet Protection**: Fallback to vanilla GTA vehicles (`police`, `s_m_y_cop_01`) is **disabled by default** (`Fallback = false`). If UB is not ready or returns null, Cadence aborts the spawn cleanly to preserve your customized vehicle fleet.
+  - **Startup Grace Period**: Cadence observes a 5–8 second grace period on boot to allow UB's XML configuration files to complete loading before initiating ambient spawns.
 - **StopThePed (STP)**: 100% compatible. Cadence respects STP ped states and does not conflict with STP traffic stop or ped interrogation routines.
 - **External Callout Packs**: Seamless coexistence. Ambient Cadence units will never steal an accepted player callout or interfere with callout objectives. Rejected callout takeovers only trigger on callouts you actively decline or ignore.
 - **EUP (Emergency Uniforms Pack)**: Built-in EUP component applier assigns authentic hats, vests, and badges matching your local patrol jurisdiction.
 
 ---
 
-## 7. License & Credits
+## 8. License & Credits
 
 - Developed for the LSPDFR community by the Cadence Development Team.
 - Built on top of the RagePluginHook API and LSPDFR SDK.

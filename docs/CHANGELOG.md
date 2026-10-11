@@ -4,6 +4,38 @@ All notable changes to the Cadence project are documented in this file.
 
 ---
 
+## [1.1.0] - 2026-10-11
+
+### In-Game Customization Menu, Density Tuning, Strict UB Guard & Service Variety
+- **In-Game "Settings & Customization" Submenu (`Q + PageDown`)**:
+  - Integrated directly into the main Cadence menu without altering existing aesthetic styling.
+  - **Density Presets**: On-the-fly toggling between `Realistic (Default)` (standard authentic density) and `Chaos (Living City)` (high-density traffic stops, faster emergency dispatches, and active patrol presence).
+  - **On-the-Fly Limit Sliders**:
+    - Cruising Patrol Units: 1 to 16
+    - Roadside Traffic Stops: 0 to 8
+    - Stationary Radar Traps: 0 to 8
+    - Emergency Runs: 0 to 8
+  - **Emergency Run Agency Variety**: Toggle permitted agencies for background runs (`Police, Fire & EMS`, `Police & EMS`, `Police & Fire`, `Police Only`).
+  - **Freeway vs City Balance**: Granular slider adjusting the ratio between Highway Patrol / State Troopers and Local Police (`Balanced 50/50`, `Heavy Highway 75/25`, `Heavy Local 25/75`, `Only Local`, `Only Highway`).
+  - **Dynamic Fallback Toggle**: Checkbox to toggle vanilla vehicle fallback on/off in real-time.
+- **Strict Ultimate Backup (UB) Guard & Zero Vanilla Fallback**:
+  - Added `Fallback = false` (default) across `Cadence.ini` and `Settings.cs`. When false, Cadence strictly forbids spawning default vanilla GTA police cars (`police`, `s_m_y_cop_01`).
+  - Implemented 5–8 second startup grace period giving Ultimate Backup XML configuration loaders ample time to finish initializing before ambient spawns begin.
+  - Added in-game warning notification and startup log if UB is missing and fallback is disabled.
+- **Emergency Services Variety (Ambulance & Fire Engines)**:
+  - Added paramedic crew and ambulance vehicle (`ambulance` + `s_m_m_paramedic_01`) for Code 3 medical response calls.
+  - Added firefighter crew and fire engine (`firetruk` + `s_m_y_fireman_01`) for emergency fire/rescue runs.
+  - Emergency vehicles mute sirens upon arriving on-scene while maintaining flashing emergency lightbars.
+- **Purge All Menu Button & Siren Overhaul**:
+  - Fixed spawner loop pacing cooldown bypass (`&& currentCount > 0` bug) that previously caused replacement cruisers to spawn 250ms after purging.
+  - Added active 35–45 second post-purge grace period preventing immediate unit recreation.
+  - Sweep 350m radius around the player during purge to mute all emergency vehicle sirens, completely eliminating GTA V audio engine ghost loops.
+- **Jurisdiction & Freeway Balancing**:
+  - Integrated native zone detection (`GET_NAME_OF_ZONE`) to identify Blaine County locations (Sandy Shores, Grapeseed, Paleto Bay, Alamo Sea, etc.) and strictly prevent city police (LAPD/LSPD) from spawning in rural areas.
+  - Integrated freeway road name detection (`IsHighway`) to weight State Highway Patrol vehicles on freeways according to `HighwayPatrolRatio`.
+
+---
+
 ## [1.0.1] - 2026-10-10
 
 ### Enhanced Logging & In-Game Debugging System
