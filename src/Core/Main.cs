@@ -79,6 +79,12 @@ namespace Cadence.Core
                     // 2. Initialize Ultimate Backup Integration
                     UltimateBackupService.Initialize();
 
+                    if (Settings.UseUltimateBackup && !Settings.AllowFallback && !UltimateBackupService.IsAvailable)
+                    {
+                        Logger.Warn("[Main] Ultimate Backup is required (Fallback=false) but was NOT detected! Ambient police spawning is disabled until UB loads.");
+                        Game.DisplayNotification("~r~[Cadence] Ultimate Backup not detected! Spawning paused (Fallback=false in settings).~s~");
+                    }
+
                     // 3. Initialize In-Game Menu
                     CadenceMenu.Initialize();
 

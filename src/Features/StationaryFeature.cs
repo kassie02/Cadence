@@ -43,7 +43,7 @@ namespace Cadence.Features
             {
                 if (_isRunning) return;
                 _isRunning = true;
-                _lastSpawnAttemptTime = Game.GameTime;
+                _lastSpawnAttemptTime = Game.GameTime + 6000;
 
                 Logger.Info("[StationaryFeature] Starting stationary unit background fiber.");
                 _stationaryFiber = GameFiber.StartNew(StationaryProcessLoop, "Cadence - Stationary Feature Fiber");
@@ -245,9 +245,10 @@ namespace Cadence.Features
                 return;
             }
 
-            // Spawn pacing: check every 25 seconds
+            // Spawn pacing: check every 25 seconds (12s in Chaos mode)
             uint now = Game.GameTime;
-            if (now - _lastSpawnAttemptTime < 25000 && currentCount > 0)
+            uint cooldown = Settings.ChaosMode ? 12000u : 25000u;
+            if (now < _lastSpawnAttemptTime || now - _lastSpawnAttemptTime < cooldown)
             {
                 return;
             }
@@ -346,7 +347,7 @@ namespace Cadence.Features
                 // 1. Create Police Cruiser & Officer (UB Tier 1 or Native Fallback Tier 2)
                 if (Settings.UseUltimateBackup && UltimateBackupService.IsAvailable)
                 {
-                    bool isHighway = spawnPos.Y > 1000f;
+                    bool isHighway = WorldUtils.ShouldSpawnHighwayUnit(spawnPos);
                     var ubResult = isHighway
                         ? UltimateBackupService.SpawnStatePatrol(spawnPos, 1)
                         : UltimateBackupService.SpawnLocalPatrol(spawnPos, 1);
@@ -360,8 +361,15 @@ namespace Cadence.Features
 
                 if (cruiser == null || !cruiser.Exists() || officer == null || !officer.Exists())
                 {
+                    if (Settings.UseUltimateBackup && !Settings.AllowFallback)
+                    {
+                        Logger.Debug("StationaryFeature", $"Ultimate Backup did not return a stationary unit at {spawnPos}. Fallback is strictly disabled (Fallback=false). Aborting spawn.");
+                        return null;
+                    }
+
                     string policeModelName = ZoneSpawnData.GetDefaultPoliceVehicleForPosition(spawnPos);
-                    var nativeResult = UltimateBackupService.SpawnNativePatrolUnit(spawnPos, heading, policeModelName, "s_m_y_cop_01");
+                    string copModelName = ZoneSpawnData.GetDefaultCopPedModelForPosition(spawnPos);
+                    var nativeResult = UltimateBackupService.SpawnNativePatrolUnit(spawnPos, heading, policeModelName, copModelName);
                     if (nativeResult != null && nativeResult.Item1 != null && nativeResult.Item1.Exists() && nativeResult.Item2 != null && nativeResult.Item2.Count > 0)
                     {
                         cruiser = nativeResult.Item1;
@@ -463,6 +471,7 @@ namespace Cadence.Features
                 }
             }
             _activeUnits.Clear();
+            _lastSpawnAttemptTime = Game.GameTime + 35000;
         }
 
         // ====================================================================
@@ -794,6 +803,14 @@ namespace Cadence.Features
 
                     if (Cruiser != null && Cruiser.Exists())
                     {
+                        try
+                        {
+                            Cruiser.IsSirenOn = false;
+                            Cruiser.IsSirenSilent = true;
+                            NativeFunction.Natives.SET_VEHICLE_SIREN(Cruiser, false);
+                        }
+                        catch { }
+
                         NativeFunction.Natives.SET_VEHICLE_HANDBRAKE(Cruiser, false);
                         if (immediateDelete) Cruiser.Delete();
                         else Cruiser.Dismiss();

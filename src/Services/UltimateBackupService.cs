@@ -299,6 +299,12 @@ namespace Cadence.Services
         /// </summary>
         public static Tuple<Vehicle, List<Ped>> SpawnNativePatrolUnit(Vector3 location, float heading, string vehicleModel = "police", string copModel = "s_m_y_cop_01")
         {
+            if (Settings.UseUltimateBackup && !Settings.AllowFallback)
+            {
+                Logger.Debug("UB", $"SpawnNativePatrolUnit rejected: Fallback is disabled in settings (Fallback=false).");
+                return null;
+            }
+
             try
             {
                 Logger.Debug("UB", $"Spawning Native Patrol fallback: Vehicle={vehicleModel}, Cop={copModel} at {location} (Heading: {heading:F1})");

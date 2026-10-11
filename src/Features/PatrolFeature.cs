@@ -41,7 +41,7 @@ namespace Cadence.Features
             {
                 if (_isRunning) return;
                 _isRunning = true;
-                _lastSpawnTime = Game.GameTime;
+                _lastSpawnTime = Game.GameTime + 5000;
 
                 Logger.Info("[PatrolFeature] Starting ambient patrol background fiber.");
                 _patrolFiber = GameFiber.StartNew(PatrolProcessLoop, "Cadence - Patrol Feature Fiber");
@@ -235,9 +235,10 @@ namespace Cadence.Features
                 return;
             }
 
-            // Spawn pacing cooldown: minimum 15 seconds between ambient spawns
+            // Spawn pacing cooldown: minimum 15 seconds between ambient spawns (8s in Chaos mode)
             uint now = Game.GameTime;
-            if (now - _lastSpawnTime < 15000 && currentCount > 0)
+            uint cooldown = Settings.ChaosMode ? 8000u : 15000u;
+            if (now < _lastSpawnTime || now - _lastSpawnTime < cooldown)
             {
                 return;
             }
@@ -310,7 +311,7 @@ namespace Cadence.Features
                 // Tier 1: Ultimate Backup Integration
                 if (Settings.UseUltimateBackup && UltimateBackupService.IsAvailable)
                 {
-                    bool isHighway = position.Y > 1000f; // Northern county / Senora / Paleto
+                    bool isHighway = WorldUtils.ShouldSpawnHighwayUnit(position);
                     var ubResult = isHighway
                         ? UltimateBackupService.SpawnStatePatrol(position, 1)
                         : UltimateBackupService.SpawnLocalPatrol(position, 1);
@@ -326,11 +327,18 @@ namespace Cadence.Features
                     }
                 }
 
-                // Tier 2: Native Fallback Spawner
+                // Tier 2: Native Fallback Spawner (Strictly blocked if Settings.AllowFallback is false)
                 if (cruiser == null || !cruiser.Exists() || driver == null || !driver.Exists())
                 {
+                    if (Settings.UseUltimateBackup && !Settings.AllowFallback)
+                    {
+                        Logger.Debug("PatrolFeature", $"Ultimate Backup did not return a unit at {position}. Fallback is strictly disabled (Fallback=false). Aborting spawn.");
+                        return null;
+                    }
+
                     string vehicleModel = ZoneSpawnData.GetDefaultPoliceVehicleForPosition(position);
-                    var nativeResult = UltimateBackupService.SpawnNativePatrolUnit(position, heading, vehicleModel, "s_m_y_cop_01");
+                    string copModel = ZoneSpawnData.GetDefaultCopPedModelForPosition(position);
+                    var nativeResult = UltimateBackupService.SpawnNativePatrolUnit(position, heading, vehicleModel, copModel);
 
                     if (nativeResult != null && nativeResult.Item1 != null && nativeResult.Item1.Exists() && nativeResult.Item2 != null && nativeResult.Item2.Count > 0)
                     {
@@ -402,6 +410,7 @@ namespace Cadence.Features
                 }
             }
             _activeUnits.Clear();
+            _lastSpawnTime = Game.GameTime + 35000;
         }
 
         // ====================================================================
@@ -476,6 +485,14 @@ namespace Cadence.Features
 
                     if (Cruiser != null && Cruiser.Exists())
                     {
+                        try
+                        {
+                            Cruiser.IsSirenOn = false;
+                            Cruiser.IsSirenSilent = true;
+                            NativeFunction.Natives.SET_VEHICLE_SIREN(Cruiser, false);
+                        }
+                        catch { }
+
                         if (immediateDelete) Cruiser.Delete();
                         else Cruiser.Dismiss();
                     }

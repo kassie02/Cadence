@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Rage;
+using Cadence.Common;
 
 namespace Cadence.Data
 {
@@ -211,13 +212,27 @@ namespace Cadence.Data
 
         public static string GetDefaultPoliceVehicleForPosition(Vector3 pos)
         {
-            // If in Blaine County / Paleto Bay / Sandy Shores (Y > 1000)
-            if (pos.Y > 1000f)
+            if (WorldUtils.IsHighway(pos))
+            {
+                return PoliceVehiclesHighway[_rand.Next(PoliceVehiclesHighway.Length)];
+            }
+
+            if (WorldUtils.IsBlaineCounty(pos))
             {
                 return PoliceVehiclesSheriff[_rand.Next(PoliceVehiclesSheriff.Length)];
             }
 
             return PoliceVehiclesCity[_rand.Next(PoliceVehiclesCity.Length)];
+        }
+
+        public static string GetDefaultCopPedModelForPosition(Vector3 pos)
+        {
+            if (WorldUtils.IsBlaineCounty(pos))
+            {
+                return "s_m_y_sheriff_01";
+            }
+
+            return "s_m_y_cop_01";
         }
     }
 }
