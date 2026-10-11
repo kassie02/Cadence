@@ -142,4 +142,6 @@ echo.
 echo ============================================================
 echo   [BUILD SUCCESS] Release archive ready: dist\Cadence_v1.0.0.zip
 echo ============================================================
+echo.
+if not "%1"=="--nopause" pause
 exit /b 0
