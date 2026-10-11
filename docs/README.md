@@ -110,7 +110,7 @@ blip = null;
 
 Cadence includes an in-game dashboard powered by RAGENativeUI.
 
-- **Default Keybind**: `F8` (configurable in `Cadence.ini`)
+- **Default Keybind**: `Q + PageDown` (`MenuKey = PageDown`, `MenuModifierKey = Q` in `Cadence.ini`)
 - **Keybind Disabling**: Set `MenuKey = 0`, `MenuKey = None`, or `MenuKey = Disabled` in `Cadence.ini` if you prefer to use external menu managers or want to avoid hotkey collisions.
 
 ### Menu Navigation & Features
@@ -158,7 +158,7 @@ Cadence includes an in-game dashboard powered by RAGENativeUI.
 3. Launch GTA V via `RAGEPluginHook.exe`.
 4. Go on duty with LSPDFR (`ForceDuty` in console or go on duty at any police station).
 5. Cadence will automatically initialize and display a subtle notification in the bottom-left corner:
-   > *Cadence loaded successfully. Press F8 for menu.*
+   > *Cadence loaded successfully. Press Q + PageDown for menu.*
 
 ---
 

@@ -117,7 +117,7 @@ echo      Grand Theft Auto V\plugins\LSPDFR\
 echo 3. Launch GTA V via RagePluginHook and go On Duty.
 echo.
 echo IN-GAME MENU:
-echo   Press F8 (configurable in Cadence.ini^) to open the Cadence menu.
+echo   Press Q + PageDown (configurable in Cadence.ini^) to open the Cadence menu.
 echo.
 echo COMPATIBILITY:
 echo   Fully compatible with Ultimate Backup, StopThePed, and custom callout packs.

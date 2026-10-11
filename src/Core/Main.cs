@@ -91,12 +91,27 @@ namespace Cadence.Core
                     if (Settings.EnableThreatDefense) AssistFeature.Start();
 
                     // 4. Subtle Welcome Notification
-                    string keyNotice = Settings.MenuKey == Keys.None
-                        ? "Menu keybind disabled."
-                        : $"Press ~y~{Settings.MenuKey}~s~ for menu.";
+                    string keyNotice;
+                    if (Settings.MenuKey == Keys.None)
+                    {
+                        keyNotice = "Menu keybind disabled.";
+                    }
+                    else
+                    {
+                        string keyName = Settings.MenuKey == Keys.PageDown ? "PageDown" : Settings.MenuKey.ToString();
+                        if (Settings.MenuModifierKey != Keys.None)
+                        {
+                            string modName = Settings.MenuModifierKey == Keys.PageDown ? "PageDown" : Settings.MenuModifierKey.ToString();
+                            keyNotice = $"Press ~y~{modName} + {keyName}~s~ for menu.";
+                        }
+                        else
+                        {
+                            keyNotice = $"Press ~y~{keyName}~s~ for menu.";
+                        }
+                    }
                     Game.DisplayNotification($"~b~Cadence~s~ loaded successfully. {keyNotice}");
 
-                    Logger.Info($"[Main] Cadence OnDuty transition complete. MenuKey: {Settings.MenuKey}");
+                    Logger.Info($"[Main] Cadence OnDuty transition complete. MenuKey: {Settings.MenuKey}, ModifierKey: {Settings.MenuModifierKey}");
                 }
                 else
                 {

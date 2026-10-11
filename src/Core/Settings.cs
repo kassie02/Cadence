@@ -12,8 +12,8 @@ namespace Cadence.Core
         public static bool EnableDebugLogging { get; set; } = true;
 
         // Keybinds (with 0/None fallback)
-        public static Keys MenuKey { get; set; } = Keys.F8;
-        public static Keys MenuModifierKey { get; set; } = Keys.None;
+        public static Keys MenuKey { get; set; } = Keys.PageDown;
+        public static Keys MenuModifierKey { get; set; } = Keys.Q;
 
         // Features
         public static bool EnablePatrol { get; set; } = true;
@@ -127,8 +127,8 @@ namespace Cadence.Core
                     break;
 
                 case "keybinds":
-                    if (k == "menukey") MenuKey = ParseKey(value, Keys.F8);
-                    else if (k == "menumodifierkey") MenuModifierKey = ParseModifierKey(value, Keys.None);
+                    if (k == "menukey") MenuKey = ParseKey(value, Keys.PageDown);
+                    else if (k == "menumodifierkey") MenuModifierKey = ParseModifierKey(value, Keys.Q);
                     break;
 
                 case "features":
@@ -181,6 +181,16 @@ namespace Cadence.Core
                 return Keys.None;
             }
 
+            if (clean.Equals("pagedown", StringComparison.OrdinalIgnoreCase) || clean.Equals("pgdn", StringComparison.OrdinalIgnoreCase))
+            {
+                return Keys.PageDown;
+            }
+
+            if (clean.Equals("pageup", StringComparison.OrdinalIgnoreCase) || clean.Equals("pgup", StringComparison.OrdinalIgnoreCase))
+            {
+                return Keys.PageUp;
+            }
+
             if (Enum.TryParse(clean, true, out Keys parsedKey))
             {
                 return parsedKey;
@@ -203,6 +213,8 @@ namespace Cadence.Core
 
             if (clean.Equals("ctrl", StringComparison.OrdinalIgnoreCase)) clean = "Control";
             if (clean.Equals("alt", StringComparison.OrdinalIgnoreCase)) clean = "Menu";
+            if (clean.Equals("pagedown", StringComparison.OrdinalIgnoreCase) || clean.Equals("pgdn", StringComparison.OrdinalIgnoreCase)) return Keys.PageDown;
+            if (clean.Equals("pageup", StringComparison.OrdinalIgnoreCase) || clean.Equals("pgup", StringComparison.OrdinalIgnoreCase)) return Keys.PageUp;
 
             if (Enum.TryParse(clean, true, out Keys parsedMod))
             {
