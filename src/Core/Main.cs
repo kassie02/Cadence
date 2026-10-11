@@ -4,6 +4,7 @@ using Rage;
 using LSPD_First_Response.Mod.API;
 using Cadence.UI;
 using Cadence.Features;
+using Cadence.Services;
 
 namespace Cadence.Core
 {
@@ -20,6 +21,8 @@ namespace Cadence.Core
         {
             try
             {
+                Logger.Initialize();
+
                 Logger.Info("============================================================");
                 Logger.Info("  Cadence - Ambient Policing System Initializing...");
                 Logger.Info("============================================================");
@@ -53,6 +56,7 @@ namespace Cadence.Core
                 CadenceMenu.PurgeAllFeatures();
 
                 Logger.Info("[Main] Cadence successfully unloaded.");
+                Logger.Shutdown();
             }
             catch (Exception ex)
             {
@@ -72,7 +76,10 @@ namespace Cadence.Core
                     // 1. Load User Configuration
                     Settings.Load();
 
-                    // 2. Initialize In-Game Menu
+                    // 2. Initialize Ultimate Backup Integration
+                    UltimateBackupService.Initialize();
+
+                    // 3. Initialize In-Game Menu
                     CadenceMenu.Initialize();
 
                     // 3. Bootstrap Enabled Features (Thin Ponytail Strands)

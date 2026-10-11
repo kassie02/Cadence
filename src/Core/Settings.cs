@@ -9,7 +9,7 @@ namespace Cadence.Core
         // General
         public static bool EnablePlugin { get; set; } = true;
         public static bool EnableFileLogging { get; set; } = true;
-        public static bool EnableDebugLogging { get; set; } = false;
+        public static bool EnableDebugLogging { get; set; } = true;
 
         // Keybinds (with 0/None fallback)
         public static Keys MenuKey { get; set; } = Keys.F8;
@@ -103,7 +103,9 @@ namespace Cadence.Core
 
                 Logger.EnableFileLogging = EnableFileLogging;
                 Logger.EnableDebugLogging = EnableDebugLogging;
-                Logger.Info($"Configuration loaded successfully. MenuKey: {MenuKey}, MaxPatrolUnits: {MaxPatrolUnits}");
+                Logger.Info($"[Settings] Configuration loaded successfully. Debug: {EnableDebugLogging}, FileLogging: {EnableFileLogging}, MenuKey: {MenuKey}, Modifier: {MenuModifierKey}");
+                Logger.Debug($"[Settings] Limits -> MaxPatrol: {MaxPatrolUnits}, MaxStops: {MaxTrafficStops}, MaxStationary: {MaxStationaryUnits}, MaxPursuit: {MaxPursuitUnits}, DespawnDist: {DespawnDistance:F0}m, SpawnRange: {SpawnDistanceMin:F0}m-{SpawnDistanceMax:F0}m");
+                Logger.Debug($"[Settings] Integration -> UltimateBackup: {UseUltimateBackup}, EUP: {EnableEupOutfits}, MuteSiren: {MuteTrafficStopSiren}");
             }
             catch (Exception ex)
             {
@@ -121,7 +123,7 @@ namespace Cadence.Core
                 case "general":
                     if (k == "enableplugin") EnablePlugin = ParseBool(value, EnablePlugin);
                     else if (k == "enablefilelogging") EnableFileLogging = ParseBool(value, EnableFileLogging);
-                    else if (k == "enabledebuglogging") EnableDebugLogging = ParseBool(value, EnableDebugLogging);
+                    else if (k == "debug" || k == "enabledebuglogging" || k == "debuglogging") EnableDebugLogging = ParseBool(value, EnableDebugLogging);
                     break;
 
                 case "keybinds":

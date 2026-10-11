@@ -204,7 +204,7 @@ namespace Cadence.Features
 
                     if (!stop.IsValid())
                     {
-                        Logger.Debug($"[TrafficStopFeature] Removing completed/invalid stop {stop.Callsign}.");
+                        Logger.Debug("TrafficStopFeature", $"Removing completed/invalid stop {stop.Callsign}. Active remaining: {_activeStops.Count - 1}/{Settings.MaxTrafficStops}");
                         stop.Dispose(immediateDelete: false);
                         _activeStops.RemoveAt(i);
                         continue;
@@ -214,7 +214,7 @@ namespace Cadence.Features
                     float dist = stop.GetDistanceTo(playerPos);
                     if (dist > Settings.DespawnDistance)
                     {
-                        Logger.Debug($"[TrafficStopFeature] Stop {stop.Callsign} out of range ({dist:F0}m > {Settings.DespawnDistance:F0}m). Cleaning up.");
+                        Logger.Debug("TrafficStopFeature", $"Stop {stop.Callsign} out of range ({dist:F0}m > {Settings.DespawnDistance:F0}m). Cleaning up. Active remaining: {_activeStops.Count - 1}/{Settings.MaxTrafficStops}");
                         stop.Dispose(immediateDelete: false);
                         _activeStops.RemoveAt(i);
                         continue;
@@ -299,42 +299,54 @@ namespace Cadence.Features
                     cruiserPos.Z = groundZ + 0.35f;
                 }
 
-                // 1. Spawn Police Cruiser & Officer
-                string policeModelName = ZoneSpawnData.GetDefaultPoliceVehicleForPosition(cruiserPos);
-                Model policeVehModel = new Model(policeModelName);
-                Model copPedModel = new Model("s_m_y_cop_01");
-
-                policeVehModel.LoadAndWait();
-                copPedModel.LoadAndWait();
-
-                cruiser = new Vehicle(policeVehModel, cruiserPos, heading);
-                policeVehModel.Dismiss();
-
-                if (cruiser == null || !cruiser.Exists())
+                // 1. Spawn Police Cruiser & Officer (UB Tier 1 or Native Fallback Tier 2)
+                if (Settings.UseUltimateBackup && UltimateBackupService.IsAvailable)
                 {
-                    copPedModel.Dismiss();
+                    bool isHighway = cruiserPos.Y > 1000f;
+                    var ubResult = isHighway
+                        ? UltimateBackupService.SpawnStatePatrol(cruiserPos, 1)
+                        : UltimateBackupService.SpawnLocalPatrol(cruiserPos, 1);
+
+                    if (ubResult != null && ubResult.Item1 != null && ubResult.Item1.Exists() && ubResult.Item2 != null && ubResult.Item2.Count > 0)
+                    {
+                        cruiser = ubResult.Item1;
+                        officer = ubResult.Item2.FirstOrDefault(p => p != null && p.Exists());
+                    }
+                }
+
+                if (cruiser == null || !cruiser.Exists() || officer == null || !officer.Exists())
+                {
+                    string policeModelName = ZoneSpawnData.GetDefaultPoliceVehicleForPosition(cruiserPos);
+                    var nativeResult = UltimateBackupService.SpawnNativePatrolUnit(cruiserPos, heading, policeModelName, "s_m_y_cop_01");
+                    if (nativeResult != null && nativeResult.Item1 != null && nativeResult.Item1.Exists() && nativeResult.Item2 != null && nativeResult.Item2.Count > 0)
+                    {
+                        cruiser = nativeResult.Item1;
+                        officer = nativeResult.Item2[0];
+
+                        if (Settings.EnableEupOutfits)
+                        {
+                            EupService.ApplyTrafficVest(officer);
+                        }
+                    }
+                }
+
+                if (cruiser == null || !cruiser.Exists() || officer == null || !officer.Exists())
+                {
+                    Logger.Warn($"[TrafficStopFeature] Failed to spawn police cruiser or officer at {cruiserPos}.");
                     return null;
                 }
 
-                cruiser.IsPersistent = false;
+                cruiser.Heading = heading;
+                cruiser.MakePersistent();
                 cruiser.IsEngineOn = true;
+                try { cruiser.PlaceOnGroundProperly(); } catch { }
                 WorldUtils.SecureEntityGround(cruiser);
 
-                officer = new Ped(copPedModel, cruiserPos, heading);
-                copPedModel.Dismiss();
-
-                if (officer == null || !officer.Exists())
-                {
-                    cruiser.Delete();
-                    return null;
-                }
-
-                officer.WarpIntoVehicle(cruiser, -1);
+                officer.MakePersistent();
                 officer.BlockPermanentEvents = true;
-
-                if (Settings.EnableEupOutfits)
+                if (officer.CurrentVehicle != cruiser)
                 {
-                    EupService.ApplyTrafficVest(officer);
+                    officer.WarpIntoVehicle(cruiser, -1);
                 }
 
                 // Activate silent lightbars immediately
@@ -348,7 +360,7 @@ namespace Cadence.Features
                 }
 
                 // 2. Spawn Civilian Vehicle & Driver parked 8.0m directly ahead
-                Vector3 civPos = cruiserPos + cruiser.ForwardVector * 8.0f;
+                Vector3 civPos = cruiser.GetOffsetPosition(new Vector3(0f, 8.0f, 0f));
                 if (WorldUtils.GetAccurateGroundZ(civPos, out float civGroundZ))
                 {
                     civPos.Z = civGroundZ + 0.35f;
@@ -356,29 +368,38 @@ namespace Cadence.Features
 
                 string civVehName = ZoneSpawnData.GetRandomCivilianVehicle();
                 Model civVehModel = new Model(civVehName);
-                Model civPedModel = new Model("a_m_y_business_01");
-
                 civVehModel.LoadAndWait();
-                civPedModel.LoadAndWait();
 
                 civilianVehicle = new Vehicle(civVehModel, civPos, heading);
                 civVehModel.Dismiss();
 
                 if (civilianVehicle == null || !civilianVehicle.Exists())
                 {
-                    civPedModel.Dismiss();
                     officer.Delete();
                     cruiser.Delete();
                     return null;
                 }
 
-                civilianVehicle.IsPersistent = false;
+                civilianVehicle.MakePersistent();
+                civilianVehicle.Heading = heading;
                 civilianVehicle.IsEngineOn = true;
                 civilianVehicle.IndicatorLightsStatus = VehicleIndicatorLightsStatus.Both; // Hazard lights
+                try { civilianVehicle.PlaceOnGroundProperly(); } catch { }
                 WorldUtils.SecureEntityGround(civilianVehicle);
 
-                civilianDriver = new Ped(civPedModel, civPos, heading);
-                civPedModel.Dismiss();
+                civilianDriver = civilianVehicle.CreateRandomDriver();
+                if (civilianDriver == null || !civilianDriver.Exists())
+                {
+                    Model civPedModel = new Model("a_m_y_business_01");
+                    civPedModel.LoadAndWait();
+                    civilianDriver = new Ped(civPedModel, civPos, heading);
+                    civPedModel.Dismiss();
+
+                    if (civilianDriver != null && civilianDriver.Exists())
+                    {
+                        civilianDriver.WarpIntoVehicle(civilianVehicle, -1);
+                    }
+                }
 
                 if (civilianDriver == null || !civilianDriver.Exists())
                 {
@@ -388,7 +409,7 @@ namespace Cadence.Features
                     return null;
                 }
 
-                civilianDriver.WarpIntoVehicle(civilianVehicle, -1);
+                civilianDriver.MakePersistent();
                 civilianDriver.BlockPermanentEvents = true;
 
                 // 3. Scenario 3 K9 Setup: German Shepherd beside cruiser
@@ -399,12 +420,13 @@ namespace Cadence.Features
                         Model k9Model = new Model("a_c_shepherd");
                         k9Model.LoadAndWait();
 
-                        Vector3 k9SpawnPos = cruiserPos + cruiser.RightVector * 1.5f - cruiser.ForwardVector * 0.8f;
+                        Vector3 k9SpawnPos = cruiser.GetOffsetPosition(new Vector3(1.5f, -0.8f, 0f));
                         k9Dog = new Ped(k9Model, k9SpawnPos, heading);
                         k9Model.Dismiss();
 
                         if (k9Dog != null && k9Dog.Exists())
                         {
+                            k9Dog.MakePersistent();
                             k9Dog.BlockPermanentEvents = true;
                             WorldUtils.SecureEntityGround(k9Dog);
                             k9Dog.Tasks.StandStill(10000);
@@ -422,6 +444,9 @@ namespace Cadence.Features
 
                 // 4. Attach Yellow Traffic Stop Radar Blip
                 blip = BlipService.AttachTrafficStopBlip(cruiser, callsign);
+
+                string scName = scenario == 1 ? "Citation" : scenario == 2 ? "PatDown" : "K9Sniff";
+                Logger.Debug("TrafficStopFeature", $"Configured traffic stop {callsign} [{scName}]: Cruiser={cruiser.Model.Name} (0x{cruiser.Handle:X}), Officer={officer.Model.Name} (0x{officer.Handle:X}), CivVeh={civilianVehicle.Model.Name} (0x{civilianVehicle.Handle:X}), CivDriver={civilianDriver.Model.Name} (0x{civilianDriver.Handle:X}), K9={(k9Dog != null ? "Active" : "None")}");
 
                 return new TrafficStopInstance(cruiser, officer, civilianVehicle, civilianDriver, k9Dog, blip, callsign, scenario, cruiserPos);
             }

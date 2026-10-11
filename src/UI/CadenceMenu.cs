@@ -472,6 +472,8 @@ namespace Cadence.UI
 
             _testingMenu.OnItemSelect += (sender, item, index) =>
             {
+                Logger.Info("Menu", $"User selected test spawn: {item.Text}");
+
                 if (item == _spawnPatrolItem)
                 {
                     bool ok = InvokeFeatureSpawn("PatrolFeature", "SpawnTestUnit");
@@ -501,6 +503,8 @@ namespace Cadence.UI
 
             _mainMenu.OnItemSelect += (sender, item, index) =>
             {
+                Logger.Info("Menu", $"User selected main menu action: {item.Text}");
+
                 if (item == _purgeAllItem)
                 {
                     PurgeAllFeatures();

@@ -83,6 +83,8 @@ echo [PACKAGE] Assembling distribution release into Cadence_v1.0.0.zip...
 
 if exist "%STAGE%" rmdir /s /q "%STAGE%" >nul 2>nul
 mkdir "%STAGE%\plugins\LSPDFR" >nul 2>nul
+mkdir "%STAGE%\plugins\LSPDFR\Cadence\Logs" >nul 2>nul
+type nul > "%STAGE%\plugins\LSPDFR\Cadence\Logs\.placeholder" 2>nul
 
 set "BUILT_DLL="
 if exist "%SRC%\bin\Release\Cadence.dll" set "BUILT_DLL=%SRC%\bin\Release\Cadence.dll"
@@ -100,6 +102,7 @@ if exist "%SRC%\Cadence.ini" (
     copy /y "%SRC%\Cadence.ini" "%STAGE%\plugins\LSPDFR\Cadence.ini" >nul
     echo   Staged Cadence.ini
 )
+echo   Staged plugins\LSPDFR\Cadence\Logs\
 
 :: Create README.txt in staging
 (
