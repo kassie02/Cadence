@@ -1,0 +1,486 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using Rage;
+using Rage.Native;
+using Cadence.Core;
+using Cadence.Common;
+using Cadence.Services;
+using Cadence.Data;
+
+namespace Cadence.Features
+{
+    /// <summary>
+    /// Feature 1: Ambient Driving Patrol
+    /// Spawns and manages autonomous police cruisers patrolling the roads of San Andreas.
+    /// Strictly self-contained under the Ponytail architecture.
+    /// </summary>
+    public static class PatrolFeature
+    {
+        private static readonly object _syncLock = new object();
+        private static readonly List<PatrolUnitInstance> _activeUnits = new List<PatrolUnitInstance>();
+        private static readonly Random _rand = new Random();
+
+        private static GameFiber _patrolFiber;
+        private static bool _isRunning;
+        private static uint _lastSpawnTime;
+        private static int _callsignCounter = 10;
+
+        private static readonly string[] Divisions = new[]
+        {
+            "1-ADAM", "2-LINCOLN", "3-MARY", "4-GEORGE", "5-EDWARD", "6-FRANK", "7-DAVID", "8-OCEAN"
+        };
+
+        // ====================================================================
+        // Public API Contract
+        // ====================================================================
+
+        public static void Start()
+        {
+            lock (_syncLock)
+            {
+                if (_isRunning) return;
+                _isRunning = true;
+                _lastSpawnTime = Game.GameTime;
+
+                Logger.Info("[PatrolFeature] Starting ambient patrol background fiber.");
+                _patrolFiber = GameFiber.StartNew(PatrolProcessLoop, "Cadence - Patrol Feature Fiber");
+            }
+        }
+
+        public static void Stop()
+        {
+            lock (_syncLock)
+            {
+                if (!_isRunning) return;
+                _isRunning = false;
+
+                Logger.Info("[PatrolFeature] Stopping ambient patrol feature and purging units.");
+                PurgeAllInternal();
+
+                try
+                {
+                    if (_patrolFiber != null && _patrolFiber.IsAlive)
+                    {
+                        _patrolFiber.Abort();
+                    }
+                }
+                catch { }
+                finally
+                {
+                    _patrolFiber = null;
+                }
+            }
+        }
+
+        public static bool SpawnTestUnit()
+        {
+            try
+            {
+                Ped player = Game.LocalPlayer?.Character;
+                if (player == null || !player.Exists()) return false;
+
+                Logger.Info("[PatrolFeature] Spawning manual test patrol unit near player.");
+
+                Vector3 playerPos = player.Position;
+                float forwardHeading = player.Heading;
+                Vector3 searchTarget = playerPos + player.ForwardVector * 65.0f;
+
+                if (!WorldUtils.GetSafeStreetPosition(searchTarget, 1, out Vector3 streetPos, out float streetHeading))
+                {
+                    streetPos = World.GetNextPositionOnStreet(searchTarget);
+                    streetHeading = forwardHeading;
+                }
+
+                if (streetPos == Vector3.Zero || WorldUtils.IsSubterraneanOrVoid(streetPos))
+                {
+                    Logger.Warn("[PatrolFeature] Could not find valid street node for test patrol unit.");
+                    return false;
+                }
+
+                PatrolUnitInstance unit = CreatePatrolUnitAt(streetPos, streetHeading);
+                if (unit != null && unit.IsValid())
+                {
+                    lock (_syncLock)
+                    {
+                        _activeUnits.Add(unit);
+                    }
+                    Logger.Info($"[PatrolFeature] Successfully spawned test unit {unit.Callsign} at {streetPos}.");
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("[PatrolFeature] SpawnTestUnit encountered an error", ex);
+            }
+
+            return false;
+        }
+
+        public static void PurgeAll()
+        {
+            lock (_syncLock)
+            {
+                Logger.Info("[PatrolFeature] Purging all active patrol units.");
+                PurgeAllInternal();
+            }
+        }
+
+        public static int GetActiveCount()
+        {
+            lock (_syncLock)
+            {
+                _activeUnits.RemoveAll(u => u == null || !u.IsValid());
+                return _activeUnits.Count;
+            }
+        }
+
+        // ====================================================================
+        // Background Process Fiber
+        // ====================================================================
+
+        private static void PatrolProcessLoop()
+        {
+            while (_isRunning)
+            {
+                try
+                {
+                    GameFiber.Sleep(1500);
+
+                    if (!_isRunning || !Settings.EnablePlugin || !Settings.EnablePatrol)
+                    {
+                        continue;
+                    }
+
+                    Ped player = Game.LocalPlayer?.Character;
+                    if (player == null || !player.Exists())
+                    {
+                        continue;
+                    }
+
+                    // 1. Despawn & Health Watchdog
+                    RunWatchdog(player.Position);
+
+                    // 2. Ambient Spawning Cycle
+                    RunSpawningCycle(player.Position);
+                }
+                catch (System.Threading.ThreadAbortException)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error("[PatrolFeature] Unexpected exception in patrol fiber", ex);
+                    GameFiber.Sleep(3000);
+                }
+            }
+        }
+
+        private static void RunWatchdog(Vector3 playerPos)
+        {
+            lock (_syncLock)
+            {
+                for (int i = _activeUnits.Count - 1; i >= 0; i--)
+                {
+                    PatrolUnitInstance unit = _activeUnits[i];
+                    if (unit == null)
+                    {
+                        _activeUnits.RemoveAt(i);
+                        continue;
+                    }
+
+                    if (!unit.IsValid())
+                    {
+                        Logger.Debug($"[PatrolFeature] Removing invalid/dead unit {unit.Callsign}.");
+                        unit.Dispose(immediateDelete: false);
+                        _activeUnits.RemoveAt(i);
+                        continue;
+                    }
+
+                    // Subterranean watchdog
+                    if (WorldUtils.IsSubterraneanOrVoid(unit.Cruiser.Position))
+                    {
+                        Logger.Warn($"[PatrolFeature] Unit {unit.Callsign} fell into subterranean void (Z={unit.Cruiser.Position.Z:F1}). Removing.");
+                        unit.Dispose(immediateDelete: true);
+                        _activeUnits.RemoveAt(i);
+                        continue;
+                    }
+
+                    // Distance watchdog: clean removal if beyond despawn threshold (> 450m)
+                    float dist = unit.Cruiser.Position.DistanceTo(playerPos);
+                    if (dist > Settings.DespawnDistance)
+                    {
+                        Logger.Debug($"[PatrolFeature] Unit {unit.Callsign} exceeded despawn distance ({dist:F0}m > {Settings.DespawnDistance:F0}m). Cleaning up.");
+                        unit.Dispose(immediateDelete: false);
+                        _activeUnits.RemoveAt(i);
+                        continue;
+                    }
+
+                    // Reassert cruising task if driver lost objectives
+                    unit.EnsurePatrolDriving();
+                }
+            }
+        }
+
+        private static void RunSpawningCycle(Vector3 playerPos)
+        {
+            int currentCount;
+            lock (_syncLock)
+            {
+                currentCount = _activeUnits.Count;
+            }
+
+            if (currentCount >= Settings.MaxPatrolUnits)
+            {
+                return;
+            }
+
+            // Spawn pacing cooldown: minimum 15 seconds between ambient spawns
+            uint now = Game.GameTime;
+            if (now - _lastSpawnTime < 15000 && currentCount > 0)
+            {
+                return;
+            }
+
+            // Search for safe road node 180m–350m from player
+            if (TryFindPatrolSpawnCoordinate(playerPos, out Vector3 spawnPos, out float spawnHeading))
+            {
+                PatrolUnitInstance unit = CreatePatrolUnitAt(spawnPos, spawnHeading);
+                if (unit != null && unit.IsValid())
+                {
+                    lock (_syncLock)
+                    {
+                        _activeUnits.Add(unit);
+                        _lastSpawnTime = Game.GameTime;
+                    }
+                    Logger.Info($"[PatrolFeature] Ambient patrol unit {unit.Callsign} spawned successfully at {spawnPos} (Total: {_activeUnits.Count}/{Settings.MaxPatrolUnits}).");
+                }
+            }
+        }
+
+        private static bool TryFindPatrolSpawnCoordinate(Vector3 playerPos, out Vector3 spawnPos, out float spawnHeading)
+        {
+            spawnPos = Vector3.Zero;
+            spawnHeading = 0f;
+
+            for (int attempt = 0; attempt < 20; attempt++)
+            {
+                float distance = (float)_rand.Next(180, 350);
+                double angle = _rand.NextDouble() * Math.PI * 2.0;
+
+                Vector3 probeCenter = new Vector3(
+                    playerPos.X + (float)Math.Cos(angle) * distance,
+                    playerPos.Y + (float)Math.Sin(angle) * distance,
+                    playerPos.Z
+                );
+
+                if (WorldUtils.GetSafeStreetPosition(probeCenter, 1, out Vector3 candidatePos, out float candidateHeading))
+                {
+                    if (WorldUtils.IsSubterraneanOrVoid(candidatePos)) continue;
+
+                    float distToPlayer = candidatePos.DistanceTo(playerPos);
+                    if (distToPlayer < 160f || distToPlayer > 380f) continue;
+
+                    if (!WorldUtils.IsAreaClear(candidatePos, 7.5f)) continue;
+
+                    if (WorldUtils.GetAccurateGroundZ(candidatePos, out float safeGroundZ))
+                    {
+                        candidatePos.Z = safeGroundZ + 0.35f;
+                    }
+
+                    spawnPos = candidatePos;
+                    spawnHeading = candidateHeading;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static PatrolUnitInstance CreatePatrolUnitAt(Vector3 position, float heading)
+        {
+            string callsign = GenerateCallsign();
+            Vehicle cruiser = null;
+            Ped driver = null;
+            Ped passenger = null;
+            Blip blip = null;
+
+            try
+            {
+                // Tier 1: Ultimate Backup Integration
+                if (Settings.UseUltimateBackup && UltimateBackupService.IsAvailable)
+                {
+                    bool isHighway = position.Y > 1000f; // Northern county / Senora / Paleto
+                    var ubResult = isHighway
+                        ? UltimateBackupService.SpawnStatePatrol(position, 1)
+                        : UltimateBackupService.SpawnLocalPatrol(position, 1);
+
+                    if (ubResult != null && ubResult.Item1 != null && ubResult.Item1.Exists() && ubResult.Item2 != null && ubResult.Item2.Count > 0)
+                    {
+                        cruiser = ubResult.Item1;
+                        driver = ubResult.Item2.FirstOrDefault(p => p != null && p.Exists());
+                        if (ubResult.Item2.Count > 1)
+                        {
+                            passenger = ubResult.Item2[1];
+                        }
+                    }
+                }
+
+                // Tier 2: Native Fallback Spawner
+                if (cruiser == null || !cruiser.Exists() || driver == null || !driver.Exists())
+                {
+                    string vehicleModel = ZoneSpawnData.GetDefaultPoliceVehicleForPosition(position);
+                    var nativeResult = UltimateBackupService.SpawnNativePatrolUnit(position, heading, vehicleModel, "s_m_y_cop_01");
+
+                    if (nativeResult != null && nativeResult.Item1 != null && nativeResult.Item1.Exists() && nativeResult.Item2 != null && nativeResult.Item2.Count > 0)
+                    {
+                        cruiser = nativeResult.Item1;
+                        driver = nativeResult.Item2[0];
+
+                        if (Settings.EnableEupOutfits)
+                        {
+                            EupService.ApplyBodyArmor(driver);
+                        }
+                    }
+                }
+
+                if (cruiser == null || !cruiser.Exists() || driver == null || !driver.Exists())
+                {
+                    Logger.Warn($"[PatrolFeature] Failed to create patrol unit entities at {position}.");
+                    return null;
+                }
+
+                // Ground stabilization & configuration
+                cruiser.Heading = heading;
+                WorldUtils.SecureEntityGround(cruiser);
+                cruiser.IsPersistent = false;
+                cruiser.IsEngineOn = true;
+                NativeTasks.ConfigurePatrolDriver(driver, cruiser);
+
+                // Initial motion & natural patrol cruising AI
+                NativeFunction.Natives.SET_VEHICLE_FORWARD_SPEED(cruiser, 7.0f);
+                float cruisingSpeed = 16.0f + (float)(_rand.NextDouble() * 4.0); // 16 - 20 m/s (~36 - 45 mph)
+                driver.Tasks.CruiseWithVehicle(cruiser, cruisingSpeed, NativeTasks.CruisingFlags);
+
+                // Attach Navy Blue radar blip
+                blip = BlipService.AttachPatrolBlip(cruiser, callsign);
+
+                return new PatrolUnitInstance(cruiser, driver, passenger, blip, callsign);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"[PatrolFeature] Exception creating patrol unit at {position}", ex);
+
+                if (blip != null) BlipService.SafeDeleteBlip(ref blip);
+                if (driver != null && driver.Exists()) driver.Delete();
+                if (passenger != null && passenger.Exists()) passenger.Delete();
+                if (cruiser != null && cruiser.Exists()) cruiser.Delete();
+
+                return null;
+            }
+        }
+
+        private static string GenerateCallsign()
+        {
+            string div = Divisions[_rand.Next(Divisions.Length)];
+            int num = _callsignCounter++;
+            if (_callsignCounter > 99) _callsignCounter = 10;
+            return $"{div}-{num:D2}";
+        }
+
+        private static void PurgeAllInternal()
+        {
+            foreach (var unit in _activeUnits)
+            {
+                if (unit != null)
+                {
+                    unit.Dispose(immediateDelete: true);
+                }
+            }
+            _activeUnits.Clear();
+        }
+
+        // ====================================================================
+        // Managed Unit Representation
+        // ====================================================================
+
+        private class PatrolUnitInstance
+        {
+            public Vehicle Cruiser { get; }
+            public Ped Driver { get; }
+            public Ped Passenger { get; }
+            public Blip RadarBlip;
+            public string Callsign { get; }
+            public uint SpawnTime { get; }
+
+            private uint _lastTaskVerifyTime;
+
+            public PatrolUnitInstance(Vehicle cruiser, Ped driver, Ped passenger, Blip blip, string callsign)
+            {
+                Cruiser = cruiser;
+                Driver = driver;
+                Passenger = passenger;
+                RadarBlip = blip;
+                Callsign = callsign;
+                SpawnTime = Game.GameTime;
+                _lastTaskVerifyTime = Game.GameTime;
+            }
+
+            public bool IsValid()
+            {
+                return Cruiser != null && Cruiser.Exists() && Cruiser.IsDriveable &&
+                       Driver != null && Driver.Exists() && Driver.IsAlive;
+            }
+
+            public void EnsurePatrolDriving()
+            {
+                if (!IsValid()) return;
+
+                uint now = Game.GameTime;
+                if (now - _lastTaskVerifyTime > 8000)
+                {
+                    _lastTaskVerifyTime = now;
+                    if (Driver.IsInVehicle(Cruiser, false) && Cruiser.Speed < 0.5f)
+                    {
+                        // Kickstart cruising AI if stuck
+                        Driver.Tasks.CruiseWithVehicle(Cruiser, 18.0f, NativeTasks.CruisingFlags);
+                    }
+                }
+            }
+
+            public void Dispose(bool immediateDelete)
+            {
+                // 1. Zero-leak 4-step destructor protocol for blip
+                BlipService.SafeDeleteBlip(ref RadarBlip);
+
+                // 2. Entities clean up
+                try
+                {
+                    if (Passenger != null && Passenger.Exists())
+                    {
+                        Passenger.BlockPermanentEvents = false;
+                        if (immediateDelete) Passenger.Delete();
+                        else Passenger.Dismiss();
+                    }
+
+                    if (Driver != null && Driver.Exists())
+                    {
+                        Driver.BlockPermanentEvents = false;
+                        if (immediateDelete) Driver.Delete();
+                        else Driver.Dismiss();
+                    }
+
+                    if (Cruiser != null && Cruiser.Exists())
+                    {
+                        if (immediateDelete) Cruiser.Delete();
+                        else Cruiser.Dismiss();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Debug($"[PatrolFeature] Error disposing unit {Callsign}: {ex.Message}");
+                }
+            }
+        }
+    }
+}

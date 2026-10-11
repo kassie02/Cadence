@@ -1,0 +1,15 @@
+# Visual Studio and Build Artefacts
+bin/
+obj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.vs/
+
+# Logs
+*.log
+Cadence.log
+
+# Temporary distribution archives
+dist/*.zip

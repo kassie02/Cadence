@@ -1,0 +1,759 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Reflection;
+using Rage;
+using Rage.Native;
+using LSPD_First_Response.Mod.API;
+using LSPD_First_Response.Mod.Callouts;
+using Cadence.Core;
+using Cadence.Common;
+using Cadence.Services;
+using Cadence.Data;
+
+namespace Cadence.Features
+{
+    /// <summary>
+    /// Feature 4: Responding Units & Rejected Callout Takeover
+    /// Dispatches ambient cruisers on autonomous Code 2/3 emergency runs, and hooks LSPDFR
+    /// to silently take over rejected/declined player callouts with the nearest available cruiser.
+    /// Strictly self-contained under the Ponytail architecture.
+    /// </summary>
+    public static class ResponseFeature
+    {
+        private static readonly object _syncLock = new object();
+        private static readonly List<ResponseUnitInstance> _activeUnits = new List<ResponseUnitInstance>();
+        private static readonly Random _rand = new Random();
+
+        private static GameFiber _responseFiber;
+        private static bool _isRunning;
+        private static uint _lastAutonomousRunTime;
+        private static int _callsignCounter = 70;
+
+        private static readonly string[] Divisions = new[]
+        {
+            "1-DAVID", "2-OCEAN", "3-FRANK", "4-ADAM", "5-LINCOLN", "6-MARY", "7-GEORGE", "8-EDWARD"
+        };
+
+        // ====================================================================
+        // Public API Contract
+        // ====================================================================
+
+        public static void Start()
+        {
+            lock (_syncLock)
+            {
+                if (_isRunning) return;
+                _isRunning = true;
+                _lastAutonomousRunTime = Game.GameTime;
+
+                // Hook LSPDFR rejected callout event
+                try
+                {
+                    Events.OnCalloutNotAccepted += OnLspdfrCalloutNotAccepted;
+                    Logger.Info("[ResponseFeature] Hooked LSPDFR Events.OnCalloutNotAccepted.");
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error("[ResponseFeature] Failed to hook OnCalloutNotAccepted", ex);
+                }
+
+                Logger.Info("[ResponseFeature] Starting response background fiber.");
+                _responseFiber = GameFiber.StartNew(ResponseProcessLoop, "Cadence - Response Feature Fiber");
+            }
+        }
+
+        public static void Stop()
+        {
+            lock (_syncLock)
+            {
+                if (!_isRunning) return;
+                _isRunning = false;
+
+                // Unhook LSPDFR rejected callout event
+                try
+                {
+                    Events.OnCalloutNotAccepted -= OnLspdfrCalloutNotAccepted;
+                    Logger.Info("[ResponseFeature] Unhooked LSPDFR Events.OnCalloutNotAccepted.");
+                }
+                catch { }
+
+                Logger.Info("[ResponseFeature] Stopping response feature and purging units.");
+                PurgeAllInternal();
+
+                try
+                {
+                    if (_responseFiber != null && _responseFiber.IsAlive)
+                    {
+                        _responseFiber.Abort();
+                    }
+                }
+                catch { }
+                finally
+                {
+                    _responseFiber = null;
+                }
+            }
+        }
+
+        public static bool TriggerTestRun()
+        {
+            try
+            {
+                Ped player = Game.LocalPlayer?.Character;
+                if (player == null || !player.Exists()) return false;
+
+                Logger.Info("[ResponseFeature] Triggering manual test emergency run.");
+
+                Vector3 playerPos = player.Position;
+                // Find road node 450m - 650m away from player
+                if (!TryFindRoadDestination(playerPos, 450f, 650f, out Vector3 targetPos))
+                {
+                    Logger.Warn("[ResponseFeature] Failed to find valid destination road node for test emergency run.");
+                    return false;
+                }
+
+                // Dispatch nearest available cruiser or spawn a dedicated response unit
+                ResponseUnitInstance unit = DispatchOrSpawnCruiser(targetPos, isCode3: true, isCalloutTakeover: false);
+                if (unit != null && unit.IsValid())
+                {
+                    lock (_syncLock)
+                    {
+                        _activeUnits.Add(unit);
+                    }
+                    Logger.Info($"[ResponseFeature] Successfully dispatched test response unit {unit.Callsign} to {targetPos}.");
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("[ResponseFeature] TriggerTestRun encountered an error", ex);
+            }
+
+            return false;
+        }
+
+        public static void PurgeAll()
+        {
+            lock (_syncLock)
+            {
+                Logger.Info("[ResponseFeature] Purging all active response units.");
+                PurgeAllInternal();
+            }
+        }
+
+        public static int GetActiveCount()
+        {
+            lock (_syncLock)
+            {
+                _activeUnits.RemoveAll(u => u == null || !u.IsValid());
+                return _activeUnits.Count;
+            }
+        }
+
+        // ====================================================================
+        // LSPDFR Event Hook (Part B: Rejected Callout Takeover)
+        // ====================================================================
+
+        private static void OnLspdfrCalloutNotAccepted(LHandle lhandle)
+        {
+            if (!_isRunning || !Settings.EnablePlugin || !Settings.EnableRejectedCallouts)
+            {
+                return;
+            }
+
+            GameFiber.StartNew(() =>
+            {
+                try
+                {
+                    if (lhandle == null) return;
+
+                    Vector3 calloutPos = ExtractCalloutPosition(lhandle);
+                    if (calloutPos == Vector3.Zero || WorldUtils.IsSubterraneanOrVoid(calloutPos))
+                    {
+                        Logger.Debug("[ResponseFeature] Callout rejected, but could not resolve a valid scene position.");
+                        return;
+                    }
+
+                    Ped player = Game.LocalPlayer?.Character;
+                    if (player == null || !player.Exists()) return;
+
+                    float distToPlayer = calloutPos.DistanceTo(player.Position);
+                    // Immersion filter: If callout was right on top of player (< 60m), skip takeover to avoid unnatural pop-in
+                    if (distToPlayer < 60.0f)
+                    {
+                        Logger.Debug($"[ResponseFeature] Rejected callout is too close ({distToPlayer:F0}m). Skipping takeover.");
+                        return;
+                    }
+
+                    Logger.Info($"[ResponseFeature] Rejected LSPDFR callout detected at {calloutPos} ({distToPlayer:F0}m from player). Silently dispatching nearest Cadence unit.");
+
+                    ResponseUnitInstance unit = DispatchOrSpawnCruiser(calloutPos, isCode3: true, isCalloutTakeover: true);
+                    if (unit != null && unit.IsValid())
+                    {
+                        lock (_syncLock)
+                        {
+                            _activeUnits.Add(unit);
+                        }
+                        Logger.Info($"[ResponseFeature] Unit {unit.Callsign} successfully dispatched Code 3 to rejected callout scene.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error("[ResponseFeature] Error handling OnCalloutNotAccepted", ex);
+                }
+            }, "Cadence - Callout Takeover Fiber");
+        }
+
+        /// <summary>
+        /// Uses reflection on LHandle to safely extract Callout.CalloutPosition without external dependencies.
+        /// </summary>
+        private static Vector3 ExtractCalloutPosition(LHandle lhandle)
+        {
+            if (lhandle == null) return Vector3.Zero;
+
+            try
+            {
+                PropertyInfo prop = typeof(LHandle).GetProperty("Object", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                object calloutObj = prop?.GetValue(lhandle);
+
+                if (calloutObj is Callout callout)
+                {
+                    return callout.CalloutPosition;
+                }
+
+                if (calloutObj != null)
+                {
+                    PropertyInfo posProp = calloutObj.GetType().GetProperty("CalloutPosition", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                                        ?? calloutObj.GetType().GetProperty("Position", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+
+                    if (posProp != null && posProp.GetValue(calloutObj) is Vector3 v3)
+                    {
+                        return v3;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug($"[ResponseFeature] ExtractCalloutPosition reflection failed: {ex.Message}");
+            }
+
+            return Vector3.Zero;
+        }
+
+        // ====================================================================
+        // Background Process Fiber (Part A: Autonomous Emergency Runs)
+        // ====================================================================
+
+        private static void ResponseProcessLoop()
+        {
+            while (_isRunning)
+            {
+                try
+                {
+                    GameFiber.Sleep(1200);
+
+                    if (!_isRunning || !Settings.EnablePlugin || (!Settings.EnableEmergencyRuns && !Settings.EnableRejectedCallouts))
+                    {
+                        continue;
+                    }
+
+                    Ped player = Game.LocalPlayer?.Character;
+                    if (player == null || !player.Exists())
+                    {
+                        continue;
+                    }
+
+                    // 1. Manage Active Responding Units & Watchdog
+                    RunResponseWatchdog(player.Position);
+
+                    // 2. Autonomous Emergency Run Generation
+                    RunAutonomousSpawningCycle(player.Position);
+                }
+                catch (System.Threading.ThreadAbortException)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error("[ResponseFeature] Unexpected exception in response fiber", ex);
+                    GameFiber.Sleep(3000);
+                }
+            }
+        }
+
+        private static void RunResponseWatchdog(Vector3 playerPos)
+        {
+            lock (_syncLock)
+            {
+                for (int i = _activeUnits.Count - 1; i >= 0; i--)
+                {
+                    ResponseUnitInstance unit = _activeUnits[i];
+                    if (unit == null)
+                    {
+                        _activeUnits.RemoveAt(i);
+                        continue;
+                    }
+
+                    if (!unit.IsValid())
+                    {
+                        Logger.Debug($"[ResponseFeature] Removing invalid/dead response unit {unit.Callsign}.");
+                        unit.Dispose(immediateDelete: false);
+                        _activeUnits.RemoveAt(i);
+                        continue;
+                    }
+
+                    // Subterranean watchdog
+                    if (WorldUtils.IsSubterraneanOrVoid(unit.Cruiser.Position))
+                    {
+                        Logger.Warn($"[ResponseFeature] Unit {unit.Callsign} fell into subterranean void. Removing.");
+                        unit.Dispose(immediateDelete: true);
+                        _activeUnits.RemoveAt(i);
+                        continue;
+                    }
+
+                    // Despawn distance watchdog: clean removal if far from player (> 550m)
+                    float distToPlayer = unit.Cruiser.Position.DistanceTo(playerPos);
+                    if (distToPlayer > (Settings.DespawnDistance + 100.0f))
+                    {
+                        Logger.Debug($"[ResponseFeature] Unit {unit.Callsign} out of range ({distToPlayer:F0}m). Cleaning up.");
+                        unit.Dispose(immediateDelete: false);
+                        _activeUnits.RemoveAt(i);
+                        continue;
+                    }
+
+                    // Manage State Transitions (EnRoute -> Arrived -> Finished)
+                    unit.UpdateState(playerPos);
+
+                    if (unit.IsFinished)
+                    {
+                        Logger.Info($"[ResponseFeature] Unit {unit.Callsign} finished response lifecycle. Cleaning up.");
+                        unit.Dispose(immediateDelete: false);
+                        _activeUnits.RemoveAt(i);
+                    }
+                }
+            }
+        }
+
+        private static void RunAutonomousSpawningCycle(Vector3 playerPos)
+        {
+            if (!Settings.EnableEmergencyRuns)
+            {
+                return;
+            }
+
+            int currentCount;
+            lock (_syncLock)
+            {
+                currentCount = _activeUnits.Count;
+            }
+
+            // Cap simultaneous response runs (max 2 active)
+            if (currentCount >= 2)
+            {
+                return;
+            }
+
+            // Pacing: minimum 60 - 95 seconds between autonomous runs
+            uint now = Game.GameTime;
+            if (now - _lastAutonomousRunTime < (uint)_rand.Next(60000, 95000) && currentCount > 0)
+            {
+                return;
+            }
+
+            // Road node 400m - 800m away from player
+            if (TryFindRoadDestination(playerPos, 400.0f, 800.0f, out Vector3 targetPos))
+            {
+                bool isCode3 = _rand.NextDouble() >= 0.30; // 70% Code 3, 30% Code 2
+                ResponseUnitInstance unit = DispatchOrSpawnCruiser(targetPos, isCode3, isCalloutTakeover: false);
+                if (unit != null && unit.IsValid())
+                {
+                    lock (_syncLock)
+                    {
+                        _activeUnits.Add(unit);
+                        _lastAutonomousRunTime = Game.GameTime;
+                    }
+                    Logger.Info($"[ResponseFeature] Autonomous {(isCode3 ? "Code 3" : "Code 2")} response run dispatched for unit {unit.Callsign} to {targetPos}.");
+                }
+            }
+        }
+
+        // ====================================================================
+        // Unit Dispatch & Entity Spawner
+        // ====================================================================
+
+        private static ResponseUnitInstance DispatchOrSpawnCruiser(Vector3 targetPos, bool isCode3, bool isCalloutTakeover)
+        {
+            Ped player = Game.LocalPlayer?.Character;
+            Vector3 playerPos = player != null && player.Exists() ? player.Position : Vector3.Zero;
+
+            // 1. Try to find an available idle ambient police cruiser within 300m
+            Vehicle candidateVeh = FindIdleAmbientPoliceVehicle(playerPos, targetPos);
+            if (candidateVeh != null && candidateVeh.Exists())
+            {
+                Ped driver = candidateVeh.Driver;
+                if (driver != null && driver.Exists() && driver.IsAlive)
+                {
+                    string existingCallsign = GenerateCallsign();
+                    return SetupResponseUnit(candidateVeh, driver, null, targetPos, isCode3, existingCallsign);
+                }
+            }
+
+            // 2. If no existing cruiser is available, spawn a fast-response unit on a road node
+            if (TryFindRoadSpawnPosition(playerPos, targetPos, out Vector3 spawnPos, out float spawnHeading))
+            {
+                string callsign = GenerateCallsign();
+                Vehicle cruiser = null;
+                Ped driver = null;
+                Ped passenger = null;
+
+                // Ultimate Backup or Native Fallback
+                if (Settings.UseUltimateBackup && UltimateBackupService.IsAvailable)
+                {
+                    bool isHighway = spawnPos.Y > 1000f;
+                    var ubResult = isHighway
+                        ? UltimateBackupService.SpawnStatePatrol(spawnPos, 1)
+                        : UltimateBackupService.SpawnLocalPatrol(spawnPos, 1);
+
+                    if (ubResult != null && ubResult.Item1 != null && ubResult.Item1.Exists() && ubResult.Item2 != null && ubResult.Item2.Count > 0)
+                    {
+                        cruiser = ubResult.Item1;
+                        driver = ubResult.Item2[0];
+                        if (ubResult.Item2.Count > 1) passenger = ubResult.Item2[1];
+                    }
+                }
+
+                if (cruiser == null || !cruiser.Exists() || driver == null || !driver.Exists())
+                {
+                    string vehicleModel = ZoneSpawnData.GetDefaultPoliceVehicleForPosition(spawnPos);
+                    var nativeResult = UltimateBackupService.SpawnNativePatrolUnit(spawnPos, spawnHeading, vehicleModel, "s_m_y_cop_01");
+                    if (nativeResult != null && nativeResult.Item1 != null && nativeResult.Item1.Exists() && nativeResult.Item2 != null && nativeResult.Item2.Count > 0)
+                    {
+                        cruiser = nativeResult.Item1;
+                        driver = nativeResult.Item2[0];
+                        if (Settings.EnableEupOutfits)
+                        {
+                            EupService.ApplyBodyArmor(driver);
+                        }
+                    }
+                }
+
+                if (cruiser != null && cruiser.Exists() && driver != null && driver.Exists())
+                {
+                    cruiser.Heading = spawnHeading;
+                    WorldUtils.SecureEntityGround(cruiser);
+                    return SetupResponseUnit(cruiser, driver, passenger, targetPos, isCode3, callsign);
+                }
+            }
+
+            return null;
+        }
+
+        private static ResponseUnitInstance SetupResponseUnit(Vehicle cruiser, Ped driver, Ped passenger, Vector3 destination, bool isCode3, string callsign)
+        {
+            try
+            {
+                cruiser.IsPersistent = false;
+                cruiser.IsEngineOn = true;
+                NativeTasks.ConfigureEmergencyDriver(driver, cruiser);
+
+                // Siren configuration: Code 3 audible, Code 2 muted siren
+                cruiser.IsSirenOn = true;
+                cruiser.IsSirenSilent = !isCode3;
+
+                // High speed emergency driving
+                float targetSpeed = isCode3 ? 32.0f : 24.0f; // ~71 mph vs ~53 mph
+                NativeFunction.Natives.SET_VEHICLE_FORWARD_SPEED(cruiser, 12.0f);
+                driver.Tasks.DriveToPosition(cruiser, destination, targetSpeed, NativeTasks.EmergencyFlags, 9.0f);
+
+                // Attach Red flashing radar blip
+                Blip blip = BlipService.AttachEmergencyBlip(cruiser, callsign);
+
+                return new ResponseUnitInstance(cruiser, driver, passenger, destination, blip, callsign, isCode3);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"[ResponseFeature] Error setting up response unit {callsign}", ex);
+                return null;
+            }
+        }
+
+        private static Vehicle FindIdleAmbientPoliceVehicle(Vector3 playerPos, Vector3 targetPos)
+        {
+            try
+            {
+                Entity[] nearbyVehicles = World.GetEntities(playerPos, 320.0f, GetEntitiesFlags.ConsiderAllVehicles);
+                if (nearbyVehicles == null || nearbyVehicles.Length == 0) return null;
+
+                foreach (Entity ent in nearbyVehicles)
+                {
+                    if (ent is Vehicle veh && veh.Exists() && !veh.IsDead && veh.IsPoliceVehicle)
+                    {
+                        Ped drv = veh.Driver;
+                        if (drv == null || !drv.Exists() || !drv.IsAlive || drv.IsPlayer || drv == Game.LocalPlayer?.Character)
+                        {
+                            continue;
+                        }
+
+                        // Ensure not already tracked in active response units
+                        lock (_syncLock)
+                        {
+                            if (_activeUnits.Any(u => u.Cruiser == veh)) continue;
+                        }
+
+                        // Ensure not currently in active pursuit
+                        bool inPursuit = false;
+                        try { inPursuit = Functions.IsPedInPursuit(drv); } catch { }
+                        if (inPursuit) continue;
+
+                        return veh;
+                    }
+                }
+            }
+            catch { }
+
+            return null;
+        }
+
+        private static bool TryFindRoadDestination(Vector3 center, float minDistance, float maxDistance, out Vector3 targetPos)
+        {
+            targetPos = Vector3.Zero;
+
+            for (int attempt = 0; attempt < 16; attempt++)
+            {
+                float distance = (float)_rand.Next((int)minDistance, (int)maxDistance);
+                double angle = _rand.NextDouble() * Math.PI * 2.0;
+
+                Vector3 probe = new Vector3(
+                    center.X + (float)Math.Cos(angle) * distance,
+                    center.Y + (float)Math.Sin(angle) * distance,
+                    center.Z
+                );
+
+                if (WorldUtils.GetSafeStreetPosition(probe, 1, out Vector3 streetPos, out float _))
+                {
+                    if (WorldUtils.IsSubterraneanOrVoid(streetPos)) continue;
+                    if (streetPos.DistanceTo(center) < (minDistance - 30f)) continue;
+
+                    targetPos = streetPos;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool TryFindRoadSpawnPosition(Vector3 playerPos, Vector3 targetPos, out Vector3 spawnPos, out float spawnHeading)
+        {
+            spawnPos = Vector3.Zero;
+            spawnHeading = 0f;
+
+            for (int attempt = 0; attempt < 16; attempt++)
+            {
+                float distance = (float)_rand.Next(160, 320);
+                double angle = _rand.NextDouble() * Math.PI * 2.0;
+
+                Vector3 probe = new Vector3(
+                    playerPos.X + (float)Math.Cos(angle) * distance,
+                    playerPos.Y + (float)Math.Sin(angle) * distance,
+                    playerPos.Z
+                );
+
+                if (WorldUtils.GetSafeStreetPosition(probe, 1, out Vector3 candidatePos, out float candidateHeading))
+                {
+                    if (WorldUtils.IsSubterraneanOrVoid(candidatePos)) continue;
+                    if (candidatePos.DistanceTo(playerPos) < 140f) continue;
+                    if (!WorldUtils.IsAreaClear(candidatePos, 7.5f)) continue;
+
+                    spawnPos = candidatePos;
+                    spawnHeading = candidateHeading;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static string GenerateCallsign()
+        {
+            string div = Divisions[_rand.Next(Divisions.Length)];
+            int num = _callsignCounter++;
+            if (_callsignCounter > 99) _callsignCounter = 70;
+            return $"{div}-{num:D2}";
+        }
+
+        private static void PurgeAllInternal()
+        {
+            foreach (var unit in _activeUnits)
+            {
+                if (unit != null)
+                {
+                    unit.Dispose(immediateDelete: true);
+                }
+            }
+            _activeUnits.Clear();
+        }
+
+        // ====================================================================
+        // Response Unit Lifecycle Representation
+        // ====================================================================
+
+        private class ResponseUnitInstance
+        {
+            public Vehicle Cruiser { get; }
+            public Ped Driver { get; }
+            public Ped Passenger { get; }
+            public Vector3 Destination { get; }
+            public Blip RadarBlip;
+            public string Callsign { get; }
+            public bool IsCode3 { get; }
+            public uint SpawnTime { get; }
+
+            public enum ResponseState { EnRoute, Arrived, Finished }
+            public ResponseState State { get; private set; }
+
+            private uint _arrivedTime;
+            private uint _lastNavRefreshTime;
+
+            public bool IsFinished => State == ResponseState.Finished;
+
+            public ResponseUnitInstance(Vehicle cruiser, Ped driver, Ped passenger, Vector3 destination, Blip blip, string callsign, bool isCode3)
+            {
+                Cruiser = cruiser;
+                Driver = driver;
+                Passenger = passenger;
+                Destination = destination;
+                RadarBlip = blip;
+                Callsign = callsign;
+                IsCode3 = isCode3;
+                SpawnTime = Game.GameTime;
+                _lastNavRefreshTime = Game.GameTime;
+                State = ResponseState.EnRoute;
+            }
+
+            public bool IsValid()
+            {
+                return Cruiser != null && Cruiser.Exists() && Cruiser.IsDriveable &&
+                       Driver != null && Driver.Exists() && Driver.IsAlive;
+            }
+
+            public void UpdateState(Vector3 playerPos)
+            {
+                if (!IsValid())
+                {
+                    State = ResponseState.Finished;
+                    return;
+                }
+
+                uint now = Game.GameTime;
+
+                switch (State)
+                {
+                    case ResponseState.EnRoute:
+                        float distToDest = Cruiser.Position.DistanceTo(Destination);
+                        bool isAtDestination = distToDest <= 18.0f || (distToDest <= 35.0f && Cruiser.Speed < 1.0f);
+
+                        // Timeout fail-safe (max 100 seconds en-route travel)
+                        if (now - SpawnTime > 100000)
+                        {
+                            isAtDestination = true;
+                        }
+
+                        if (isAtDestination)
+                        {
+                            State = ResponseState.Arrived;
+                            _arrivedTime = now;
+                            OnArrival();
+                        }
+                        else
+                        {
+                            // Navigation refreshing if stuck
+                            if (now - _lastNavRefreshTime > 12000)
+                            {
+                                _lastNavRefreshTime = now;
+                                if (Cruiser.Speed < 1.0f && Driver.IsInVehicle(Cruiser, false))
+                                {
+                                    float speed = IsCode3 ? 30.0f : 22.0f;
+                                    Driver.Tasks.DriveToPosition(Cruiser, Destination, speed, NativeTasks.EmergencyFlags, 9.0f);
+                                }
+                            }
+                        }
+                        break;
+
+                    case ResponseState.Arrived:
+                        // Remain on scene with muted emergency lights for 18 seconds, then finish
+                        if (now - _arrivedTime > 18000)
+                        {
+                            State = ResponseState.Finished;
+                        }
+                        break;
+                }
+            }
+
+            private void OnArrival()
+            {
+                try
+                {
+                    // Halt vehicle safely and engage handbrake
+                    NativeFunction.Natives.BRING_VEHICLE_TO_HALT(Cruiser, 2.0f, 1, false);
+                    NativeFunction.Natives.SET_VEHICLE_HANDBRAKE(Cruiser, true);
+
+                    // Mute siren on arrival, keep flashing lights active on scene
+                    NativeTasks.SetSilentEmergencyLights(Cruiser, true);
+
+                    // Switch radar blip to standby on scene
+                    BlipService.TransitionToStationary(RadarBlip, Callsign);
+                }
+                catch { }
+            }
+
+            public void Dispose(bool immediateDelete)
+            {
+                // 1. Zero-leak blip destructor
+                BlipService.SafeDeleteBlip(ref RadarBlip);
+
+                // 2. Entities clean up
+                try
+                {
+                    if (Cruiser != null && Cruiser.Exists())
+                    {
+                        NativeFunction.Natives.SET_VEHICLE_HANDBRAKE(Cruiser, false);
+                        Cruiser.IsSirenOn = false;
+                        Cruiser.IsSirenSilent = false;
+                    }
+
+                    if (Passenger != null && Passenger.Exists())
+                    {
+                        Passenger.BlockPermanentEvents = false;
+                        if (immediateDelete) Passenger.Delete();
+                        else Passenger.Dismiss();
+                    }
+
+                    if (Driver != null && Driver.Exists())
+                    {
+                        Driver.BlockPermanentEvents = false;
+                        if (immediateDelete) Driver.Delete();
+                        else
+                        {
+                            if (Cruiser != null && Cruiser.Exists())
+                            {
+                                Driver.Tasks.CruiseWithVehicle(Cruiser, 16.0f, NativeTasks.CruisingFlags);
+                            }
+                            Driver.Dismiss();
+                        }
+                    }
+
+                    if (Cruiser != null && Cruiser.Exists())
+                    {
+                        if (immediateDelete) Cruiser.Delete();
+                        else Cruiser.Dismiss();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Debug($"[ResponseFeature] Error disposing unit {Callsign}: {ex.Message}");
+                }
+            }
+        }
+    }
+}
