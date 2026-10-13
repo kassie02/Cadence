@@ -45,7 +45,7 @@ namespace Cadence.Common
         /// Commands a driver to navigate an emergency vehicle to destination coordinates using the long-range pathing engine.
         /// Aggressiveness is set to 0.0f and ability to 1.0f to ensure clean navigation around obstacles without ramming.
         /// </summary>
-        public static void TaskLongRangeEmergencyDrive(Ped driver, Vehicle vehicle, Vector3 destination, float speedMps = 32.0f, float stoppingRadius = 25.0f)
+        public static void TaskLongRangeEmergencyDrive(Ped driver, Vehicle vehicle, Vector3 destination, float speedMps = 32.0f, float stoppingRadius = 12.0f)
         {
             if (driver == null || !driver.Exists() || vehicle == null || !vehicle.Exists()) return;
 
@@ -120,6 +120,7 @@ namespace Cadence.Common
 
         /// <summary>
         /// Configures high-performance emergency driving capabilities on police drivers.
+        /// Aggressiveness is set to 0.6f, ability to 100.0f, and chase behavior flag 8 is enabled for assertive pursuing, overtaking, and U-turns.
         /// </summary>
         public static void ConfigureEmergencyDriver(Ped driver, Vehicle cruiser = null)
         {
@@ -127,9 +128,10 @@ namespace Cadence.Common
 
             try
             {
-                NativeFunction.Natives.SET_DRIVER_ABILITY(driver, 1.0f);
-                NativeFunction.Natives.SET_DRIVER_AGGRESSIVENESS(driver, 0.0f);
+                NativeFunction.Natives.SET_DRIVER_ABILITY(driver, 100.0f);
+                NativeFunction.Natives.SET_DRIVER_AGGRESSIVENESS(driver, 0.6f);
                 NativeFunction.Natives.SET_DRIVER_RACING_MODIFIER(driver, 1.0f);
+                NativeFunction.Natives.SET_TASK_VEHICLE_CHASE_BEHAVIOR_FLAG(driver, 8, true);
                 driver.BlockPermanentEvents = true;
 
                 if (cruiser != null && cruiser.Exists())

@@ -131,12 +131,15 @@ namespace Cadence.Features
 
                     if (!isPursuitRunning)
                     {
-                        // Pursuit has terminated or Code 4 was called: stand down active units to patrol
-                        InitiateCode4StandDown();
+                        // Pursuit has terminated or Code 4 was called: transition active units to OnSceneStandby
+                        TransitionToSceneStandby();
                     }
 
-                    // Watchdog: prune invalid sessions and process stand-down expiration
+                    // Watchdog: prune invalid sessions and process standby/stand-down expiration
                     PruneAndWatchSessions(player.Position);
+
+                    // Display dismissal prompt and process key-holding if player is near standby scene
+                    ProcessStandbyDismissal(player);
 
                     if (!isPursuitRunning)
                     {
@@ -223,7 +226,7 @@ namespace Cadence.Features
             return player != null && player.Exists() ? player.Position : Vector3.Zero;
         }
 
-        private static void InitiateCode4StandDown()
+        private static void TransitionToSceneStandby()
         {
             lock (_syncLock)
             {
@@ -239,7 +242,7 @@ namespace Cadence.Features
 
                     if (s.State == PursuitUnitSession.SessionState.InPursuit)
                     {
-                        s.BeginStandDown();
+                        s.BeginSceneStandby();
                     }
                 }
             }
@@ -263,7 +266,16 @@ namespace Cadence.Features
                         continue;
                     }
 
-                    if (s.State == PursuitUnitSession.SessionState.StandingDown)
+                    if (s.State == PursuitUnitSession.SessionState.OnSceneStandby)
+                    {
+                        float dist = s.Cruiser.Position.DistanceTo(playerPos);
+                        // Safety timeout & distance leak protection: auto-dismiss if player leaves (> 250m) or after 5 minutes (300,000ms)
+                        if (dist > 250.0f || (now - s.StandbyStartTime > 300000))
+                        {
+                            s.DismissFromScene();
+                        }
+                    }
+                    else if (s.State == PursuitUnitSession.SessionState.StandingDown)
                     {
                         float dist = s.Cruiser.Position.DistanceTo(playerPos);
                         if (now - s.StandDownStartTime > 15000 || dist > Settings.DespawnDistance)
@@ -279,6 +291,172 @@ namespace Cadence.Features
                     }
                 }
             }
+        }
+
+        private static uint _dismissKeyDownTime;
+
+        private static void ProcessStandbyDismissal(Ped player)
+        {
+            if (player == null || !player.Exists()) return;
+            if (Game.Console.IsOpen || Game.IsPaused) return;
+
+            List<PursuitUnitSession> standbyUnits;
+            lock (_syncLock)
+            {
+                standbyUnits = _activeSessions.Where(s => s != null && s.IsValid() && s.State == PursuitUnitSession.SessionState.OnSceneStandby).ToList();
+            }
+
+            if (standbyUnits.Count == 0)
+            {
+                _dismissKeyDownTime = 0;
+                return;
+            }
+
+            Vector3 playerPos = player.Position;
+            bool playerNearScene = standbyUnits.Any(s => s.Cruiser != null && s.Cruiser.Exists() && s.Cruiser.Position.DistanceTo(playerPos) <= 45.0f);
+
+            if (playerNearScene)
+            {
+                string keyName = Settings.DismissBackupKey == System.Windows.Forms.Keys.Enter ? "ENTER" : Settings.DismissBackupKey.ToString().ToUpperInvariant();
+                Game.DisplayHelp($"Hold ~b~[{keyName}]~s~ to dismiss pursuit scene officers", 1000);
+
+                if (Settings.DismissBackupKey != System.Windows.Forms.Keys.None && Game.IsKeyDownRightNow(Settings.DismissBackupKey))
+                {
+                    if (_dismissKeyDownTime == 0)
+                    {
+                        _dismissKeyDownTime = Game.GameTime;
+                    }
+                    else if (Game.GameTime - _dismissKeyDownTime >= 1100)
+                    {
+                        _dismissKeyDownTime = 0;
+                        DismissStandbyUnits();
+                    }
+                }
+                else
+                {
+                    _dismissKeyDownTime = 0;
+                }
+            }
+            else
+            {
+                _dismissKeyDownTime = 0;
+            }
+        }
+
+        public static void DismissStandbyUnits()
+        {
+            lock (_syncLock)
+            {
+                bool anyDismissed = false;
+                foreach (var s in _activeSessions)
+                {
+                    if (s != null && s.IsValid() && s.State == PursuitUnitSession.SessionState.OnSceneStandby)
+                    {
+                        s.DismissFromScene();
+                        anyDismissed = true;
+                    }
+                }
+
+                if (anyDismissed)
+                {
+                    Game.DisplayNotification("~b~Pursuit scene officers~s~ dismissed. Returning to routine patrol.");
+                }
+            }
+        }
+
+        public static bool RequestPursuitInterceptor(bool isHighway = false)
+        {
+            LHandle activePursuit = null;
+            try { activePursuit = Functions.GetActivePursuit(); } catch { }
+            if (activePursuit == null || !Functions.IsPursuitStillRunning(activePursuit))
+            {
+                return false;
+            }
+
+            Ped player = Game.LocalPlayer?.Character;
+            if (player == null || !player.Exists()) return false;
+
+            Vector3 targetPos = GetPursuitTargetPosition(activePursuit, player);
+            if (targetPos == Vector3.Zero) targetPos = player.Position;
+
+            // 1. Try drafting closest ambient cruiser first
+            Vehicle candidateVeh = FindCandidateAmbientCruiser(targetPos);
+            if (candidateVeh != null && candidateVeh.Exists())
+            {
+                Ped driver = candidateVeh.Driver;
+                if (driver != null && driver.Exists() && driver.IsAlive)
+                {
+                    Ped passenger = candidateVeh.PassengerCount > 0 ? candidateVeh.Passengers.FirstOrDefault(p => p != null && p.Exists() && p.IsAlive) : null;
+                    DraftCruiserIntoPursuit(activePursuit, candidateVeh, driver, passenger, wasSpawned: false);
+                    return true;
+                }
+            }
+
+            // 2. Spawn interceptor
+            if (TryFindRoadSpawnPosition(targetPos, out Vector3 spawnPos, out float spawnHeading))
+            {
+                Vehicle cruiser = null;
+                Ped driver = null;
+                Ped passenger = null;
+
+                if (Settings.UseUltimateBackup && UltimateBackupService.IsAvailable)
+                {
+                    var ubResult = isHighway
+                        ? UltimateBackupService.SpawnStatePatrol(spawnPos, 1)
+                        : UltimateBackupService.SpawnLocalPatrol(spawnPos, 1);
+
+                    if (ubResult != null && ubResult.Item1 != null && ubResult.Item1.Exists() && ubResult.Item2 != null && ubResult.Item2.Count > 0)
+                    {
+                        cruiser = ubResult.Item1;
+                        driver = ubResult.Item2[0];
+                        if (ubResult.Item2.Count > 1) passenger = ubResult.Item2[1];
+                    }
+                }
+
+                if (cruiser == null || !cruiser.Exists() || driver == null || !driver.Exists())
+                {
+                    if (Settings.UseUltimateBackup && !Settings.AllowFallback)
+                    {
+                        Logger.Debug("PursuitFeature", $"Ultimate Backup did not return a cruiser for pursuit at {spawnPos}. Fallback is strictly disabled (Fallback=false). Aborting spawn.");
+                        return false;
+                    }
+
+                    string vehicleModel = isHighway ? ZoneSpawnData.GetDefaultPoliceVehicleForPosition(spawnPos) : ZoneSpawnData.PoliceVehiclesCity[0];
+                    string copModel = ZoneSpawnData.GetDefaultCopPedModelForPosition(spawnPos);
+                    var nativeResult = UltimateBackupService.SpawnNativePatrolUnit(spawnPos, spawnHeading, vehicleModel, copModel);
+                    if (nativeResult != null && nativeResult.Item1 != null && nativeResult.Item1.Exists() && nativeResult.Item2 != null && nativeResult.Item2.Count > 0)
+                    {
+                        cruiser = nativeResult.Item1;
+                        driver = nativeResult.Item2[0];
+                        if (Settings.EnableEupOutfits)
+                        {
+                            EupService.ApplyBodyArmor(driver);
+                        }
+                    }
+                }
+
+                if (cruiser != null && cruiser.Exists() && driver != null && driver.Exists())
+                {
+                    cruiser.Heading = spawnHeading;
+                    WorldUtils.SecureEntityGround(cruiser);
+                    DraftCruiserIntoPursuit(activePursuit, cruiser, driver, passenger, wasSpawned: true);
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        public static void RequestGroupPursuit(int count)
+        {
+            GameFiber.StartNew(() =>
+            {
+                for (int i = 0; i < count; i++)
+                {
+                    RequestPursuitInterceptor(isHighway: i % 2 != 0);
+                    GameFiber.Sleep(1500);
+                }
+            }, "Cadence - Group Pursuit Dispatch Fiber");
         }
 
         private static void TryDraftNearbyCruiser(LHandle activePursuit, Vector3 targetPos)
@@ -407,12 +585,14 @@ namespace Cadence.Features
                 cruiser.IsSirenSilent = false;
                 NativeTasks.ConfigureEmergencyDriver(driver, cruiser);
 
-                // Add driver and passenger to pursuit AI
+                // Add driver and passenger to pursuit AI (purging old ambient cruising tasks first)
+                driver.Tasks.Clear();
                 driver.BlockPermanentEvents = false;
                 Functions.AddCopToPursuit(activePursuit, driver);
 
                 if (passenger != null && passenger.Exists() && passenger.IsAlive)
                 {
+                    passenger.Tasks.Clear();
                     passenger.BlockPermanentEvents = false;
                     Functions.AddCopToPursuit(activePursuit, passenger);
                 }
@@ -496,7 +676,7 @@ namespace Cadence.Features
 
         private class PursuitUnitSession
         {
-            public enum SessionState { InPursuit, StandingDown, Completed }
+            public enum SessionState { InPursuit, OnSceneStandby, StandingDown, Completed }
 
             public Vehicle Cruiser { get; }
             public Ped Driver { get; }
@@ -506,6 +686,7 @@ namespace Cadence.Features
             public uint JoinTime { get; }
             public bool WasAmbientSpawned { get; }
             public SessionState State { get; private set; }
+            public uint StandbyStartTime { get; private set; }
             public uint StandDownStartTime { get; private set; }
 
             public PursuitUnitSession(Vehicle cruiser, Ped driver, Ped passenger, Blip blip, string callsign, bool wasSpawned)
@@ -526,6 +707,115 @@ namespace Cadence.Features
                        Driver != null && Driver.Exists() && Driver.IsAlive;
             }
 
+            public void BeginSceneStandby()
+            {
+                State = SessionState.OnSceneStandby;
+                StandbyStartTime = Game.GameTime;
+
+                try
+                {
+                    // Siren sound OFF, silent emergency lightbar stays active
+                    if (Cruiser != null && Cruiser.Exists())
+                    {
+                        Cruiser.IsSirenOn = true;
+                        Cruiser.IsSirenSilent = true;
+                        NativeTasks.SetSilentEmergencyLights(Cruiser, true);
+                    }
+
+                    // Seated driver stays parked
+                    if (Driver != null && Driver.Exists() && Driver.IsAlive)
+                    {
+                        if (Driver.IsInVehicle(Cruiser, false))
+                        {
+                            Driver.Tasks.PerformDrivingManeuver(VehicleManeuver.Wait);
+                        }
+                        else
+                        {
+                            // If outside, allow natural standing / facing scene without despawn or interrupting arrest
+                            if (!Driver.IsInCombat && !Driver.IsCuffed)
+                            {
+                                Driver.BlockPermanentEvents = false;
+                            }
+                        }
+                    }
+
+                    if (Passenger != null && Passenger.Exists() && Passenger.IsAlive)
+                    {
+                        if (!Passenger.IsInVehicle(Cruiser, false) && !Passenger.IsInCombat && !Passenger.IsCuffed)
+                        {
+                            Passenger.BlockPermanentEvents = false;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Debug($"[PursuitFeature] Error in BeginSceneStandby for {Callsign}: {ex.Message}");
+                }
+            }
+
+            public void DismissFromScene()
+            {
+                if (State != SessionState.OnSceneStandby) return;
+
+                State = SessionState.StandingDown;
+                StandDownStartTime = Game.GameTime;
+
+                GameFiber.StartNew(() =>
+                {
+                    try
+                    {
+                        // Officers outside cruiser enter their vehicles
+                        if (Driver != null && Driver.Exists() && Driver.IsAlive && !Driver.IsInVehicle(Cruiser, false))
+                        {
+                            Driver.Tasks.EnterVehicle(Cruiser, -1);
+                        }
+
+                        if (Passenger != null && Passenger.Exists() && Passenger.IsAlive && !Passenger.IsInVehicle(Cruiser, false))
+                        {
+                            Passenger.Tasks.EnterVehicle(Cruiser, 0);
+                        }
+
+                        // Wait up to 6 seconds for driver to enter cruiser
+                        uint enterStart = Game.GameTime;
+                        while (Driver != null && Driver.Exists() && Driver.IsAlive && !Driver.IsInVehicle(Cruiser, false) && (Game.GameTime - enterStart < 6000))
+                        {
+                            GameFiber.Sleep(250);
+                        }
+
+                        // Turn off emergency lightbars
+                        if (Cruiser != null && Cruiser.Exists())
+                        {
+                            Cruiser.IsSirenOn = false;
+                            Cruiser.IsSirenSilent = false;
+                            NativeTasks.SetSilentEmergencyLights(Cruiser, false);
+                        }
+
+                        // Cruise away smoothly
+                        if (Driver != null && Driver.Exists() && Driver.IsAlive)
+                        {
+                            Driver.BlockPermanentEvents = false;
+                            if (Cruiser != null && Cruiser.Exists())
+                            {
+                                NativeTasks.ConfigurePatrolDriver(Driver, Cruiser);
+                                Driver.Tasks.CruiseWithVehicle(Cruiser, 16.0f, NativeTasks.CruisingFlags);
+                            }
+                        }
+
+                        if (Passenger != null && Passenger.Exists() && Passenger.IsAlive)
+                        {
+                            Passenger.BlockPermanentEvents = false;
+                        }
+
+                        // Restore Navy Blue routine patrol blip
+                        BlipService.TransitionToPatrol(RadarBlip, Callsign);
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Debug($"[PursuitFeature] Error in DismissFromScene for {Callsign}: {ex.Message}");
+                    }
+                }, $"Cadence - Dismiss Pursuit Unit {Callsign}");
+            }
+
             public void BeginStandDown()
             {
                 State = SessionState.StandingDown;
@@ -537,6 +827,7 @@ namespace Cadence.Features
                     {
                         Cruiser.IsSirenOn = false;
                         Cruiser.IsSirenSilent = false;
+                        NativeTasks.SetSilentEmergencyLights(Cruiser, false);
                     }
 
                     if (Driver != null && Driver.Exists() && Driver.IsAlive)

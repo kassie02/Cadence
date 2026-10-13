@@ -179,7 +179,7 @@ namespace Cadence.Data
         public static readonly string[] CivilianVehicles = new string[]
         {
             "premier", "felon", "asterope", "washington", "intruder", "stanier",
-            "tailgater", "oracle", "fugitive", "schafter", "glendale", "primo",
+            "tailgater", "oracle", "fugitive", "schafter2", "glendale", "primo",
             "ingot", "asea", "emperor", "regina", "stratum", "surge", "cognoscenti"
         };
 
