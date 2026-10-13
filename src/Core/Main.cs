@@ -76,27 +76,57 @@ namespace Cadence.Core
                     // 1. Load User Configuration
                     Settings.Load();
 
+                    if (!Settings.EnablePlugin)
+                    {
+                        Logger.Info("[Main] Cadence is DEACTIVATED in Cadence.ini (EnablePlugin=false). Skipping feature bootstrap.");
+                        Game.DisplayNotification("~y~[Cadence] Plugin is deactivated in Cadence.ini (EnablePlugin = false).~s~");
+                        return;
+                    }
+
                     // 2. Initialize Ultimate Backup Integration
                     UltimateBackupService.Initialize();
+
+                    if (Settings.UseUltimateBackup && !Settings.AllowFallback && !UltimateBackupService.IsAvailable)
+                    {
+                        Logger.Warn("[Main] Ultimate Backup is required (Fallback=false) but was NOT detected! Ambient police spawning is disabled until UB loads.");
+                        Game.DisplayNotification("~r~[Cadence] Ultimate Backup not detected! Spawning paused (Fallback=false in settings).~s~");
+                    }
 
                     // 3. Initialize In-Game Menu
                     CadenceMenu.Initialize();
 
-                    // 3. Bootstrap Enabled Features (Thin Ponytail Strands)
+                    // 3. Bootstrap Enabled Features (Staggered Ambient Pacing)
+                    Logger.Info("[Main] Bootstrapping features with staggered spawn pacing: Patrol (T+15s), Stationary (T+45s), Traffic Stops (T+75s), Response (T+105s).");
                     if (Settings.EnablePatrol) PatrolFeature.Start();
-                    if (Settings.EnableTrafficStops) TrafficStopFeature.Start();
                     if (Settings.EnableStationary) StationaryFeature.Start();
+                    if (Settings.EnableTrafficStops) TrafficStopFeature.Start();
                     if (Settings.EnableEmergencyRuns || Settings.EnableRejectedCallouts) ResponseFeature.Start();
                     if (Settings.EnablePursuitDrafting) PursuitFeature.Start();
                     if (Settings.EnableThreatDefense) AssistFeature.Start();
+                    if (Settings.EnableBackup) BackupFeature.Start();
 
                     // 4. Subtle Welcome Notification
-                    string keyNotice = Settings.MenuKey == Keys.None
-                        ? "Menu keybind disabled."
-                        : $"Press ~y~{Settings.MenuKey}~s~ for menu.";
+                    string keyNotice;
+                    if (Settings.MenuKey == Keys.None)
+                    {
+                        keyNotice = "Menu keybind disabled.";
+                    }
+                    else
+                    {
+                        string keyName = Settings.MenuKey == Keys.PageDown ? "PageDown" : Settings.MenuKey.ToString();
+                        if (Settings.MenuModifierKey != Keys.None)
+                        {
+                            string modName = Settings.MenuModifierKey == Keys.PageDown ? "PageDown" : Settings.MenuModifierKey.ToString();
+                            keyNotice = $"Press ~y~{modName} + {keyName}~s~ for menu.";
+                        }
+                        else
+                        {
+                            keyNotice = $"Press ~y~{keyName}~s~ for menu.";
+                        }
+                    }
                     Game.DisplayNotification($"~b~Cadence~s~ loaded successfully. {keyNotice}");
 
-                    Logger.Info($"[Main] Cadence OnDuty transition complete. MenuKey: {Settings.MenuKey}");
+                    Logger.Info($"[Main] Cadence OnDuty transition complete. MenuKey: {Settings.MenuKey}, ModifierKey: {Settings.MenuModifierKey}");
                 }
                 else
                 {
@@ -104,6 +134,7 @@ namespace Cadence.Core
                     _isOnDuty = false;
 
                     Logger.Info("[Main] Cadence OffDuty transition triggered. Stopping features and purging units.");
+                    SessionMetrics.LogSummary();
 
                     CadenceMenu.Close();
                     CadenceMenu.StopAllFeatures();

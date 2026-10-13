@@ -45,7 +45,7 @@ namespace Cadence.Features
             {
                 if (_isRunning) return;
                 _isRunning = true;
-                _lastAutonomousRunTime = Game.GameTime;
+                _lastAutonomousRunTime = Game.GameTime + 105000;
 
                 // Hook LSPDFR rejected callout event
                 try
@@ -58,7 +58,7 @@ namespace Cadence.Features
                     Logger.Error("[ResponseFeature] Failed to hook OnCalloutNotAccepted", ex);
                 }
 
-                Logger.Info("[ResponseFeature] Starting response background fiber.");
+                Logger.Info("[ResponseFeature] Starting response background fiber (initial run staggered at T+105s).");
                 _responseFiber = GameFiber.StartNew(ResponseProcessLoop, "Cadence - Response Feature Fiber");
             }
         }
@@ -151,6 +151,52 @@ namespace Cadence.Features
             }
         }
 
+        /// <summary>
+        /// Relinquishes control of a response cruiser to an external system (e.g. BackupFeature).
+        /// Safely deletes radar blip, releases handbrake, clears tasks, and drops from internal tracking.
+        /// </summary>
+        public static bool RelinquishCruiser(Vehicle cruiser)
+        {
+            if (cruiser == null || !cruiser.Exists()) return false;
+
+            lock (_syncLock)
+            {
+                for (int i = _activeUnits.Count - 1; i >= 0; i--)
+                {
+                    ResponseUnitInstance unit = _activeUnits[i];
+                    if (unit != null && unit.Cruiser == cruiser)
+                    {
+                        Logger.Info($"[ResponseFeature] Relinquishing cruiser 0x{cruiser.Handle:X} ({unit.Callsign}) to external feature.");
+                        unit.Relinquish();
+                        _activeUnits.RemoveAt(i);
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        public static bool IsActiveCruiser(Vehicle cruiser)
+        {
+            if (cruiser == null || !cruiser.Exists()) return false;
+            lock (_syncLock)
+            {
+                return _activeUnits.Any(u => u != null && u.Cruiser == cruiser);
+            }
+        }
+
+        public static List<Vehicle> GetActiveCruisers()
+        {
+            lock (_syncLock)
+            {
+                return _activeUnits
+                    .Where(u => u != null && u.IsValid() && u.Cruiser != null && u.Cruiser.Exists())
+                    .Select(u => u.Cruiser)
+                    .ToList();
+            }
+        }
+
         // ====================================================================
         // LSPDFR Event Hook (Part B: Rejected Callout Takeover)
         // ====================================================================
@@ -195,6 +241,7 @@ namespace Cadence.Features
                         {
                             _activeUnits.Add(unit);
                         }
+                        SessionMetrics.IncrementEmergencyRun();
                         Logger.Info($"[ResponseFeature] Unit {unit.Callsign} successfully dispatched Code 3 to rejected callout scene.");
                     }
                 }
@@ -335,6 +382,13 @@ namespace Cadence.Features
             }
         }
 
+        public enum EmergencyServiceType
+        {
+            Police,
+            Fire,
+            Ambulance
+        }
+
         private static void RunAutonomousSpawningCycle(Vector3 playerPos)
         {
             if (!Settings.EnableEmergencyRuns)
@@ -348,15 +402,16 @@ namespace Cadence.Features
                 currentCount = _activeUnits.Count;
             }
 
-            // Cap simultaneous response runs (max 2 active)
-            if (currentCount >= 2)
+            // Cap simultaneous response runs based on settings
+            if (currentCount >= Settings.MaxEmergencyRuns)
             {
                 return;
             }
 
-            // Pacing: minimum 60 - 95 seconds between autonomous runs
+            // Pacing: 60 - 95 seconds between autonomous runs (30 - 50s in Chaos mode)
             uint now = Game.GameTime;
-            if (now - _lastAutonomousRunTime < (uint)_rand.Next(60000, 95000) && currentCount > 0)
+            uint cooldown = Settings.ChaosMode ? (uint)_rand.Next(30000, 50000) : (uint)_rand.Next(60000, 95000);
+            if (now < _lastAutonomousRunTime || now - _lastAutonomousRunTime < cooldown)
             {
                 return;
             }
@@ -373,7 +428,8 @@ namespace Cadence.Features
                         _activeUnits.Add(unit);
                         _lastAutonomousRunTime = Game.GameTime;
                     }
-                    Logger.Info($"[ResponseFeature] Autonomous {(isCode3 ? "Code 3" : "Code 2")} response run dispatched for unit {unit.Callsign} to {targetPos}.");
+                    SessionMetrics.IncrementEmergencyRun();
+                    Logger.Info($"[ResponseFeature] Autonomous {(isCode3 ? "Code 3" : "Code 2")} {unit.ServiceType} response run dispatched for unit {unit.Callsign} to {targetPos}.");
                 }
             }
         }
@@ -387,69 +443,218 @@ namespace Cadence.Features
             Ped player = Game.LocalPlayer?.Character;
             Vector3 playerPos = player != null && player.Exists() ? player.Position : Vector3.Zero;
 
-            // 1. Try to find an available idle ambient police cruiser within 300m
-            Vehicle candidateVeh = FindIdleAmbientPoliceVehicle(playerPos, targetPos);
-            if (candidateVeh != null && candidateVeh.Exists())
+            // Determine service type (Police, Fire, Ambulance)
+            EmergencyServiceType serviceType = EmergencyServiceType.Police;
+            if (!isCalloutTakeover && Settings.EnableEmergencyVariety)
             {
-                Ped driver = candidateVeh.Driver;
-                if (driver != null && driver.Exists() && driver.IsAlive)
+                var candidateServices = new List<EmergencyServiceType>();
+                if (Settings.AllowPoliceRuns)
                 {
-                    string existingCallsign = GenerateCallsign();
-                    return SetupResponseUnit(candidateVeh, driver, null, targetPos, isCode3, existingCallsign);
+                    candidateServices.Add(EmergencyServiceType.Police);
+                    candidateServices.Add(EmergencyServiceType.Police); // 50% base weight
+                }
+                if (Settings.AllowFireRuns)
+                {
+                    candidateServices.Add(EmergencyServiceType.Fire); // 25% base weight
+                }
+                if (Settings.AllowAmbulanceRuns)
+                {
+                    candidateServices.Add(EmergencyServiceType.Ambulance); // 25% base weight
+                }
+
+                if (candidateServices.Count > 0)
+                {
+                    serviceType = candidateServices[_rand.Next(candidateServices.Count)];
+                }
+            }
+
+            // 1. Try to find an available idle ambient police cruiser within 300m (Police runs only)
+            if (serviceType == EmergencyServiceType.Police)
+            {
+                Vehicle candidateVeh = FindIdleAmbientPoliceVehicle(playerPos, targetPos);
+                if (candidateVeh != null && candidateVeh.Exists())
+                {
+                    PatrolFeature.RelinquishCruiser(candidateVeh);
+                    StationaryFeature.RelinquishCruiser(candidateVeh);
+                    TrafficStopFeature.RelinquishCruiser(candidateVeh);
+
+                    Ped driver = candidateVeh.Driver;
+                    if (driver != null && driver.Exists() && driver.IsAlive)
+                    {
+                        string existingCallsign = GenerateCallsign();
+                        return SetupResponseUnit(candidateVeh, driver, null, targetPos, isCode3, existingCallsign, EmergencyServiceType.Police);
+                    }
                 }
             }
 
             // 2. If no existing cruiser is available, spawn a fast-response unit on a road node
             if (TryFindRoadSpawnPosition(playerPos, targetPos, out Vector3 spawnPos, out float spawnHeading))
             {
-                string callsign = GenerateCallsign();
-                Vehicle cruiser = null;
-                Ped driver = null;
-                Ped passenger = null;
-
-                // Ultimate Backup or Native Fallback
-                if (Settings.UseUltimateBackup && UltimateBackupService.IsAvailable)
+                if (serviceType == EmergencyServiceType.Ambulance)
                 {
-                    bool isHighway = spawnPos.Y > 1000f;
-                    var ubResult = isHighway
-                        ? UltimateBackupService.SpawnStatePatrol(spawnPos, 1)
-                        : UltimateBackupService.SpawnLocalPatrol(spawnPos, 1);
-
-                    if (ubResult != null && ubResult.Item1 != null && ubResult.Item1.Exists() && ubResult.Item2 != null && ubResult.Item2.Count > 0)
-                    {
-                        cruiser = ubResult.Item1;
-                        driver = ubResult.Item2[0];
-                        if (ubResult.Item2.Count > 1) passenger = ubResult.Item2[1];
-                    }
+                    return SpawnAmbulanceUnit(spawnPos, spawnHeading, targetPos);
                 }
-
-                if (cruiser == null || !cruiser.Exists() || driver == null || !driver.Exists())
+                else if (serviceType == EmergencyServiceType.Fire)
                 {
-                    string vehicleModel = ZoneSpawnData.GetDefaultPoliceVehicleForPosition(spawnPos);
-                    var nativeResult = UltimateBackupService.SpawnNativePatrolUnit(spawnPos, spawnHeading, vehicleModel, "s_m_y_cop_01");
-                    if (nativeResult != null && nativeResult.Item1 != null && nativeResult.Item1.Exists() && nativeResult.Item2 != null && nativeResult.Item2.Count > 0)
+                    return SpawnFireUnit(spawnPos, spawnHeading, targetPos);
+                }
+                else
+                {
+                    // Police Emergency Run
+                    string callsign = GenerateCallsign();
+                    Vehicle cruiser = null;
+                    Ped driver = null;
+                    Ped passenger = null;
+
+                    // Ultimate Backup or Native Fallback
+                    if (Settings.UseUltimateBackup && UltimateBackupService.IsAvailable)
                     {
-                        cruiser = nativeResult.Item1;
-                        driver = nativeResult.Item2[0];
-                        if (Settings.EnableEupOutfits)
+                        bool isHighway = WorldUtils.ShouldSpawnHighwayUnit(spawnPos);
+                        var ubResult = isHighway
+                            ? UltimateBackupService.SpawnStatePatrol(spawnPos, 1)
+                            : UltimateBackupService.SpawnLocalPatrol(spawnPos, 1);
+
+                        if (ubResult != null && ubResult.Item1 != null && ubResult.Item1.Exists() && ubResult.Item2 != null && ubResult.Item2.Count > 0)
                         {
-                            EupService.ApplyBodyArmor(driver);
+                            cruiser = ubResult.Item1;
+                            driver = ubResult.Item2[0];
+                            if (ubResult.Item2.Count > 1) passenger = ubResult.Item2[1];
                         }
                     }
-                }
 
-                if (cruiser != null && cruiser.Exists() && driver != null && driver.Exists())
-                {
-                    cruiser.Heading = spawnHeading;
-                    WorldUtils.SecureEntityGround(cruiser);
-                    return SetupResponseUnit(cruiser, driver, passenger, targetPos, isCode3, callsign);
+                    if (cruiser == null || !cruiser.Exists() || driver == null || !driver.Exists())
+                    {
+                        if (Settings.UseUltimateBackup && !Settings.AllowFallback)
+                        {
+                            Logger.Debug("ResponseFeature", $"Ultimate Backup did not return a response cruiser at {spawnPos}. Fallback is strictly disabled (Fallback=false). Aborting spawn.");
+                            return null;
+                        }
+
+                        string vehicleModel = ZoneSpawnData.GetDefaultPoliceVehicleForPosition(spawnPos);
+                        string copModel = ZoneSpawnData.GetDefaultCopPedModelForPosition(spawnPos);
+                        var nativeResult = UltimateBackupService.SpawnNativePatrolUnit(spawnPos, spawnHeading, vehicleModel, copModel);
+                        if (nativeResult != null && nativeResult.Item1 != null && nativeResult.Item1.Exists() && nativeResult.Item2 != null && nativeResult.Item2.Count > 0)
+                        {
+                            cruiser = nativeResult.Item1;
+                            driver = nativeResult.Item2[0];
+                            if (Settings.EnableEupOutfits)
+                            {
+                                EupService.ApplyBodyArmor(driver);
+                            }
+                        }
+                    }
+
+                    if (cruiser != null && cruiser.Exists() && driver != null && driver.Exists())
+                    {
+                        cruiser.Heading = spawnHeading;
+                        WorldUtils.SecureEntityGround(cruiser);
+                        return SetupResponseUnit(cruiser, driver, passenger, targetPos, isCode3, callsign, EmergencyServiceType.Police);
+                    }
                 }
             }
 
             return null;
         }
 
-        private static ResponseUnitInstance SetupResponseUnit(Vehicle cruiser, Ped driver, Ped passenger, Vector3 destination, bool isCode3, string callsign)
+        private static ResponseUnitInstance SpawnAmbulanceUnit(Vector3 spawnPos, float spawnHeading, Vector3 destination)
+        {
+            try
+            {
+                string callsign = $"MEDIC-{_rand.Next(1, 99):D2}";
+                Vehicle amb = null;
+                Ped driver = null;
+                Ped passenger = null;
+
+                if (Settings.UseUltimateBackup && UltimateBackupService.IsAvailable)
+                {
+                    var ubResult = UltimateBackupService.SpawnAmbulanceUnit(spawnPos, 2);
+                    if (ubResult != null && ubResult.Item1 != null && ubResult.Item1.Exists() && ubResult.Item2 != null && ubResult.Item2.Count > 0)
+                    {
+                        amb = ubResult.Item1;
+                        driver = ubResult.Item2[0];
+                        if (ubResult.Item2.Count > 1) passenger = ubResult.Item2[1];
+                    }
+                }
+
+                if (amb == null || !amb.Exists() || driver == null || !driver.Exists())
+                {
+                    if (Settings.UseUltimateBackup && !Settings.AllowFallback)
+                    {
+                        Logger.Debug("ResponseFeature", $"Ultimate Backup did not return ambulance and Fallback is disabled (Fallback=false). Aborting ambulance spawn.");
+                        return null;
+                    }
+
+                    var nativeResult = UltimateBackupService.SpawnNativeAmbulanceUnit(spawnPos, spawnHeading);
+                    if (nativeResult != null && nativeResult.Item1 != null && nativeResult.Item1.Exists() && nativeResult.Item2 != null && nativeResult.Item2.Count > 0)
+                    {
+                        amb = nativeResult.Item1;
+                        driver = nativeResult.Item2[0];
+                    }
+                }
+
+                if (amb == null || !amb.Exists() || driver == null || !driver.Exists()) return null;
+
+                amb.Heading = spawnHeading;
+                WorldUtils.SecureEntityGround(amb);
+                return SetupResponseUnit(amb, driver, passenger, destination, true, callsign, EmergencyServiceType.Ambulance);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("[ResponseFeature] Failed to spawn ambulance unit", ex);
+                return null;
+            }
+        }
+
+        private static ResponseUnitInstance SpawnFireUnit(Vector3 spawnPos, float spawnHeading, Vector3 destination)
+        {
+            try
+            {
+                string callsign = $"ENGINE-{_rand.Next(1, 99):D2}";
+                Vehicle fire = null;
+                Ped driver = null;
+                Ped passenger = null;
+
+                if (Settings.UseUltimateBackup && UltimateBackupService.IsAvailable)
+                {
+                    var ubResult = UltimateBackupService.SpawnFireTruckUnit(spawnPos, 2);
+                    if (ubResult != null && ubResult.Item1 != null && ubResult.Item1.Exists() && ubResult.Item2 != null && ubResult.Item2.Count > 0)
+                    {
+                        fire = ubResult.Item1;
+                        driver = ubResult.Item2[0];
+                        if (ubResult.Item2.Count > 1) passenger = ubResult.Item2[1];
+                    }
+                }
+
+                if (fire == null || !fire.Exists() || driver == null || !driver.Exists())
+                {
+                    if (Settings.UseUltimateBackup && !Settings.AllowFallback)
+                    {
+                        Logger.Debug("ResponseFeature", $"Ultimate Backup did not return fire truck and Fallback is disabled (Fallback=false). Aborting fire truck spawn.");
+                        return null;
+                    }
+
+                    var nativeResult = UltimateBackupService.SpawnNativeFireUnit(spawnPos, spawnHeading);
+                    if (nativeResult != null && nativeResult.Item1 != null && nativeResult.Item1.Exists() && nativeResult.Item2 != null && nativeResult.Item2.Count > 0)
+                    {
+                        fire = nativeResult.Item1;
+                        driver = nativeResult.Item2[0];
+                    }
+                }
+
+                if (fire == null || !fire.Exists() || driver == null || !driver.Exists()) return null;
+
+                fire.Heading = spawnHeading;
+                WorldUtils.SecureEntityGround(fire);
+                return SetupResponseUnit(fire, driver, passenger, destination, true, callsign, EmergencyServiceType.Fire);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("[ResponseFeature] Failed to spawn fire engine unit", ex);
+                return null;
+            }
+        }
+
+        private static ResponseUnitInstance SetupResponseUnit(Vehicle cruiser, Ped driver, Ped passenger, Vector3 destination, bool isCode3, string callsign, EmergencyServiceType serviceType = EmergencyServiceType.Police)
         {
             try
             {
@@ -463,17 +668,20 @@ namespace Cadence.Features
                 cruiser.IsSirenOn = true;
                 cruiser.IsSirenSilent = !isCode3;
 
-                // High speed emergency driving
+                // High speed emergency driving using long-range task
                 float targetSpeed = isCode3 ? 32.0f : 24.0f; // ~71 mph vs ~53 mph
                 NativeFunction.Natives.SET_VEHICLE_FORWARD_SPEED(cruiser, 12.0f);
-                driver.Tasks.DriveToPosition(cruiser, destination, targetSpeed, NativeTasks.EmergencyFlags, 9.0f);
+                NativeTasks.TaskLongRangeEmergencyDrive(driver, cruiser, destination, targetSpeed, 15.0f);
 
                 // Attach Red flashing radar blip
-                Blip blip = BlipService.AttachEmergencyBlip(cruiser, callsign);
+                string blipLabel = serviceType == EmergencyServiceType.Ambulance ? $"{callsign} [EMS]" :
+                                   serviceType == EmergencyServiceType.Fire ? $"{callsign} [FIRE]" :
+                                   callsign;
+                Blip blip = BlipService.AttachEmergencyBlip(cruiser, blipLabel);
 
-                Logger.Debug("ResponseFeature", $"Configured response unit {callsign} [{(isCode3 ? "Code 3" : "Code 2")}]: Cruiser={cruiser.Model.Name} (0x{cruiser.Handle:X}), Driver={driver.Model.Name} (0x{driver.Handle:X}), Target={destination}");
+                Logger.Debug("ResponseFeature", $"Configured {serviceType} response unit {callsign} [{(isCode3 ? "Code 3" : "Code 2")}]: Cruiser={cruiser.Model.Name} (0x{cruiser.Handle:X}), Driver={driver.Model.Name} (0x{driver.Handle:X}), Target={destination}");
 
-                return new ResponseUnitInstance(cruiser, driver, passenger, destination, blip, callsign, isCode3);
+                return new ResponseUnitInstance(cruiser, driver, passenger, destination, blip, callsign, isCode3, serviceType);
             }
             catch (Exception ex)
             {
@@ -491,13 +699,18 @@ namespace Cadence.Features
 
                 foreach (Entity ent in nearbyVehicles)
                 {
-                    if (ent is Vehicle veh && veh.Exists() && !veh.IsDead && veh.IsPoliceVehicle)
+                    if (ent is Vehicle veh && veh.Exists() && !veh.IsDead && veh.IsDriveable)
                     {
                         Ped drv = veh.Driver;
                         if (drv == null || !drv.Exists() || !drv.IsAlive || drv.IsPlayer || drv == Game.LocalPlayer?.Character)
                         {
                             continue;
                         }
+
+                        bool isPolice = veh.IsPoliceVehicle || veh.Model.IsLawEnforcementVehicle ||
+                                        PatrolFeature.IsActiveCruiser(veh) || StationaryFeature.IsActiveCruiser(veh) ||
+                                        Functions.IsPedACop(drv) || drv.RelationshipGroup == "COP";
+                        if (!isPolice) continue;
 
                         // Ensure not already tracked in active response units
                         lock (_syncLock)
@@ -596,6 +809,7 @@ namespace Cadence.Features
                 }
             }
             _activeUnits.Clear();
+            _lastAutonomousRunTime = Game.GameTime + 45000;
         }
 
         // ====================================================================
@@ -611,6 +825,7 @@ namespace Cadence.Features
             public Blip RadarBlip;
             public string Callsign { get; }
             public bool IsCode3 { get; }
+            public EmergencyServiceType ServiceType { get; }
             public uint SpawnTime { get; }
 
             public enum ResponseState { EnRoute, Arrived, Finished }
@@ -621,7 +836,7 @@ namespace Cadence.Features
 
             public bool IsFinished => State == ResponseState.Finished;
 
-            public ResponseUnitInstance(Vehicle cruiser, Ped driver, Ped passenger, Vector3 destination, Blip blip, string callsign, bool isCode3)
+            public ResponseUnitInstance(Vehicle cruiser, Ped driver, Ped passenger, Vector3 destination, Blip blip, string callsign, bool isCode3, EmergencyServiceType serviceType = EmergencyServiceType.Police)
             {
                 Cruiser = cruiser;
                 Driver = driver;
@@ -630,6 +845,7 @@ namespace Cadence.Features
                 RadarBlip = blip;
                 Callsign = callsign;
                 IsCode3 = isCode3;
+                ServiceType = serviceType;
                 SpawnTime = Game.GameTime;
                 _lastNavRefreshTime = Game.GameTime;
                 State = ResponseState.EnRoute;
@@ -678,7 +894,7 @@ namespace Cadence.Features
                                 if (Cruiser.Speed < 1.0f && Driver.IsInVehicle(Cruiser, false))
                                 {
                                     float speed = IsCode3 ? 30.0f : 22.0f;
-                                    Driver.Tasks.DriveToPosition(Cruiser, Destination, speed, NativeTasks.EmergencyFlags, 9.0f);
+                                    NativeTasks.TaskLongRangeEmergencyDrive(Driver, Cruiser, Destination, speed, 15.0f);
                                 }
                             }
                         }
@@ -703,12 +919,50 @@ namespace Cadence.Features
                     NativeFunction.Natives.SET_VEHICLE_HANDBRAKE(Cruiser, true);
 
                     // Mute siren on arrival, keep flashing lights active on scene
+                    try
+                    {
+                        Cruiser.IsSirenOn = false;
+                        Cruiser.IsSirenSilent = true;
+                        NativeFunction.Natives.SET_VEHICLE_SIREN(Cruiser, false);
+                    }
+                    catch { }
+
                     NativeTasks.SetSilentEmergencyLights(Cruiser, true);
 
                     // Switch radar blip to standby on scene
                     BlipService.TransitionToStationary(RadarBlip, Callsign);
                 }
                 catch { }
+            }
+
+            public void Relinquish()
+            {
+                BlipService.SafeDeleteBlip(ref RadarBlip);
+                try
+                {
+                    if (Cruiser != null && Cruiser.Exists())
+                    {
+                        NativeFunction.Natives.SET_VEHICLE_HANDBRAKE(Cruiser, false);
+                    }
+                }
+                catch { }
+
+                try
+                {
+                    if (Driver != null && Driver.Exists())
+                    {
+                        Driver.Tasks.Clear();
+                        Driver.BlockPermanentEvents = false;
+                    }
+                    if (Passenger != null && Passenger.Exists())
+                    {
+                        Passenger.Tasks.Clear();
+                        Passenger.BlockPermanentEvents = false;
+                    }
+                }
+                catch { }
+
+                State = ResponseState.Finished;
             }
 
             public void Dispose(bool immediateDelete)
@@ -721,9 +975,14 @@ namespace Cadence.Features
                 {
                     if (Cruiser != null && Cruiser.Exists())
                     {
-                        NativeFunction.Natives.SET_VEHICLE_HANDBRAKE(Cruiser, false);
-                        Cruiser.IsSirenOn = false;
-                        Cruiser.IsSirenSilent = false;
+                        try
+                        {
+                            Cruiser.IsSirenOn = false;
+                            Cruiser.IsSirenSilent = true;
+                            NativeFunction.Natives.SET_VEHICLE_SIREN(Cruiser, false);
+                            NativeFunction.Natives.SET_VEHICLE_HANDBRAKE(Cruiser, false);
+                        }
+                        catch { }
                     }
 
                     if (Passenger != null && Passenger.Exists())

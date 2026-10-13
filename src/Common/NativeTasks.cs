@@ -11,9 +11,9 @@ namespace Cadence.Common
         // ====================================================================
 
         /// <summary>
-        /// Standard ambient cruising: obeys traffic signals, stops for pedestrians and cars.
+        /// Standard ambient cruising: obeys traffic signals, stops for pedestrians and cars, stays in lane.
         /// </summary>
-        public const VehicleDrivingFlags CruisingFlags = (VehicleDrivingFlags)786603;
+        public const VehicleDrivingFlags CruisingFlags = (VehicleDrivingFlags)447; // 0x1BF: Normal authentic ambient traffic driving
 
         /// <summary>
         /// Code 3 emergency response: bypasses traffic signals, aggressive lane overtaking, yields to obstacles when forced.
@@ -31,6 +31,94 @@ namespace Cadence.Common
         public const VehicleDrivingFlags PursuitFlags = (VehicleDrivingFlags)1074528311;
 
         /// <summary>
+        /// Long-range emergency response flag (0xC023C = 787004L): avoids vehicles, avoids peds, allows median crossing, ignores traffic lights, avoids empty vehicles.
+        /// Flawless pathfinding over long distances (> 100m) without abandoning waypoints or jamming at intersections.
+        /// </summary>
+        public const long LongRangeEmergencyDrivingFlag = 787004L;
+
+        /// <summary>
+        /// Normal long-range ambient traffic flag (0x1BF = 447L): stops for cars, peds, and traffic lights.
+        /// </summary>
+        public const long NormalDrivingFlag = 447L;
+
+        /// <summary>
+        /// Commands a driver to navigate an emergency vehicle to destination coordinates using the long-range pathing engine.
+        /// Aggressiveness is set to 0.0f and ability to 1.0f to ensure clean navigation around obstacles without ramming.
+        /// </summary>
+        public static void TaskLongRangeEmergencyDrive(Ped driver, Vehicle vehicle, Vector3 destination, float speedMps = 32.0f, float stoppingRadius = 25.0f)
+        {
+            if (driver == null || !driver.Exists() || vehicle == null || !vehicle.Exists()) return;
+
+            try
+            {
+                NativeFunction.Natives.SET_DRIVER_ABILITY(driver, 1.0f);
+                NativeFunction.Natives.SET_DRIVER_AGGRESSIVENESS(driver, 0.0f);
+                driver.BlockPermanentEvents = true;
+
+                try
+                {
+                    NativeFunction.Natives.TASK_VEHICLE_DRIVE_TO_COORD_LONGRANGE<uint>(
+                        driver,
+                        vehicle,
+                        destination.X,
+                        destination.Y,
+                        destination.Z,
+                        speedMps,
+                        (int)LongRangeEmergencyDrivingFlag,
+                        stoppingRadius
+                    );
+                }
+                catch
+                {
+                    // Fallback to managed RPH driving task if native name resolution fails
+                    driver.Tasks.DriveToPosition(vehicle, destination, speedMps, (VehicleDrivingFlags)LongRangeEmergencyDrivingFlag, stoppingRadius);
+                }
+            }
+            catch (Exception ex)
+            {
+                Core.Logger.Error("[NativeTasks] TaskLongRangeEmergencyDrive error", ex);
+            }
+        }
+
+        /// <summary>
+        /// General long-range vehicle driving method with configurable driving flags.
+        /// </summary>
+        public static void DriveToPositionLongRange(Ped driver, Vehicle vehicle, Vector3 destination, float speedMps, long drivingFlags, float stoppingRadius = 25.0f)
+        {
+            if (driver == null || !driver.Exists() || vehicle == null || !vehicle.Exists()) return;
+
+            try
+            {
+                NativeFunction.Natives.SET_DRIVER_ABILITY(driver, 1.0f);
+                NativeFunction.Natives.SET_DRIVER_AGGRESSIVENESS(driver, 0.0f);
+                driver.BlockPermanentEvents = true;
+
+                try
+                {
+                    NativeFunction.Natives.TASK_VEHICLE_DRIVE_TO_COORD_LONGRANGE<uint>(
+                        driver,
+                        vehicle,
+                        destination.X,
+                        destination.Y,
+                        destination.Z,
+                        speedMps,
+                        (int)drivingFlags,
+                        stoppingRadius
+                    );
+                }
+                catch
+                {
+                    // Fallback to managed RPH driving task if native name resolution fails
+                    driver.Tasks.DriveToPosition(vehicle, destination, speedMps, (VehicleDrivingFlags)drivingFlags, stoppingRadius);
+                }
+            }
+            catch (Exception ex)
+            {
+                Core.Logger.Error("[NativeTasks] DriveToPositionLongRange error", ex);
+            }
+        }
+
+        /// <summary>
         /// Configures high-performance emergency driving capabilities on police drivers.
         /// </summary>
         public static void ConfigureEmergencyDriver(Ped driver, Vehicle cruiser = null)
@@ -40,7 +128,7 @@ namespace Cadence.Common
             try
             {
                 NativeFunction.Natives.SET_DRIVER_ABILITY(driver, 1.0f);
-                NativeFunction.Natives.SET_DRIVER_AGGRESSIVENESS(driver, 0.85f);
+                NativeFunction.Natives.SET_DRIVER_AGGRESSIVENESS(driver, 0.0f);
                 NativeFunction.Natives.SET_DRIVER_RACING_MODIFIER(driver, 1.0f);
                 driver.BlockPermanentEvents = true;
 
@@ -58,6 +146,7 @@ namespace Cadence.Common
 
         /// <summary>
         /// Configures calm, organic ambient driving parameters for routine cruisers.
+        /// Driver keeps BlockPermanentEvents = false so GTA V's native traffic decision-making operates naturally.
         /// </summary>
         public static void ConfigurePatrolDriver(Ped driver, Vehicle cruiser = null)
         {
@@ -65,9 +154,9 @@ namespace Cadence.Common
 
             try
             {
-                NativeFunction.Natives.SET_DRIVER_ABILITY(driver, 0.90f);
+                NativeFunction.Natives.SET_DRIVER_ABILITY(driver, 1.0f);
                 NativeFunction.Natives.SET_DRIVER_AGGRESSIVENESS(driver, 0.0f);
-                driver.BlockPermanentEvents = true;
+                driver.BlockPermanentEvents = false;
 
                 if (cruiser != null && cruiser.Exists())
                 {

@@ -275,5 +275,89 @@ namespace Cadence.Common
                 return false;
             }
         }
+
+        /// <summary>
+        /// Identifies if a position is in Blaine County / Country (Sandy Shores, Grapeseed, Paleto Bay, etc.).
+        /// Prevents city police (LAPD/LSPD) from being placed in rural Blaine County jurisdictions.
+        /// </summary>
+        public static bool IsBlaineCounty(Vector3 pos)
+        {
+            // Vinewood Hills boundary is roughly Y = 900 - 1000
+            if (pos.Y > 950.0f) return true;
+
+            try
+            {
+                string zone = NativeFunction.Natives.GET_NAME_OF_ZONE<string>(pos.X, pos.Y, pos.Z);
+                if (!string.IsNullOrEmpty(zone))
+                {
+                    zone = zone.ToUpperInvariant();
+                    if (zone == "SANDY" || zone == "GRAPES" || zone == "PALETO" || zone == "CANNY" ||
+                        zone == "TONGVA" || zone == "ALAMO" || zone == "DESRT" || zone == "CHIL" ||
+                        zone == "MTGORDO" || zone == "MTCHIL" || zone == "PALCOV" || zone == "PALFOR" ||
+                        zone == "BRADP" || zone == "HARMO" || zone == "JAIL" || zone == "ZANCUDO" ||
+                        zone == "PROCOB" || zone == "SANCHIA")
+                    {
+                        return true;
+                    }
+                }
+            }
+            catch { }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Detects whether the coordinate is on a major highway or freeway.
+        /// </summary>
+        public static bool IsHighway(Vector3 pos)
+        {
+            try
+            {
+                string street = World.GetStreetName(pos);
+                if (!string.IsNullOrEmpty(street))
+                {
+                    string s = street.ToLowerInvariant();
+                    if (s.Contains("fwy") || s.Contains("freeway") || s.Contains("hwy") ||
+                        s.Contains("highway") || s.Contains("route 68") || s.Contains("bypass") ||
+                        s.Contains("los santos fwy") || s.Contains("del perro fwy") ||
+                        s.Contains("senora fwy") || s.Contains("great ocean hwy") ||
+                        s.Contains("olympic fwy") || s.Contains("la puerta fwy") ||
+                        s.Contains("palomino fwy") || s.Contains("elysian fields"))
+                    {
+                        return true;
+                    }
+                }
+            }
+            catch { }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Determines whether to spawn a Highway Patrol unit (State Patrol) or Local Police/Sheriff
+        /// based on highway detection and the user's configured balance setting (0 - 100).
+        /// </summary>
+        public static bool ShouldSpawnHighwayUnit(Vector3 pos)
+        {
+            int ratio = Core.Settings.HighwayPatrolRatio;
+            if (ratio <= 0) return false;
+            if (ratio >= 100) return true;
+
+            bool isHwy = IsHighway(pos);
+            int roll = new Random().Next(100);
+
+            if (isHwy)
+            {
+                // On highway: base 75% highway, scaled by ratio (50 -> 75%)
+                int hwyThreshold = (int)(ratio * 0.75f + 37.5f);
+                return roll < Math.Min(95, Math.Max(10, hwyThreshold));
+            }
+            else
+            {
+                // On local streets/roads: base 15% highway, scaled by ratio (50 -> 15%)
+                int localHwyThreshold = (int)(ratio * 0.30f);
+                return roll < Math.Min(50, Math.Max(2, localHwyThreshold));
+            }
+        }
     }
 }

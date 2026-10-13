@@ -8,12 +8,19 @@ namespace Cadence.Core
     {
         // General
         public static bool EnablePlugin { get; set; } = true;
+        public static bool PluginActive
+        {
+            get => EnablePlugin;
+            set => EnablePlugin = value;
+        }
         public static bool EnableFileLogging { get; set; } = true;
         public static bool EnableDebugLogging { get; set; } = true;
+        public static bool ChaosMode { get; set; } = false;
+        public static string Preset { get; set; } = "Realistic";
 
         // Keybinds (with 0/None fallback)
-        public static Keys MenuKey { get; set; } = Keys.F8;
-        public static Keys MenuModifierKey { get; set; } = Keys.None;
+        public static Keys MenuKey { get; set; } = Keys.PageDown;
+        public static Keys MenuModifierKey { get; set; } = Keys.Q;
 
         // Features
         public static bool EnablePatrol { get; set; } = true;
@@ -39,24 +46,71 @@ namespace Cadence.Core
             set => EnableThreatDefense = value;
         }
 
+        // Ambient Backup & Response Systems
+        public static bool EnableBackup { get; set; } = true;
+        public static Keys PanicButtonKey { get; set; } = Keys.Z;
+        public static Keys PanicButtonModifierKey { get; set; } = Keys.LControlKey;
+        public static Keys GroupBackupKey { get; set; } = Keys.C;
+        public static Keys GroupBackupModifierKey { get; set; } = Keys.LControlKey;
+        public static Keys BackupMenuKey { get; set; } = Keys.PageDown;
+        public static Keys BackupMenuModifierKey { get; set; } = Keys.X;
+        public static Keys DismissBackupKey { get; set; } = Keys.Enter;
+        public static int PanicButtonUnits { get; set; } = 2;
+        public static int GroupBackupUnits { get; set; } = 2;
+        public static bool GroupBackupCode3 { get; set; } = true;
+        public static bool AllowAmbientCommandeer { get; set; } = true;
+        public static bool AllowFallbackSpawning { get; set; } = true;
+
         // Limits & Caps
         public static int MaxPatrolUnits { get; set; } = 4;
         public static int MaxTrafficStops { get; set; } = 2;
         public static int MaxStationaryUnits { get; set; } = 2;
+        public static int MaxEmergencyRuns { get; set; } = 2;
         public static int MaxPursuitUnits { get; set; } = 4;
         public static float DespawnDistance { get; set; } = 450.0f;
         public static float SpawnDistanceMin { get; set; } = 80.0f;
         public static float SpawnDistanceMax { get; set; } = 250.0f;
 
+        // Emergency Services Variety
+        public static bool EnableEmergencyVariety { get; set; } = true;
+        public static bool AllowPoliceRuns { get; set; } = true;
+        public static bool AllowFireRuns { get; set; } = true;
+        public static bool AllowAmbulanceRuns { get; set; } = true;
+
+        // Jurisdiction Balance (0 - 100, 50 = Balanced, 0 = Only Local, 100 = Only Highway)
+        public static int HighwayPatrolRatio { get; set; } = 50;
+
         // Radar
         public static bool ShowRadarBlips { get; set; } = true;
         public static float BlipScale { get; set; } = 0.45f;
-        public static bool ShortRangeBlips { get; set; } = true;
+        public static bool ShortRangeBlips { get; set; } = false;
 
         // Integration
         public static bool UseUltimateBackup { get; set; } = true;
+        public static bool AllowFallback { get; set; } = false;
         public static bool EnableEupOutfits { get; set; } = true;
         public static bool MuteTrafficStopSiren { get; set; } = true;
+
+        public static void ApplyChaosPreset(bool enableChaos)
+        {
+            ChaosMode = enableChaos;
+            Preset = enableChaos ? "Chaos" : "Realistic";
+            if (enableChaos)
+            {
+                MaxPatrolUnits = 8;
+                MaxTrafficStops = 4;
+                MaxStationaryUnits = 4;
+                MaxEmergencyRuns = 4;
+            }
+            else
+            {
+                MaxPatrolUnits = 4;
+                MaxTrafficStops = 2;
+                MaxStationaryUnits = 2;
+                MaxEmergencyRuns = 2;
+            }
+            Logger.Info($"[Settings] Applied preset: {Preset} (Patrol: {MaxPatrolUnits}, Stops: {MaxTrafficStops}, Stationary: {MaxStationaryUnits}, Emergency: {MaxEmergencyRuns})");
+        }
 
         public static string ResolvedIniPath { get; private set; }
 
@@ -104,8 +158,8 @@ namespace Cadence.Core
                 Logger.EnableFileLogging = EnableFileLogging;
                 Logger.EnableDebugLogging = EnableDebugLogging;
                 Logger.Info($"[Settings] Configuration loaded successfully. Debug: {EnableDebugLogging}, FileLogging: {EnableFileLogging}, MenuKey: {MenuKey}, Modifier: {MenuModifierKey}");
-                Logger.Debug($"[Settings] Limits -> MaxPatrol: {MaxPatrolUnits}, MaxStops: {MaxTrafficStops}, MaxStationary: {MaxStationaryUnits}, MaxPursuit: {MaxPursuitUnits}, DespawnDist: {DespawnDistance:F0}m, SpawnRange: {SpawnDistanceMin:F0}m-{SpawnDistanceMax:F0}m");
-                Logger.Debug($"[Settings] Integration -> UltimateBackup: {UseUltimateBackup}, EUP: {EnableEupOutfits}, MuteSiren: {MuteTrafficStopSiren}");
+                Logger.Debug($"[Settings] Limits -> MaxPatrol: {MaxPatrolUnits}, MaxStops: {MaxTrafficStops}, MaxStationary: {MaxStationaryUnits}, MaxEmergency: {MaxEmergencyRuns}, MaxPursuit: {MaxPursuitUnits}, DespawnDist: {DespawnDistance:F0}m, Preset: {Preset}");
+                Logger.Debug($"[Settings] Integration -> UltimateBackup: {UseUltimateBackup}, Fallback: {AllowFallback}, Variety: {EnableEmergencyVariety}, HwyRatio: {HighwayPatrolRatio}%, EUP: {EnableEupOutfits}, MuteSiren: {MuteTrafficStopSiren}");
             }
             catch (Exception ex)
             {
@@ -121,14 +175,47 @@ namespace Cadence.Core
             switch (sec)
             {
                 case "general":
-                    if (k == "enableplugin") EnablePlugin = ParseBool(value, EnablePlugin);
+                    if (k == "enableplugin" || k == "pluginactive" || k == "active" || k == "activated") EnablePlugin = ParseBool(value, EnablePlugin);
                     else if (k == "enablefilelogging") EnableFileLogging = ParseBool(value, EnableFileLogging);
                     else if (k == "debug" || k == "enabledebuglogging" || k == "debuglogging") EnableDebugLogging = ParseBool(value, EnableDebugLogging);
+                    else if (k == "chaosmode" || k == "chaos")
+                    {
+                        bool isChaos = ParseBool(value, ChaosMode);
+                        ApplyChaosPreset(isChaos);
+                    }
+                    else if (k == "preset")
+                    {
+                        if (value.IndexOf("chaos", StringComparison.OrdinalIgnoreCase) >= 0) ApplyChaosPreset(true);
+                        else ApplyChaosPreset(false);
+                    }
                     break;
 
                 case "keybinds":
-                    if (k == "menukey") MenuKey = ParseKey(value, Keys.F8);
-                    else if (k == "menumodifierkey") MenuModifierKey = ParseModifierKey(value, Keys.None);
+                    if (k == "menukey") MenuKey = ParseKey(value, Keys.PageDown);
+                    else if (k == "menumodifierkey") MenuModifierKey = ParseModifierKey(value, Keys.Q);
+                    else if (k == "panicbuttonkey") PanicButtonKey = ParseKey(value, PanicButtonKey);
+                    else if (k == "panicbuttonmodifierkey" || k == "panicbuttonmodifier") PanicButtonModifierKey = ParseModifierKey(value, PanicButtonModifierKey);
+                    else if (k == "groupbackupkey") GroupBackupKey = ParseKey(value, GroupBackupKey);
+                    else if (k == "groupbackupmodifierkey" || k == "groupbackupmodifier") GroupBackupModifierKey = ParseModifierKey(value, GroupBackupModifierKey);
+                    else if (k == "backupmenukey") BackupMenuKey = ParseKey(value, BackupMenuKey);
+                    else if (k == "backupmenumodifierkey" || k == "backupmenumodifier") BackupMenuModifierKey = ParseModifierKey(value, BackupMenuModifierKey);
+                    else if (k == "dismissbackupkey" || k == "dismissallbackupkey") DismissBackupKey = ParseKey(value, DismissBackupKey);
+                    break;
+
+                case "backup":
+                    if (k == "enablebackup") EnableBackup = ParseBool(value, EnableBackup);
+                    else if (k == "panicbuttonkey") PanicButtonKey = ParseKey(value, PanicButtonKey);
+                    else if (k == "panicbuttonmodifierkey" || k == "panicbuttonmodifier") PanicButtonModifierKey = ParseModifierKey(value, PanicButtonModifierKey);
+                    else if (k == "groupbackupkey") GroupBackupKey = ParseKey(value, GroupBackupKey);
+                    else if (k == "groupbackupmodifierkey" || k == "groupbackupmodifier") GroupBackupModifierKey = ParseModifierKey(value, GroupBackupModifierKey);
+                    else if (k == "backupmenukey") BackupMenuKey = ParseKey(value, BackupMenuKey);
+                    else if (k == "backupmenumodifierkey" || k == "backupmenumodifier") BackupMenuModifierKey = ParseModifierKey(value, BackupMenuModifierKey);
+                    else if (k == "dismissbackupkey" || k == "dismissallbackupkey") DismissBackupKey = ParseKey(value, DismissBackupKey);
+                    else if (k == "panicbuttonunits" || k == "panicunits") PanicButtonUnits = Math.Max(1, Math.Min(6, ParseInt(value, PanicButtonUnits)));
+                    else if (k == "groupbackupunits" || k == "groupunits") GroupBackupUnits = Math.Max(1, Math.Min(6, ParseInt(value, GroupBackupUnits)));
+                    else if (k == "groupbackupcode3") GroupBackupCode3 = ParseBool(value, GroupBackupCode3);
+                    else if (k == "allowambientcommandeer" || k == "ambientcommandeer") AllowAmbientCommandeer = ParseBool(value, AllowAmbientCommandeer);
+                    else if (k == "allowfallbackspawning" || k == "fallbackspawning") AllowFallbackSpawning = ParseBool(value, AllowFallbackSpawning);
                     break;
 
                 case "features":
@@ -145,10 +232,23 @@ namespace Cadence.Core
                     if (k == "maxpatrolunits") MaxPatrolUnits = Math.Max(1, Math.Min(16, ParseInt(value, MaxPatrolUnits)));
                     else if (k == "maxtrafficstops") MaxTrafficStops = Math.Max(0, Math.Min(8, ParseInt(value, MaxTrafficStops)));
                     else if (k == "maxstationaryunits") MaxStationaryUnits = Math.Max(0, Math.Min(8, ParseInt(value, MaxStationaryUnits)));
+                    else if (k == "maxemergencyruns" || k == "maxemergency") MaxEmergencyRuns = Math.Max(0, Math.Min(8, ParseInt(value, MaxEmergencyRuns)));
                     else if (k == "maxpursuitunits") MaxPursuitUnits = Math.Max(1, Math.Min(12, ParseInt(value, MaxPursuitUnits)));
                     else if (k == "despawndistance") DespawnDistance = Math.Max(150.0f, Math.Min(1500.0f, ParseFloat(value, DespawnDistance)));
                     else if (k == "spawndistancemin") SpawnDistanceMin = Math.Max(30.0f, Math.Min(300.0f, ParseFloat(value, SpawnDistanceMin)));
                     else if (k == "spawndistancemax") SpawnDistanceMax = Math.Max(100.0f, Math.Min(600.0f, ParseFloat(value, SpawnDistanceMax)));
+                    break;
+
+                case "emergencyservices":
+                case "emergency":
+                    if (k == "enableemergencyvariety" || k == "enableemergencyrunvariety") EnableEmergencyVariety = ParseBool(value, EnableEmergencyVariety);
+                    else if (k == "allowpoliceruns" || k == "allowpolice") AllowPoliceRuns = ParseBool(value, AllowPoliceRuns);
+                    else if (k == "allowfireruns" || k == "allowfire") AllowFireRuns = ParseBool(value, AllowFireRuns);
+                    else if (k == "allowambulanceruns" || k == "allowambulance" || k == "allowemsruns") AllowAmbulanceRuns = ParseBool(value, AllowAmbulanceRuns);
+                    break;
+
+                case "jurisdiction":
+                    if (k == "highwaypatrolratio" || k == "highwayratio" || k == "statepatrolratio") HighwayPatrolRatio = Math.Max(0, Math.Min(100, ParseInt(value, HighwayPatrolRatio)));
                     break;
 
                 case "radar":
@@ -158,7 +258,8 @@ namespace Cadence.Core
                     break;
 
                 case "integration":
-                    if (k == "useultimatebackup") UseUltimateBackup = ParseBool(value, UseUltimateBackup);
+                    if (k == "useultimatebackup" || k == "ultimatebackup") UseUltimateBackup = ParseBool(value, UseUltimateBackup);
+                    else if (k == "fallback" || k == "allowfallback") AllowFallback = ParseBool(value, AllowFallback);
                     else if (k == "enableeupoutfits") EnableEupOutfits = ParseBool(value, EnableEupOutfits);
                     else if (k == "mutetrafficstopsiren") MuteTrafficStopSiren = ParseBool(value, MuteTrafficStopSiren);
                     break;
@@ -181,6 +282,41 @@ namespace Cadence.Core
                 return Keys.None;
             }
 
+            if (clean.Equals("pagedown", StringComparison.OrdinalIgnoreCase) || clean.Equals("pgdn", StringComparison.OrdinalIgnoreCase))
+            {
+                return Keys.PageDown;
+            }
+
+            if (clean.Equals("pageup", StringComparison.OrdinalIgnoreCase) || clean.Equals("pgup", StringComparison.OrdinalIgnoreCase))
+            {
+                return Keys.PageUp;
+            }
+
+            if (clean.Equals("enter", StringComparison.OrdinalIgnoreCase) || clean.Equals("return", StringComparison.OrdinalIgnoreCase))
+            {
+                return Keys.Enter;
+            }
+
+            if (clean.Equals("rcontrol", StringComparison.OrdinalIgnoreCase) || clean.Equals("rcontrolkey", StringComparison.OrdinalIgnoreCase) || clean.Equals("rightcontrol", StringComparison.OrdinalIgnoreCase))
+            {
+                return Keys.RControlKey;
+            }
+
+            if (clean.Equals("lcontrol", StringComparison.OrdinalIgnoreCase) || clean.Equals("lcontrolkey", StringComparison.OrdinalIgnoreCase) || clean.Equals("leftcontrol", StringComparison.OrdinalIgnoreCase))
+            {
+                return Keys.LControlKey;
+            }
+
+            if (clean.Equals("numpad0", StringComparison.OrdinalIgnoreCase) || clean.Equals("num0", StringComparison.OrdinalIgnoreCase))
+            {
+                return Keys.NumPad0;
+            }
+
+            if (clean.Equals("numpad1", StringComparison.OrdinalIgnoreCase) || clean.Equals("num1", StringComparison.OrdinalIgnoreCase))
+            {
+                return Keys.NumPad1;
+            }
+
             if (Enum.TryParse(clean, true, out Keys parsedKey))
             {
                 return parsedKey;
@@ -196,13 +332,19 @@ namespace Cadence.Core
             string clean = value.Trim();
             if (clean.Equals("0", StringComparison.OrdinalIgnoreCase) ||
                 clean.Equals("none", StringComparison.OrdinalIgnoreCase) ||
-                clean.Equals("disabled", StringComparison.OrdinalIgnoreCase))
+                clean.Equals("disabled", StringComparison.OrdinalIgnoreCase) ||
+                clean.Equals("false", StringComparison.OrdinalIgnoreCase) ||
+                clean.Equals("null", StringComparison.OrdinalIgnoreCase))
             {
                 return Keys.None;
             }
 
             if (clean.Equals("ctrl", StringComparison.OrdinalIgnoreCase)) clean = "Control";
             if (clean.Equals("alt", StringComparison.OrdinalIgnoreCase)) clean = "Menu";
+            if (clean.Equals("rcontrol", StringComparison.OrdinalIgnoreCase) || clean.Equals("rcontrolkey", StringComparison.OrdinalIgnoreCase) || clean.Equals("rctrl", StringComparison.OrdinalIgnoreCase) || clean.Equals("rightcontrol", StringComparison.OrdinalIgnoreCase)) return Keys.RControlKey;
+            if (clean.Equals("lcontrol", StringComparison.OrdinalIgnoreCase) || clean.Equals("lcontrolkey", StringComparison.OrdinalIgnoreCase) || clean.Equals("lctrl", StringComparison.OrdinalIgnoreCase) || clean.Equals("leftcontrol", StringComparison.OrdinalIgnoreCase)) return Keys.LControlKey;
+            if (clean.Equals("pagedown", StringComparison.OrdinalIgnoreCase) || clean.Equals("pgdn", StringComparison.OrdinalIgnoreCase)) return Keys.PageDown;
+            if (clean.Equals("pageup", StringComparison.OrdinalIgnoreCase) || clean.Equals("pgup", StringComparison.OrdinalIgnoreCase)) return Keys.PageUp;
 
             if (Enum.TryParse(clean, true, out Keys parsedMod))
             {

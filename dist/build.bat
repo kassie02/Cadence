@@ -79,7 +79,7 @@ if errorlevel 1 (
 
 :: Package output into clean zip archive using temporary staging
 echo.
-echo [PACKAGE] Assembling distribution release into Cadence_v1.0.0.zip...
+echo [PACKAGE] Assembling distribution release into Cadence_v1.1.0.zip...
 
 if exist "%STAGE%" rmdir /s /q "%STAGE%" >nul 2>nul
 mkdir "%STAGE%\plugins\LSPDFR" >nul 2>nul
@@ -104,36 +104,61 @@ if exist "%SRC%\Cadence.ini" (
 )
 echo   Staged plugins\LSPDFR\Cadence\Logs\
 
+if exist "%SRC%\Audio\PANIC_BUTTON.wav" (
+    mkdir "%STAGE%\plugins\LSPDFR\Cadence\Audio" >nul 2>nul
+    copy /y "%SRC%\Audio\PANIC_BUTTON.wav" "%STAGE%\plugins\LSPDFR\Cadence\Audio\PANIC_BUTTON.wav" >nul
+    echo   Staged plugins\LSPDFR\Cadence\Audio\PANIC_BUTTON.wav
+)
+
 :: Create README.txt in staging
 (
 echo ============================================================
-echo   Cadence v1.0.0 - Ambient Policing System for LSPDFR
+echo   Cadence v1.1.0 - Ambient Policing System for LSPDFR
 echo ============================================================
 echo.
 echo INSTALLATION:
 echo 1. Drag the "plugins" folder from this zip into your Grand Theft Auto V root folder.
-echo 2. Verify that Cadence.dll and Cadence.ini reside in:
-echo      Grand Theft Auto V\plugins\LSPDFR\
+echo 2. Verify that files reside in:
+echo      Grand Theft Auto V\plugins\LSPDFR\Cadence.dll
+echo      Grand Theft Auto V\plugins\LSPDFR\Cadence.ini
+echo      Grand Theft Auto V\plugins\LSPDFR\Cadence\Audio\PANIC_BUTTON.wav
+echo      Grand Theft Auto V\plugins\LSPDFR\Cadence\Logs\
 echo 3. Launch GTA V via RagePluginHook and go On Duty.
 echo.
-echo IN-GAME MENU:
-echo   Press F8 (configurable in Cadence.ini^) to open the Cadence menu.
+echo CONTROLS ^& KEYBINDINGS ^(DEFAULT^):
+echo   - Cadence Dashboard:   Q + PageDown  ^(MenuKey = PageDown, MenuModifierKey = Q^)
+echo   - Lean Backup Menu:    X + PageDown  ^(BackupMenuKey = PageDown, BackupMenuModifierKey = X^)
+echo   - Panic Button:        LControlKey + Z  ^(PanicButtonKey = Z, PanicButtonModifierKey = LControlKey^)
+echo   - Group Backup:        LControlKey + C  ^(GroupBackupKey = C, GroupBackupModifierKey = LControlKey^)
+echo   - Dismiss Backup:      Enter  ^(DismissBackupKey = Enter, hold ~1.2s^)
+echo.
+echo KEYBIND CONFIGURATION ^& DISABLING:
+echo   All keybinds are fully configurable in plugins\LSPDFR\Cadence.ini.
+echo   Setting any key or modifier to None, 0, Disabled, or false turns it off.
+echo.
+echo MASTER ACTIVATION TOGGLE:
+echo   To toggle or completely disable Cadence, set EnablePlugin = true/false
+echo   ^(or PluginActive = true/false^) under [General] in Cadence.ini.
+echo.
+echo AUDIO ASSETS:
+echo   plugins\LSPDFR\Cadence\Audio\PANIC_BUTTON.wav provides authentic dispatch
+echo   distress tones during Panic Button activation.
 echo.
 echo COMPATIBILITY:
 echo   Fully compatible with Ultimate Backup, StopThePed, and custom callout packs.
 ) > "%STAGE%\README.txt"
 
 :: Remove old zip before packaging
-if exist "%DIST%\Cadence_v1.0.0.zip" del /f /q "%DIST%\Cadence_v1.0.0.zip" >nul 2>nul
+if exist "%DIST%\Cadence_v1.1.0.zip" del /f /q "%DIST%\Cadence_v1.1.0.zip" >nul 2>nul
 
 :: Create clean release archive
 where tar >nul 2>nul
 if %errorlevel%==0 (
-    tar -a -c -f "%DIST%\Cadence_v1.0.0.zip" -C "%STAGE%" plugins README.txt
-    echo   Created release archive -^> dist\Cadence_v1.0.0.zip
+    tar -a -c -f "%DIST%\Cadence_v1.1.0.zip" -C "%STAGE%" plugins README.txt
+    echo   Created release archive -^> dist\Cadence_v1.1.0.zip
 ) else (
-    powershell -NoProfile -Command "Compress-Archive -Path '%STAGE%\*' -DestinationPath '%DIST%\Cadence_v1.0.0.zip' -Force"
-    echo   Created release archive via PowerShell -^> dist\Cadence_v1.0.0.zip
+    powershell -NoProfile -Command "Compress-Archive -Path '%STAGE%\*' -DestinationPath '%DIST%\Cadence_v1.1.0.zip' -Force"
+    echo   Created release archive via PowerShell -^> dist\Cadence_v1.1.0.zip
 )
 
 :: Clean up all temporary staging folders and loose files in dist
@@ -143,7 +168,7 @@ if exist "%DIST%\README.txt" del /f /q "%DIST%\README.txt" >nul 2>nul
 
 echo.
 echo ============================================================
-echo   [BUILD SUCCESS] Release archive ready: dist\Cadence_v1.0.0.zip
+echo   [BUILD SUCCESS] Release archive ready: dist\Cadence_v1.1.0.zip
 echo ============================================================
 echo.
 if not "%1"=="--nopause" pause

@@ -305,7 +305,7 @@ namespace Cadence.Features
 
                 if (Settings.UseUltimateBackup && UltimateBackupService.IsAvailable)
                 {
-                    bool isHighway = spawnPos.Y > 1000f;
+                    bool isHighway = WorldUtils.ShouldSpawnHighwayUnit(spawnPos);
                     var ubResult = isHighway
                         ? UltimateBackupService.SpawnStatePatrol(spawnPos, 1)
                         : UltimateBackupService.SpawnLocalPatrol(spawnPos, 1);
@@ -320,8 +320,15 @@ namespace Cadence.Features
 
                 if (cruiser == null || !cruiser.Exists() || driver == null || !driver.Exists())
                 {
+                    if (Settings.UseUltimateBackup && !Settings.AllowFallback)
+                    {
+                        Logger.Debug("PursuitFeature", $"Ultimate Backup did not return a cruiser for pursuit at {spawnPos}. Fallback is strictly disabled (Fallback=false). Aborting spawn.");
+                        return;
+                    }
+
                     string vehicleModel = ZoneSpawnData.GetDefaultPoliceVehicleForPosition(spawnPos);
-                    var nativeResult = UltimateBackupService.SpawnNativePatrolUnit(spawnPos, spawnHeading, vehicleModel, "s_m_y_cop_01");
+                    string copModel = ZoneSpawnData.GetDefaultCopPedModelForPosition(spawnPos);
+                    var nativeResult = UltimateBackupService.SpawnNativePatrolUnit(spawnPos, spawnHeading, vehicleModel, copModel);
                     if (nativeResult != null && nativeResult.Item1 != null && nativeResult.Item1.Exists() && nativeResult.Item2 != null && nativeResult.Item2.Count > 0)
                     {
                         cruiser = nativeResult.Item1;
@@ -351,10 +358,16 @@ namespace Cadence.Features
 
                 return nearbyVehicles
                     .OfType<Vehicle>()
-                    .Where(v => v != null && v.Exists() && !v.IsDead && v.IsPoliceVehicle)
+                    .Where(v => v != null && v.Exists() && !v.IsDead && v.IsDriveable)
                     .Where(v => v.Driver != null && v.Driver.Exists() && v.Driver.IsAlive && !v.Driver.IsPlayer && v.Driver != Game.LocalPlayer?.Character)
                     .Where(v =>
                     {
+                        bool isPolice = v.IsPoliceVehicle || v.Model.IsLawEnforcementVehicle ||
+                                        PatrolFeature.IsActiveCruiser(v) || StationaryFeature.IsActiveCruiser(v) ||
+                                        TrafficStopFeature.IsActiveCruiser(v) || ResponseFeature.IsActiveCruiser(v) ||
+                                        Functions.IsPedACop(v.Driver) || v.Driver.RelationshipGroup == "COP";
+                        if (!isPolice) return false;
+
                         lock (_syncLock)
                         {
                             if (_activeSessions.Any(s => s.Cruiser == v)) return false;
@@ -376,6 +389,14 @@ namespace Cadence.Features
         {
             try
             {
+                if (!wasSpawned)
+                {
+                    PatrolFeature.RelinquishCruiser(cruiser);
+                    StationaryFeature.RelinquishCruiser(cruiser);
+                    TrafficStopFeature.RelinquishCruiser(cruiser);
+                    ResponseFeature.RelinquishCruiser(cruiser);
+                }
+
                 string callsign = GenerateCallsign();
 
                 cruiser.MakePersistent();
@@ -406,7 +427,7 @@ namespace Cadence.Features
                     _activeSessions.Add(session);
                     _lastJoinTime = Game.GameTime;
                 }
-
+                SessionMetrics.IncrementPursuit();
                 Logger.Info($"[PursuitFeature] Ambient cruiser {callsign} successfully drafted into pursuit (Total active: {_activeSessions.Count}/{Settings.MaxPursuitUnits}).");
             }
             catch (Exception ex)
