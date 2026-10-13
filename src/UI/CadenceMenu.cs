@@ -6,6 +6,7 @@ using Rage.Native;
 using RAGENativeUI;
 using RAGENativeUI.Elements;
 using Cadence.Core;
+using Cadence.Common;
 
 namespace Cadence.UI
 {
@@ -33,6 +34,7 @@ namespace Cadence.UI
         private static UIMenuItem _emergencyRunCountItem;
         private static UIMenuItem _pursuitCountItem;
         private static UIMenuItem _combatCountItem;
+        private static UIMenuItem _backupCountItem;
         private static UIMenuItem _totalCountItem;
 
         // Submenu 2: Feature Toggles
@@ -42,6 +44,7 @@ namespace Cadence.UI
         private static UIMenuCheckboxItem _emergencyRunsToggle;
         private static UIMenuCheckboxItem _pursuitToggle;
         private static UIMenuCheckboxItem _threatToggle;
+        private static UIMenuCheckboxItem _backupToggle;
 
         // Submenu 3: Settings & Customization
         private static UIMenuListItem _presetItem;
@@ -58,30 +61,32 @@ namespace Cadence.UI
         private static UIMenuItem _spawnPulloverItem;
         private static UIMenuItem _spawnStationaryItem;
         private static UIMenuItem _triggerEmergencyRunItem;
+        private static UIMenuItem _triggerPanicItem;
+        private static UIMenuItem _triggerGroupBackupItem;
 
         // Top-Level Actions
         private static UIMenuItem _purgeAllItem;
         private static UIMenuItem _reloadConfigItem;
 
         // Option Value Mappings
-        private static readonly object[] PresetLabels = new object[] { "Realistic (Default)", "Chaos (Living City)" };
+        private static readonly object[] PresetLabels = new object[] { "Realistic", "Chaos" };
 
         private static readonly int[] PatrolLimitValues = new int[] { 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16 };
-        private static readonly object[] PatrolLimitLabels = new object[] { "1 Cruiser", "2 Cruisers", "3 Cruisers", "4 Cruisers (Default)", "5 Cruisers", "6 Cruisers", "7 Cruisers", "8 Cruisers", "10 Cruisers", "12 Cruisers", "14 Cruisers", "16 Cruisers" };
+        private static readonly object[] PatrolLimitLabels = new object[] { "1", "2", "3", "4 (Def)", "5", "6", "7", "8", "10", "12", "14", "16" };
 
         private static readonly int[] StopLimitValues = new int[] { 0, 1, 2, 3, 4, 5, 6, 8 };
-        private static readonly object[] StopLimitLabels = new object[] { "0 (Disabled)", "1 Stop", "2 Stops (Default)", "3 Stops", "4 Stops", "5 Stops", "6 Stops", "8 Stops" };
+        private static readonly object[] StopLimitLabels = new object[] { "Off", "1", "2 (Def)", "3", "4", "5", "6", "8" };
 
         private static readonly int[] StationaryLimitValues = new int[] { 0, 1, 2, 3, 4, 5, 6, 8 };
-        private static readonly object[] StationaryLimitLabels = new object[] { "0 (Disabled)", "1 Unit", "2 Units (Default)", "3 Units", "4 Units", "5 Units", "6 Units", "8 Units" };
+        private static readonly object[] StationaryLimitLabels = new object[] { "Off", "1", "2 (Def)", "3", "4", "5", "6", "8" };
 
         private static readonly int[] EmergencyLimitValues = new int[] { 0, 1, 2, 3, 4, 5, 6, 8 };
-        private static readonly object[] EmergencyLimitLabels = new object[] { "0 (Disabled)", "1 Run", "2 Runs (Default)", "3 Runs", "4 Runs", "5 Runs", "6 Runs", "8 Runs" };
+        private static readonly object[] EmergencyLimitLabels = new object[] { "Off", "1", "2 (Def)", "3", "4", "5", "6", "8" };
 
-        private static readonly object[] EmergencyVarietyLabels = new object[] { "Police, Fire & EMS (Default)", "Police & EMS", "Police & Fire", "Police Only" };
+        private static readonly object[] EmergencyVarietyLabels = new object[] { "All (Def)", "Police/EMS", "Police/Fire", "Police Only" };
 
         private static readonly int[] HighwayRatioValues = new int[] { 50, 75, 25, 0, 100 };
-        private static readonly object[] HighwayRatioLabels = new object[] { "Balanced (50% Fwy / 50% City)", "Heavy Highway (75% Fwy / 25% City)", "Heavy Local (25% Fwy / 75% City)", "Only Local (0% Highway)", "Only Highway (100% Highway)" };
+        private static readonly object[] HighwayRatioLabels = new object[] { "Balanced (50/50)", "Highway (75/25)", "Local (25/75)", "Local (0% Fwy)", "Highway (100%)" };
 
         // Watchdog & State
         private static GameFiber _watchdogFiber;
@@ -150,11 +155,13 @@ namespace Cadence.UI
                 // Keybind Watchdog: Strictly disabled if Settings.MenuKey == Keys.None (0 / None / Disabled)
                 if (Settings.MenuKey != Keys.None)
                 {
-                    bool modPressed = Settings.MenuModifierKey == Keys.None || Game.IsKeyDownRightNow(Settings.MenuModifierKey);
-                    if (modPressed && Game.IsKeyDown(Settings.MenuKey))
+                    if (InputHelper.IsKeyComboPressed(Settings.MenuKey, Settings.MenuModifierKey))
                     {
                         ToggleVisibility();
                     }
+
+                    // Suppress GTA V native cover attempt while holding Q as menu modifier or key
+                    InputHelper.SuppressCoverIfQHeld(Settings.MenuKey, Settings.MenuModifierKey);
                 }
 
                 if (IsVisible)
@@ -254,7 +261,8 @@ namespace Cadence.UI
                 "StationaryFeature",
                 "ResponseFeature",
                 "PursuitFeature",
-                "AssistFeature"
+                "AssistFeature",
+                "BackupFeature"
             };
 
             foreach (string feat in featureNames)
@@ -319,7 +327,8 @@ namespace Cadence.UI
                 "StationaryFeature",
                 "ResponseFeature",
                 "PursuitFeature",
-                "AssistFeature"
+                "AssistFeature",
+                "BackupFeature"
             };
 
             foreach (string feat in featureNames)
@@ -425,6 +434,7 @@ namespace Cadence.UI
             _emergencyRunCountItem = new UIMenuItem("Emergency Runs", "Units responding Code 2 or Code 3 to background incidents.");
             _pursuitCountItem = new UIMenuItem("Pursuit Units", "Ambient cruisers drafted to assist in active police chases.");
             _combatCountItem = new UIMenuItem("Combat Units", "Officers engaging hostile threats or active gunfire.");
+            _backupCountItem = new UIMenuItem("Active Backup Units", "Responding or on-scene backup units assisting the player.");
             _totalCountItem = new UIMenuItem("Total Active Cadence Entities", "Cumulative count of all living Cadence officers and cruisers.");
 
             _telemetryMenu.AddItem(_patrolCountItem);
@@ -433,6 +443,7 @@ namespace Cadence.UI
             _telemetryMenu.AddItem(_emergencyRunCountItem);
             _telemetryMenu.AddItem(_pursuitCountItem);
             _telemetryMenu.AddItem(_combatCountItem);
+            _telemetryMenu.AddItem(_backupCountItem);
             _telemetryMenu.AddItem(_totalCountItem);
             _telemetryMenu.RefreshIndex();
 
@@ -451,6 +462,7 @@ namespace Cadence.UI
             _emergencyRunsToggle = new UIMenuCheckboxItem("Emergency Runs", Settings.EnableEmergencyRuns, "Autonomous Code 2/3 background emergency runs.");
             _pursuitToggle = new UIMenuCheckboxItem("Pursuit Drafting", Settings.EnablePursuitDrafting, "Drafting nearby ambient cruisers into active pursuits.");
             _threatToggle = new UIMenuCheckboxItem("Threat Defense", Settings.EnableThreatDefense, "Tactical officer defense when gunfire or threats erupt.");
+            _backupToggle = new UIMenuCheckboxItem("Ambient Backup System", Settings.EnableBackup, "Panic button, group backup, and lean backup menu responses.");
 
             _togglesMenu.AddItem(_patrolToggle);
             _togglesMenu.AddItem(_trafficStopsToggle);
@@ -458,6 +470,7 @@ namespace Cadence.UI
             _togglesMenu.AddItem(_emergencyRunsToggle);
             _togglesMenu.AddItem(_pursuitToggle);
             _togglesMenu.AddItem(_threatToggle);
+            _togglesMenu.AddItem(_backupToggle);
             _togglesMenu.RefreshIndex();
 
             // Submenu 3: Settings & Customization
@@ -474,8 +487,8 @@ namespace Cadence.UI
             _maxStopsItem = new UIMenuListItem("Max Traffic Stops", "Maximum roadside traffic stops and citations active at one time.", StopLimitLabels);
             _maxStationaryItem = new UIMenuListItem("Max Speed Traps", "Maximum parked speed traps and stationary watch units.", StationaryLimitLabels);
             _maxEmergencyItem = new UIMenuListItem("Max Emergency Runs", "Maximum autonomous background emergency runs responding concurrently.", EmergencyLimitLabels);
-            _emergencyVarietyItem = new UIMenuListItem("Emergency Run Variety", "Permitted emergency agency types for autonomous background runs.", EmergencyVarietyLabels);
-            _jurisdictionBalanceItem = new UIMenuListItem("Highway vs City Balance", "Ratio between State / Highway Patrol and Local Police near freeways.", HighwayRatioLabels);
+            _emergencyVarietyItem = new UIMenuListItem("Emergency Variety", "Permitted emergency agency types for autonomous background runs.", EmergencyVarietyLabels);
+            _jurisdictionBalanceItem = new UIMenuListItem("Highway Ratio", "Ratio between State / Highway Patrol and Local Police near freeways.", HighwayRatioLabels);
             _fallbackToggle = new UIMenuCheckboxItem("Allow Native Fallback", Settings.AllowFallback, "Permit vanilla GTA vehicle spawns if Ultimate Backup is unavailable or returns null.");
 
             _settingsMenu.AddItem(_presetItem);
@@ -501,11 +514,15 @@ namespace Cadence.UI
             _spawnPulloverItem = new UIMenuItem("Spawn Roadside Pullover", "Spawns a roadside pullover traffic stop at a safe shoulder spot.");
             _spawnStationaryItem = new UIMenuItem("Spawn Radar Speed Trap", "Spawns a parked speed trap / stationary watch unit nearby.");
             _triggerEmergencyRunItem = new UIMenuItem("Trigger Code 3 Emergency Run", "Dispatches an ambient cruiser Code 3 to an incident node.");
+            _triggerPanicItem = new UIMenuItem("Trigger Panic Backup", "Immediately triggers high-priority emergency panic backup.");
+            _triggerGroupBackupItem = new UIMenuItem("Trigger Group Backup", "Immediately dispatches multi-unit tactical group reinforcement.");
 
             _testingMenu.AddItem(_spawnPatrolItem);
             _testingMenu.AddItem(_spawnPulloverItem);
             _testingMenu.AddItem(_spawnStationaryItem);
             _testingMenu.AddItem(_triggerEmergencyRunItem);
+            _testingMenu.AddItem(_triggerPanicItem);
+            _testingMenu.AddItem(_triggerGroupBackupItem);
             _testingMenu.RefreshIndex();
 
             // Top-Level Actions on Main Menu
@@ -647,6 +664,12 @@ namespace Cadence.UI
                     ToggleFeature("AssistFeature", isChecked);
                     Game.DisplayNotification($"~b~Cadence~s~: Threat Defense {(isChecked ? "~g~Resumed~s~" : "~o~Paused~s~")}.");
                 }
+                else if (item == _backupToggle)
+                {
+                    Settings.EnableBackup = isChecked;
+                    ToggleFeature("BackupFeature", isChecked);
+                    Game.DisplayNotification($"~b~Cadence~s~: Ambient Backup System {(isChecked ? "~g~Resumed~s~" : "~o~Paused~s~")}.");
+                }
                 UpdateTelemetry();
             };
 
@@ -677,6 +700,18 @@ namespace Cadence.UI
                     bool ok = InvokeFeatureSpawn("ResponseFeature", "TriggerTestRun");
                     if (ok) Game.DisplayNotification("~b~Cadence~s~: Code 3 emergency run ~g~triggered~s~.");
                     else Game.DisplayNotification("~b~Cadence~s~: ~r~Failed~s~ to trigger emergency run.");
+                }
+                else if (item == _triggerPanicItem)
+                {
+                    bool ok = InvokeFeatureSpawn("BackupFeature", "TriggerPanicButton");
+                    if (ok) Game.DisplayNotification("~b~Cadence~s~: Panic backup ~r~triggered~s~.");
+                    else Game.DisplayNotification("~b~Cadence~s~: ~r~Failed~s~ to trigger panic backup.");
+                }
+                else if (item == _triggerGroupBackupItem)
+                {
+                    bool ok = InvokeFeatureSpawn("BackupFeature", "TriggerGroupBackup");
+                    if (ok) Game.DisplayNotification("~b~Cadence~s~: Group backup ~y~triggered~s~.");
+                    else Game.DisplayNotification("~b~Cadence~s~: ~r~Failed~s~ to trigger group backup.");
                 }
                 UpdateTelemetry();
             };
@@ -709,7 +744,8 @@ namespace Cadence.UI
             int resp = GetFeatureCount("ResponseFeature");
             int pursuit = GetFeatureCount("PursuitFeature");
             int combat = GetFeatureCount("AssistFeature");
-            int total = patrol + stops + stat + resp + pursuit + combat;
+            int backup = GetFeatureCount("BackupFeature");
+            int total = patrol + stops + stat + resp + pursuit + combat + backup;
 
             if (_patrolCountItem != null) _patrolCountItem.RightLabel = $"~b~{patrol}~s~";
             if (_trafficStopCountItem != null) _trafficStopCountItem.RightLabel = $"~y~{stops}~s~";
@@ -717,6 +753,7 @@ namespace Cadence.UI
             if (_emergencyRunCountItem != null) _emergencyRunCountItem.RightLabel = $"~r~{resp}~s~";
             if (_pursuitCountItem != null) _pursuitCountItem.RightLabel = $"~o~{pursuit}~s~";
             if (_combatCountItem != null) _combatCountItem.RightLabel = $"~r~{combat}~s~";
+            if (_backupCountItem != null) _backupCountItem.RightLabel = $"~g~{backup}~s~";
             if (_totalCountItem != null) _totalCountItem.RightLabel = $"~w~{total}~s~";
         }
 
@@ -728,6 +765,7 @@ namespace Cadence.UI
             if (_emergencyRunsToggle != null) _emergencyRunsToggle.Checked = Settings.EnableEmergencyRuns;
             if (_pursuitToggle != null) _pursuitToggle.Checked = Settings.EnablePursuitDrafting;
             if (_threatToggle != null) _threatToggle.Checked = Settings.EnableThreatDefense;
+            if (_backupToggle != null) _backupToggle.Checked = Settings.EnableBackup;
         }
 
         private static int GetClosestIndex(int[] array, int target)
@@ -784,7 +822,7 @@ namespace Cadence.UI
                 }
                 finally
                 {
-                    GameFiber.Yield();
+                    GameFiber.Sleep(IsVisible ? 0 : 25);
                 }
             }
         }

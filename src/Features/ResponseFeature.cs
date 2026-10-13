@@ -45,7 +45,7 @@ namespace Cadence.Features
             {
                 if (_isRunning) return;
                 _isRunning = true;
-                _lastAutonomousRunTime = Game.GameTime + 8000;
+                _lastAutonomousRunTime = Game.GameTime + 105000;
 
                 // Hook LSPDFR rejected callout event
                 try
@@ -58,7 +58,7 @@ namespace Cadence.Features
                     Logger.Error("[ResponseFeature] Failed to hook OnCalloutNotAccepted", ex);
                 }
 
-                Logger.Info("[ResponseFeature] Starting response background fiber.");
+                Logger.Info("[ResponseFeature] Starting response background fiber (initial run staggered at T+105s).");
                 _responseFiber = GameFiber.StartNew(ResponseProcessLoop, "Cadence - Response Feature Fiber");
             }
         }
@@ -148,6 +148,52 @@ namespace Cadence.Features
             {
                 _activeUnits.RemoveAll(u => u == null || !u.IsValid());
                 return _activeUnits.Count;
+            }
+        }
+
+        /// <summary>
+        /// Relinquishes control of a response cruiser to an external system (e.g. BackupFeature).
+        /// Safely deletes radar blip, releases handbrake, clears tasks, and drops from internal tracking.
+        /// </summary>
+        public static bool RelinquishCruiser(Vehicle cruiser)
+        {
+            if (cruiser == null || !cruiser.Exists()) return false;
+
+            lock (_syncLock)
+            {
+                for (int i = _activeUnits.Count - 1; i >= 0; i--)
+                {
+                    ResponseUnitInstance unit = _activeUnits[i];
+                    if (unit != null && unit.Cruiser == cruiser)
+                    {
+                        Logger.Info($"[ResponseFeature] Relinquishing cruiser 0x{cruiser.Handle:X} ({unit.Callsign}) to external feature.");
+                        unit.Relinquish();
+                        _activeUnits.RemoveAt(i);
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        public static bool IsActiveCruiser(Vehicle cruiser)
+        {
+            if (cruiser == null || !cruiser.Exists()) return false;
+            lock (_syncLock)
+            {
+                return _activeUnits.Any(u => u != null && u.Cruiser == cruiser);
+            }
+        }
+
+        public static List<Vehicle> GetActiveCruisers()
+        {
+            lock (_syncLock)
+            {
+                return _activeUnits
+                    .Where(u => u != null && u.IsValid() && u.Cruiser != null && u.Cruiser.Exists())
+                    .Select(u => u.Cruiser)
+                    .ToList();
             }
         }
 
@@ -428,6 +474,10 @@ namespace Cadence.Features
                 Vehicle candidateVeh = FindIdleAmbientPoliceVehicle(playerPos, targetPos);
                 if (candidateVeh != null && candidateVeh.Exists())
                 {
+                    PatrolFeature.RelinquishCruiser(candidateVeh);
+                    StationaryFeature.RelinquishCruiser(candidateVeh);
+                    TrafficStopFeature.RelinquishCruiser(candidateVeh);
+
                     Ped driver = candidateVeh.Driver;
                     if (driver != null && driver.Exists() && driver.IsAlive)
                     {
@@ -511,28 +561,42 @@ namespace Cadence.Features
             try
             {
                 string callsign = $"MEDIC-{_rand.Next(1, 99):D2}";
-                Model vModel = new Model("ambulance");
-                Model pModel = new Model("s_m_m_paramedic_01");
+                Vehicle amb = null;
+                Ped driver = null;
+                Ped passenger = null;
 
-                vModel.LoadAndWait();
-                pModel.LoadAndWait();
+                if (Settings.UseUltimateBackup && UltimateBackupService.IsAvailable)
+                {
+                    var ubResult = UltimateBackupService.SpawnAmbulanceUnit(spawnPos, 2);
+                    if (ubResult != null && ubResult.Item1 != null && ubResult.Item1.Exists() && ubResult.Item2 != null && ubResult.Item2.Count > 0)
+                    {
+                        amb = ubResult.Item1;
+                        driver = ubResult.Item2[0];
+                        if (ubResult.Item2.Count > 1) passenger = ubResult.Item2[1];
+                    }
+                }
 
-                Vehicle amb = new Vehicle(vModel, spawnPos, spawnHeading);
-                amb.MakePersistent();
+                if (amb == null || !amb.Exists() || driver == null || !driver.Exists())
+                {
+                    if (Settings.UseUltimateBackup && !Settings.AllowFallback)
+                    {
+                        Logger.Debug("ResponseFeature", $"Ultimate Backup did not return ambulance and Fallback is disabled (Fallback=false). Aborting ambulance spawn.");
+                        return null;
+                    }
+
+                    var nativeResult = UltimateBackupService.SpawnNativeAmbulanceUnit(spawnPos, spawnHeading);
+                    if (nativeResult != null && nativeResult.Item1 != null && nativeResult.Item1.Exists() && nativeResult.Item2 != null && nativeResult.Item2.Count > 0)
+                    {
+                        amb = nativeResult.Item1;
+                        driver = nativeResult.Item2[0];
+                    }
+                }
+
+                if (amb == null || !amb.Exists() || driver == null || !driver.Exists()) return null;
+
                 amb.Heading = spawnHeading;
-                amb.IsEngineOn = true;
-                try { amb.PlaceOnGroundProperly(); } catch { }
                 WorldUtils.SecureEntityGround(amb);
-
-                Ped driver = new Ped(pModel, spawnPos, spawnHeading);
-                driver.MakePersistent();
-                driver.WarpIntoVehicle(amb, -1);
-                driver.BlockPermanentEvents = false;
-
-                vModel.Dismiss();
-                pModel.Dismiss();
-
-                return SetupResponseUnit(amb, driver, null, destination, true, callsign, EmergencyServiceType.Ambulance);
+                return SetupResponseUnit(amb, driver, passenger, destination, true, callsign, EmergencyServiceType.Ambulance);
             }
             catch (Exception ex)
             {
@@ -546,28 +610,42 @@ namespace Cadence.Features
             try
             {
                 string callsign = $"ENGINE-{_rand.Next(1, 99):D2}";
-                Model vModel = new Model("firetruk");
-                Model pModel = new Model("s_m_y_fireman_01");
+                Vehicle fire = null;
+                Ped driver = null;
+                Ped passenger = null;
 
-                vModel.LoadAndWait();
-                pModel.LoadAndWait();
+                if (Settings.UseUltimateBackup && UltimateBackupService.IsAvailable)
+                {
+                    var ubResult = UltimateBackupService.SpawnFireTruckUnit(spawnPos, 2);
+                    if (ubResult != null && ubResult.Item1 != null && ubResult.Item1.Exists() && ubResult.Item2 != null && ubResult.Item2.Count > 0)
+                    {
+                        fire = ubResult.Item1;
+                        driver = ubResult.Item2[0];
+                        if (ubResult.Item2.Count > 1) passenger = ubResult.Item2[1];
+                    }
+                }
 
-                Vehicle fire = new Vehicle(vModel, spawnPos, spawnHeading);
-                fire.MakePersistent();
+                if (fire == null || !fire.Exists() || driver == null || !driver.Exists())
+                {
+                    if (Settings.UseUltimateBackup && !Settings.AllowFallback)
+                    {
+                        Logger.Debug("ResponseFeature", $"Ultimate Backup did not return fire truck and Fallback is disabled (Fallback=false). Aborting fire truck spawn.");
+                        return null;
+                    }
+
+                    var nativeResult = UltimateBackupService.SpawnNativeFireUnit(spawnPos, spawnHeading);
+                    if (nativeResult != null && nativeResult.Item1 != null && nativeResult.Item1.Exists() && nativeResult.Item2 != null && nativeResult.Item2.Count > 0)
+                    {
+                        fire = nativeResult.Item1;
+                        driver = nativeResult.Item2[0];
+                    }
+                }
+
+                if (fire == null || !fire.Exists() || driver == null || !driver.Exists()) return null;
+
                 fire.Heading = spawnHeading;
-                fire.IsEngineOn = true;
-                try { fire.PlaceOnGroundProperly(); } catch { }
                 WorldUtils.SecureEntityGround(fire);
-
-                Ped driver = new Ped(pModel, spawnPos, spawnHeading);
-                driver.MakePersistent();
-                driver.WarpIntoVehicle(fire, -1);
-                driver.BlockPermanentEvents = false;
-
-                vModel.Dismiss();
-                pModel.Dismiss();
-
-                return SetupResponseUnit(fire, driver, null, destination, true, callsign, EmergencyServiceType.Fire);
+                return SetupResponseUnit(fire, driver, passenger, destination, true, callsign, EmergencyServiceType.Fire);
             }
             catch (Exception ex)
             {
@@ -590,10 +668,10 @@ namespace Cadence.Features
                 cruiser.IsSirenOn = true;
                 cruiser.IsSirenSilent = !isCode3;
 
-                // High speed emergency driving
+                // High speed emergency driving using long-range task
                 float targetSpeed = isCode3 ? 32.0f : 24.0f; // ~71 mph vs ~53 mph
                 NativeFunction.Natives.SET_VEHICLE_FORWARD_SPEED(cruiser, 12.0f);
-                driver.Tasks.DriveToPosition(cruiser, destination, targetSpeed, NativeTasks.EmergencyFlags, 9.0f);
+                NativeTasks.TaskLongRangeEmergencyDrive(driver, cruiser, destination, targetSpeed, 15.0f);
 
                 // Attach Red flashing radar blip
                 string blipLabel = serviceType == EmergencyServiceType.Ambulance ? $"{callsign} [EMS]" :
@@ -621,13 +699,18 @@ namespace Cadence.Features
 
                 foreach (Entity ent in nearbyVehicles)
                 {
-                    if (ent is Vehicle veh && veh.Exists() && !veh.IsDead && veh.IsPoliceVehicle)
+                    if (ent is Vehicle veh && veh.Exists() && !veh.IsDead && veh.IsDriveable)
                     {
                         Ped drv = veh.Driver;
                         if (drv == null || !drv.Exists() || !drv.IsAlive || drv.IsPlayer || drv == Game.LocalPlayer?.Character)
                         {
                             continue;
                         }
+
+                        bool isPolice = veh.IsPoliceVehicle || veh.Model.IsLawEnforcementVehicle ||
+                                        PatrolFeature.IsActiveCruiser(veh) || StationaryFeature.IsActiveCruiser(veh) ||
+                                        Functions.IsPedACop(drv) || drv.RelationshipGroup == "COP";
+                        if (!isPolice) continue;
 
                         // Ensure not already tracked in active response units
                         lock (_syncLock)
@@ -811,7 +894,7 @@ namespace Cadence.Features
                                 if (Cruiser.Speed < 1.0f && Driver.IsInVehicle(Cruiser, false))
                                 {
                                     float speed = IsCode3 ? 30.0f : 22.0f;
-                                    Driver.Tasks.DriveToPosition(Cruiser, Destination, speed, NativeTasks.EmergencyFlags, 9.0f);
+                                    NativeTasks.TaskLongRangeEmergencyDrive(Driver, Cruiser, Destination, speed, 15.0f);
                                 }
                             }
                         }
@@ -850,6 +933,36 @@ namespace Cadence.Features
                     BlipService.TransitionToStationary(RadarBlip, Callsign);
                 }
                 catch { }
+            }
+
+            public void Relinquish()
+            {
+                BlipService.SafeDeleteBlip(ref RadarBlip);
+                try
+                {
+                    if (Cruiser != null && Cruiser.Exists())
+                    {
+                        NativeFunction.Natives.SET_VEHICLE_HANDBRAKE(Cruiser, false);
+                    }
+                }
+                catch { }
+
+                try
+                {
+                    if (Driver != null && Driver.Exists())
+                    {
+                        Driver.Tasks.Clear();
+                        Driver.BlockPermanentEvents = false;
+                    }
+                    if (Passenger != null && Passenger.Exists())
+                    {
+                        Passenger.Tasks.Clear();
+                        Passenger.BlockPermanentEvents = false;
+                    }
+                }
+                catch { }
+
+                State = ResponseState.Finished;
             }
 
             public void Dispose(bool immediateDelete)

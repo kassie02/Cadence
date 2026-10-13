@@ -43,9 +43,9 @@ namespace Cadence.Features
             {
                 if (_isRunning) return;
                 _isRunning = true;
-                _lastSpawnAttemptTime = Game.GameTime + 8000;
+                _lastSpawnAttemptTime = Game.GameTime + 75000;
 
-                Logger.Info("[TrafficStopFeature] Starting roadside traffic stop background fiber.");
+                Logger.Info("[TrafficStopFeature] Starting roadside traffic stop background fiber (initial spawn staggered at T+75s).");
                 _trafficStopFiber = GameFiber.StartNew(TrafficStopProcessLoop, "Cadence - Traffic Stop Feature Fiber");
             }
         }
@@ -91,23 +91,20 @@ namespace Cadence.Features
                 // Attempt to find closest curated shoulder spot within 500m
                 if (!ZoneSpawnData.FindBestPulloverSpot(playerPos, 50.0f, 500.0f, out spotPos, out spotHeading))
                 {
-                    // Fallback to closest street shoulder forward of player
+                    // Fallback to roadside shoulder forward of player on local streets (never freeway centerlines)
                     Vector3 searchAhead = playerPos + player.ForwardVector * 45.0f;
-                    if (WorldUtils.GetSafeStreetPosition(searchAhead, 1, out Vector3 stPos, out float stH))
+                    if (!WorldUtils.IsHighway(searchAhead) && WorldUtils.GetSafeStreetPosition(searchAhead, 1, out Vector3 stPos, out float stH))
                     {
-                        spotPos = stPos;
+                        float rad = stH * (float)(Math.PI / 180.0);
+                        Vector3 rightDir = new Vector3((float)Math.Cos(rad), (float)Math.Sin(rad), 0f);
+                        spotPos = stPos + rightDir * 3.6f;
                         spotHeading = stH;
-                    }
-                    else
-                    {
-                        spotPos = World.GetNextPositionOnStreet(searchAhead);
-                        spotHeading = player.Heading;
                     }
                 }
 
                 if (spotPos == Vector3.Zero || WorldUtils.IsSubterraneanOrVoid(spotPos))
                 {
-                    Logger.Warn("[TrafficStopFeature] Could not find valid coordinates for test traffic stop.");
+                    Logger.Warn("[TrafficStopFeature] Could not find safe roadside coordinates for test traffic stop.");
                     return false;
                 }
 
@@ -139,12 +136,73 @@ namespace Cadence.Features
             }
         }
 
+        /// <summary>
+        /// Relinquishes control of a traffic stop cruiser to an external system (e.g. BackupFeature).
+        /// </summary>
+        public static bool RelinquishCruiser(Vehicle cruiser)
+        {
+            if (cruiser == null || !cruiser.Exists()) return false;
+
+            lock (_syncLock)
+            {
+                for (int i = _activeStops.Count - 1; i >= 0; i--)
+                {
+                    var stop = _activeStops[i];
+                    if (stop != null && (stop.Cruiser == cruiser || (stop.Officer != null && stop.Officer.Exists() && stop.Officer.CurrentVehicle == cruiser)))
+                    {
+                        Logger.Info($"[TrafficStopFeature] Relinquishing cruiser 0x{cruiser.Handle:X} ({stop.Callsign}) to external feature.");
+                        stop.Relinquish();
+                        _activeStops.RemoveAt(i);
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Retrieves the designated officer assigned to the specified traffic stop cruiser, if active.
+        /// </summary>
+        public static Ped GetAssignedOfficer(Vehicle cruiser)
+        {
+            if (cruiser == null || !cruiser.Exists()) return null;
+            lock (_syncLock)
+            {
+                var stop = _activeStops.FirstOrDefault(s => s != null && s.Cruiser == cruiser);
+                if (stop != null && stop.Officer != null && stop.Officer.Exists() && stop.Officer.IsAlive)
+                {
+                    return stop.Officer;
+                }
+            }
+            return null;
+        }
+
         public static int GetActiveCount()
         {
             lock (_syncLock)
             {
                 _activeStops.RemoveAll(s => s == null || !s.IsValid());
                 return _activeStops.Count;
+            }
+        }
+
+        public static bool IsActiveCruiser(Vehicle cruiser)
+        {
+            if (cruiser == null || !cruiser.Exists()) return false;
+            lock (_syncLock)
+            {
+                return _activeStops.Any(s => s != null && (s.Cruiser == cruiser || (s.Officer != null && s.Officer.Exists() && s.Officer.CurrentVehicle == cruiser)));
+            }
+        }
+
+        public static List<Vehicle> GetActiveCruisers()
+        {
+            lock (_syncLock)
+            {
+                return _activeStops
+                    .Where(s => s != null && s.IsValid() && s.Cruiser != null && s.Cruiser.Exists())
+                    .Select(s => s.Cruiser)
+                    .ToList();
             }
         }
 
@@ -245,17 +303,17 @@ namespace Cadence.Features
                 return;
             }
 
-            // Spawn attempt pacing: check every 20 seconds (10s in Chaos mode)
+            // Spawn attempt pacing: check every 30-45 seconds (15s in Chaos mode)
             uint now = Game.GameTime;
-            uint cooldown = Settings.ChaosMode ? 10000u : 20000u;
+            uint cooldown = Settings.ChaosMode ? 15000u : (uint)_rand.Next(30000, 45001);
             if (now < _lastSpawnAttemptTime || now - _lastSpawnAttemptTime < cooldown)
             {
                 return;
             }
             _lastSpawnAttemptTime = now;
 
-            // Search for curated shoulder spot 150m–400m from player
-            if (ZoneSpawnData.FindBestPulloverSpot(playerPos, 150.0f, 400.0f, out Vector3 candidatePos, out float candidateHeading))
+            // Search for safe roadside coordinate (curated pullover spot or dynamic shoulder)
+            if (TryFindTrafficStopCoordinate(playerPos, out Vector3 candidatePos, out float candidateHeading))
             {
                 // Ensure spot is not too close to another active traffic stop (> 80m)
                 bool spotOccupied = false;
@@ -278,6 +336,83 @@ namespace Cadence.Features
                     }
                 }
             }
+        }
+
+        private static bool TryFindTrafficStopCoordinate(Vector3 playerPos, out Vector3 spotPos, out float spotHeading)
+        {
+            spotPos = Vector3.Zero;
+            spotHeading = 0f;
+
+            // Priority 1: Check curated pullover spots from ZoneSpawnData (including urban/suburban lots)
+            if (ZoneSpawnData.FindBestPulloverSpot(playerPos, 120.0f, 380.0f, out Vector3 curatedPos, out float curatedHeading))
+            {
+                if (!WorldUtils.IsSubterraneanOrVoid(curatedPos) && WorldUtils.IsAreaClear(curatedPos, 10.0f))
+                {
+                    spotPos = curatedPos;
+                    spotHeading = curatedHeading;
+                    return true;
+                }
+            }
+
+            // Priority 2: Safe dynamic roadside shoulder generation (strictly prohibited on freeways/highways)
+            for (int attempt = 0; attempt < 20; attempt++)
+            {
+                float dist = (float)_rand.Next(100, 260);
+                double angle = _rand.NextDouble() * Math.PI * 2.0;
+
+                Vector3 probeCenter = new Vector3(
+                    playerPos.X + (float)Math.Cos(angle) * dist,
+                    playerPos.Y + (float)Math.Sin(angle) * dist,
+                    playerPos.Z
+                );
+
+                Vector3 streetPos = World.GetNextPositionOnStreet(probeCenter);
+                if (streetPos == Vector3.Zero || streetPos.DistanceTo(playerPos) < 60.0f) continue;
+                if (WorldUtils.IsSubterraneanOrVoid(streetPos)) continue;
+
+                // Never drop traffic stops on high-speed freeways/highways unless in a curated off-road pullover
+                if (WorldUtils.IsHighway(streetPos)) continue;
+
+                Vector3 nodePos = Vector3.Zero;
+                float heading = 0f;
+                bool foundNode = false;
+                try
+                {
+                    foundNode = NativeFunction.Natives.GetClosestVehicleNodeWithHeading<bool>(streetPos.X, streetPos.Y, streetPos.Z, out nodePos, out heading, 1, 3.0f, 0);
+                }
+                catch
+                {
+                    foundNode = false;
+                }
+
+                if (!foundNode || nodePos == Vector3.Zero || WorldUtils.IsSubterraneanOrVoid(nodePos)) continue;
+                if (WorldUtils.IsHighway(nodePos)) continue;
+
+                // Offset 3.6m to the right shoulder so vehicles do not block traffic lanes
+                float rad = heading * (float)(Math.PI / 180.0);
+                Vector3 rightDir = new Vector3((float)Math.Cos(rad), (float)Math.Sin(rad), 0f);
+                Vector3 candidatePos = nodePos + rightDir * 3.6f;
+
+                try
+                {
+                    NativeFunction.Natives.REQUEST_COLLISION_AT_COORD(candidatePos.X, candidatePos.Y, candidatePos.Z);
+                    bool hasGround = NativeFunction.Natives.GET_GROUND_Z_FOR_3D_COORD<bool>(candidatePos.X, candidatePos.Y, candidatePos.Z + 2.0f, out float gZ, false);
+                    if (hasGround && gZ > -50f)
+                    {
+                        candidatePos = new Vector3(candidatePos.X, candidatePos.Y, gZ + 0.35f);
+                    }
+                }
+                catch { }
+
+                if (WorldUtils.IsSubterraneanOrVoid(candidatePos)) continue;
+                if (!WorldUtils.IsAreaClear(candidatePos, 10.0f)) continue;
+
+                spotPos = candidatePos;
+                spotHeading = heading;
+                return true;
+            }
+
+            return false;
         }
 
         private static TrafficStopInstance CreateTrafficStopAt(Vector3 shoulderPos, float heading)
@@ -802,6 +937,10 @@ namespace Cadence.Features
                         {
                             _civDeparted = true;
                             CivDriver.BlockPermanentEvents = false;
+                            if (!CivDriver.IsInVehicle(CivVehicle, false))
+                            {
+                                CivDriver.WarpIntoVehicle(CivVehicle, -1);
+                            }
                             NativeFunction.Natives.SET_VEHICLE_FORWARD_SPEED(CivVehicle, 5.0f);
                             CivDriver.Tasks.CruiseWithVehicle(CivVehicle, 18.0f, NativeTasks.CruisingFlags);
                         }
@@ -811,15 +950,26 @@ namespace Cadence.Features
                         {
                             _copDeparted = true;
                             Officer.BlockPermanentEvents = false;
+                            if (!Officer.IsInVehicle(Cruiser, false))
+                            {
+                                Officer.WarpIntoVehicle(Cruiser, -1);
+                            }
                             NativeFunction.Natives.SET_VEHICLE_FORWARD_SPEED(Cruiser, 6.0f);
                             Officer.Tasks.CruiseWithVehicle(Cruiser, 18.0f, NativeTasks.CruisingFlags);
                         }
 
-                        // Complete stop after both depart cleanly
-                        if (_civDeparted && _copDeparted && elapsed >= 10000)
+                        // Complete stop only after units have cleanly driven away down the street
+                        if (_civDeparted && _copDeparted)
                         {
-                            IsCompleted = true;
-                            _state = StopState.Completed;
+                            Ped playerPed = Game.LocalPlayer?.Character;
+                            float distToPlayer = (Cruiser != null && Cruiser.Exists() && playerPed != null && playerPed.Exists())
+                                ? Cruiser.Position.DistanceTo(playerPed.Position) : 250.0f;
+
+                            if ((elapsed >= 25000 && distToPlayer >= 120.0f) || distToPlayer >= 180.0f)
+                            {
+                                IsCompleted = true;
+                                _state = StopState.Completed;
+                            }
                         }
                         break;
                 }
@@ -995,6 +1145,57 @@ namespace Cadence.Features
                 catch (Exception ex)
                 {
                     Logger.Debug($"[TrafficStopFeature] Error disposing stop {Callsign}: {ex.Message}");
+                }
+
+                IsCompleted = true;
+            }
+
+            /// <summary>
+            /// Relinquishes the cruiser and officer from the traffic stop to an external emergency feature (BackupFeature).
+            /// </summary>
+            public void Relinquish()
+            {
+                CleanupProp();
+                BlipService.SafeDeleteBlip(ref RadarBlip);
+
+                try
+                {
+                    if (K9Dog != null && K9Dog.Exists())
+                    {
+                        K9Dog.BlockPermanentEvents = false;
+                        K9Dog.Dismiss();
+                    }
+
+                    if (CivDriver != null && CivDriver.Exists())
+                    {
+                        CivDriver.BlockPermanentEvents = false;
+                        if (CivVehicle != null && CivVehicle.Exists())
+                        {
+                            CivVehicle.IndicatorLightsStatus = VehicleIndicatorLightsStatus.Off;
+                            if (!CivDriver.IsInVehicle(CivVehicle, false))
+                            {
+                                CivDriver.WarpIntoVehicle(CivVehicle, -1);
+                            }
+                            CivDriver.Tasks.CruiseWithVehicle(CivVehicle, 15.0f, NativeTasks.CruisingFlags);
+                            CivVehicle.Dismiss();
+                        }
+                        CivDriver.Dismiss();
+                    }
+
+                    if (Officer != null && Officer.Exists())
+                    {
+                        Officer.Tasks.Clear();
+                        Officer.BlockPermanentEvents = false;
+                    }
+
+                    if (Cruiser != null && Cruiser.Exists())
+                    {
+                        NativeTasks.SetSilentSiren(Cruiser, false);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Debug($"[TrafficStopFeature] Error relinquishing stop {Callsign}: {ex.Message}");
                 }
 
                 IsCompleted = true;

@@ -8,6 +8,11 @@ namespace Cadence.Core
     {
         // General
         public static bool EnablePlugin { get; set; } = true;
+        public static bool PluginActive
+        {
+            get => EnablePlugin;
+            set => EnablePlugin = value;
+        }
         public static bool EnableFileLogging { get; set; } = true;
         public static bool EnableDebugLogging { get; set; } = true;
         public static bool ChaosMode { get; set; } = false;
@@ -41,6 +46,21 @@ namespace Cadence.Core
             set => EnableThreatDefense = value;
         }
 
+        // Ambient Backup & Response Systems
+        public static bool EnableBackup { get; set; } = true;
+        public static Keys PanicButtonKey { get; set; } = Keys.Z;
+        public static Keys PanicButtonModifierKey { get; set; } = Keys.LControlKey;
+        public static Keys GroupBackupKey { get; set; } = Keys.C;
+        public static Keys GroupBackupModifierKey { get; set; } = Keys.LControlKey;
+        public static Keys BackupMenuKey { get; set; } = Keys.PageDown;
+        public static Keys BackupMenuModifierKey { get; set; } = Keys.X;
+        public static Keys DismissBackupKey { get; set; } = Keys.Enter;
+        public static int PanicButtonUnits { get; set; } = 2;
+        public static int GroupBackupUnits { get; set; } = 2;
+        public static bool GroupBackupCode3 { get; set; } = true;
+        public static bool AllowAmbientCommandeer { get; set; } = true;
+        public static bool AllowFallbackSpawning { get; set; } = true;
+
         // Limits & Caps
         public static int MaxPatrolUnits { get; set; } = 4;
         public static int MaxTrafficStops { get; set; } = 2;
@@ -63,7 +83,7 @@ namespace Cadence.Core
         // Radar
         public static bool ShowRadarBlips { get; set; } = true;
         public static float BlipScale { get; set; } = 0.45f;
-        public static bool ShortRangeBlips { get; set; } = true;
+        public static bool ShortRangeBlips { get; set; } = false;
 
         // Integration
         public static bool UseUltimateBackup { get; set; } = true;
@@ -155,7 +175,7 @@ namespace Cadence.Core
             switch (sec)
             {
                 case "general":
-                    if (k == "enableplugin") EnablePlugin = ParseBool(value, EnablePlugin);
+                    if (k == "enableplugin" || k == "pluginactive" || k == "active" || k == "activated") EnablePlugin = ParseBool(value, EnablePlugin);
                     else if (k == "enablefilelogging") EnableFileLogging = ParseBool(value, EnableFileLogging);
                     else if (k == "debug" || k == "enabledebuglogging" || k == "debuglogging") EnableDebugLogging = ParseBool(value, EnableDebugLogging);
                     else if (k == "chaosmode" || k == "chaos")
@@ -173,6 +193,29 @@ namespace Cadence.Core
                 case "keybinds":
                     if (k == "menukey") MenuKey = ParseKey(value, Keys.PageDown);
                     else if (k == "menumodifierkey") MenuModifierKey = ParseModifierKey(value, Keys.Q);
+                    else if (k == "panicbuttonkey") PanicButtonKey = ParseKey(value, PanicButtonKey);
+                    else if (k == "panicbuttonmodifierkey" || k == "panicbuttonmodifier") PanicButtonModifierKey = ParseModifierKey(value, PanicButtonModifierKey);
+                    else if (k == "groupbackupkey") GroupBackupKey = ParseKey(value, GroupBackupKey);
+                    else if (k == "groupbackupmodifierkey" || k == "groupbackupmodifier") GroupBackupModifierKey = ParseModifierKey(value, GroupBackupModifierKey);
+                    else if (k == "backupmenukey") BackupMenuKey = ParseKey(value, BackupMenuKey);
+                    else if (k == "backupmenumodifierkey" || k == "backupmenumodifier") BackupMenuModifierKey = ParseModifierKey(value, BackupMenuModifierKey);
+                    else if (k == "dismissbackupkey" || k == "dismissallbackupkey") DismissBackupKey = ParseKey(value, DismissBackupKey);
+                    break;
+
+                case "backup":
+                    if (k == "enablebackup") EnableBackup = ParseBool(value, EnableBackup);
+                    else if (k == "panicbuttonkey") PanicButtonKey = ParseKey(value, PanicButtonKey);
+                    else if (k == "panicbuttonmodifierkey" || k == "panicbuttonmodifier") PanicButtonModifierKey = ParseModifierKey(value, PanicButtonModifierKey);
+                    else if (k == "groupbackupkey") GroupBackupKey = ParseKey(value, GroupBackupKey);
+                    else if (k == "groupbackupmodifierkey" || k == "groupbackupmodifier") GroupBackupModifierKey = ParseModifierKey(value, GroupBackupModifierKey);
+                    else if (k == "backupmenukey") BackupMenuKey = ParseKey(value, BackupMenuKey);
+                    else if (k == "backupmenumodifierkey" || k == "backupmenumodifier") BackupMenuModifierKey = ParseModifierKey(value, BackupMenuModifierKey);
+                    else if (k == "dismissbackupkey" || k == "dismissallbackupkey") DismissBackupKey = ParseKey(value, DismissBackupKey);
+                    else if (k == "panicbuttonunits" || k == "panicunits") PanicButtonUnits = Math.Max(1, Math.Min(6, ParseInt(value, PanicButtonUnits)));
+                    else if (k == "groupbackupunits" || k == "groupunits") GroupBackupUnits = Math.Max(1, Math.Min(6, ParseInt(value, GroupBackupUnits)));
+                    else if (k == "groupbackupcode3") GroupBackupCode3 = ParseBool(value, GroupBackupCode3);
+                    else if (k == "allowambientcommandeer" || k == "ambientcommandeer") AllowAmbientCommandeer = ParseBool(value, AllowAmbientCommandeer);
+                    else if (k == "allowfallbackspawning" || k == "fallbackspawning") AllowFallbackSpawning = ParseBool(value, AllowFallbackSpawning);
                     break;
 
                 case "features":
@@ -249,6 +292,31 @@ namespace Cadence.Core
                 return Keys.PageUp;
             }
 
+            if (clean.Equals("enter", StringComparison.OrdinalIgnoreCase) || clean.Equals("return", StringComparison.OrdinalIgnoreCase))
+            {
+                return Keys.Enter;
+            }
+
+            if (clean.Equals("rcontrol", StringComparison.OrdinalIgnoreCase) || clean.Equals("rcontrolkey", StringComparison.OrdinalIgnoreCase) || clean.Equals("rightcontrol", StringComparison.OrdinalIgnoreCase))
+            {
+                return Keys.RControlKey;
+            }
+
+            if (clean.Equals("lcontrol", StringComparison.OrdinalIgnoreCase) || clean.Equals("lcontrolkey", StringComparison.OrdinalIgnoreCase) || clean.Equals("leftcontrol", StringComparison.OrdinalIgnoreCase))
+            {
+                return Keys.LControlKey;
+            }
+
+            if (clean.Equals("numpad0", StringComparison.OrdinalIgnoreCase) || clean.Equals("num0", StringComparison.OrdinalIgnoreCase))
+            {
+                return Keys.NumPad0;
+            }
+
+            if (clean.Equals("numpad1", StringComparison.OrdinalIgnoreCase) || clean.Equals("num1", StringComparison.OrdinalIgnoreCase))
+            {
+                return Keys.NumPad1;
+            }
+
             if (Enum.TryParse(clean, true, out Keys parsedKey))
             {
                 return parsedKey;
@@ -264,13 +332,17 @@ namespace Cadence.Core
             string clean = value.Trim();
             if (clean.Equals("0", StringComparison.OrdinalIgnoreCase) ||
                 clean.Equals("none", StringComparison.OrdinalIgnoreCase) ||
-                clean.Equals("disabled", StringComparison.OrdinalIgnoreCase))
+                clean.Equals("disabled", StringComparison.OrdinalIgnoreCase) ||
+                clean.Equals("false", StringComparison.OrdinalIgnoreCase) ||
+                clean.Equals("null", StringComparison.OrdinalIgnoreCase))
             {
                 return Keys.None;
             }
 
             if (clean.Equals("ctrl", StringComparison.OrdinalIgnoreCase)) clean = "Control";
             if (clean.Equals("alt", StringComparison.OrdinalIgnoreCase)) clean = "Menu";
+            if (clean.Equals("rcontrol", StringComparison.OrdinalIgnoreCase) || clean.Equals("rcontrolkey", StringComparison.OrdinalIgnoreCase) || clean.Equals("rctrl", StringComparison.OrdinalIgnoreCase) || clean.Equals("rightcontrol", StringComparison.OrdinalIgnoreCase)) return Keys.RControlKey;
+            if (clean.Equals("lcontrol", StringComparison.OrdinalIgnoreCase) || clean.Equals("lcontrolkey", StringComparison.OrdinalIgnoreCase) || clean.Equals("lctrl", StringComparison.OrdinalIgnoreCase) || clean.Equals("leftcontrol", StringComparison.OrdinalIgnoreCase)) return Keys.LControlKey;
             if (clean.Equals("pagedown", StringComparison.OrdinalIgnoreCase) || clean.Equals("pgdn", StringComparison.OrdinalIgnoreCase)) return Keys.PageDown;
             if (clean.Equals("pageup", StringComparison.OrdinalIgnoreCase) || clean.Equals("pgup", StringComparison.OrdinalIgnoreCase)) return Keys.PageUp;
 

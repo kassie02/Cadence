@@ -358,10 +358,16 @@ namespace Cadence.Features
 
                 return nearbyVehicles
                     .OfType<Vehicle>()
-                    .Where(v => v != null && v.Exists() && !v.IsDead && v.IsPoliceVehicle)
+                    .Where(v => v != null && v.Exists() && !v.IsDead && v.IsDriveable)
                     .Where(v => v.Driver != null && v.Driver.Exists() && v.Driver.IsAlive && !v.Driver.IsPlayer && v.Driver != Game.LocalPlayer?.Character)
                     .Where(v =>
                     {
+                        bool isPolice = v.IsPoliceVehicle || v.Model.IsLawEnforcementVehicle ||
+                                        PatrolFeature.IsActiveCruiser(v) || StationaryFeature.IsActiveCruiser(v) ||
+                                        TrafficStopFeature.IsActiveCruiser(v) || ResponseFeature.IsActiveCruiser(v) ||
+                                        Functions.IsPedACop(v.Driver) || v.Driver.RelationshipGroup == "COP";
+                        if (!isPolice) return false;
+
                         lock (_syncLock)
                         {
                             if (_activeSessions.Any(s => s.Cruiser == v)) return false;
@@ -383,6 +389,14 @@ namespace Cadence.Features
         {
             try
             {
+                if (!wasSpawned)
+                {
+                    PatrolFeature.RelinquishCruiser(cruiser);
+                    StationaryFeature.RelinquishCruiser(cruiser);
+                    TrafficStopFeature.RelinquishCruiser(cruiser);
+                    ResponseFeature.RelinquishCruiser(cruiser);
+                }
+
                 string callsign = GenerateCallsign();
 
                 cruiser.MakePersistent();

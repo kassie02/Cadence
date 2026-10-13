@@ -76,6 +76,13 @@ namespace Cadence.Core
                     // 1. Load User Configuration
                     Settings.Load();
 
+                    if (!Settings.EnablePlugin)
+                    {
+                        Logger.Info("[Main] Cadence is DEACTIVATED in Cadence.ini (EnablePlugin=false). Skipping feature bootstrap.");
+                        Game.DisplayNotification("~y~[Cadence] Plugin is deactivated in Cadence.ini (EnablePlugin = false).~s~");
+                        return;
+                    }
+
                     // 2. Initialize Ultimate Backup Integration
                     UltimateBackupService.Initialize();
 
@@ -88,13 +95,15 @@ namespace Cadence.Core
                     // 3. Initialize In-Game Menu
                     CadenceMenu.Initialize();
 
-                    // 3. Bootstrap Enabled Features (Thin Ponytail Strands)
+                    // 3. Bootstrap Enabled Features (Staggered Ambient Pacing)
+                    Logger.Info("[Main] Bootstrapping features with staggered spawn pacing: Patrol (T+15s), Stationary (T+45s), Traffic Stops (T+75s), Response (T+105s).");
                     if (Settings.EnablePatrol) PatrolFeature.Start();
-                    if (Settings.EnableTrafficStops) TrafficStopFeature.Start();
                     if (Settings.EnableStationary) StationaryFeature.Start();
+                    if (Settings.EnableTrafficStops) TrafficStopFeature.Start();
                     if (Settings.EnableEmergencyRuns || Settings.EnableRejectedCallouts) ResponseFeature.Start();
                     if (Settings.EnablePursuitDrafting) PursuitFeature.Start();
                     if (Settings.EnableThreatDefense) AssistFeature.Start();
+                    if (Settings.EnableBackup) BackupFeature.Start();
 
                     // 4. Subtle Welcome Notification
                     string keyNotice;

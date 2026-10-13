@@ -104,6 +104,12 @@ if exist "%SRC%\Cadence.ini" (
 )
 echo   Staged plugins\LSPDFR\Cadence\Logs\
 
+if exist "%SRC%\Audio\PANIC_BUTTON.wav" (
+    mkdir "%STAGE%\plugins\LSPDFR\Cadence\Audio" >nul 2>nul
+    copy /y "%SRC%\Audio\PANIC_BUTTON.wav" "%STAGE%\plugins\LSPDFR\Cadence\Audio\PANIC_BUTTON.wav" >nul
+    echo   Staged plugins\LSPDFR\Cadence\Audio\PANIC_BUTTON.wav
+)
+
 :: Create README.txt in staging
 (
 echo ============================================================
@@ -112,12 +118,31 @@ echo ============================================================
 echo.
 echo INSTALLATION:
 echo 1. Drag the "plugins" folder from this zip into your Grand Theft Auto V root folder.
-echo 2. Verify that Cadence.dll and Cadence.ini reside in:
-echo      Grand Theft Auto V\plugins\LSPDFR\
+echo 2. Verify that files reside in:
+echo      Grand Theft Auto V\plugins\LSPDFR\Cadence.dll
+echo      Grand Theft Auto V\plugins\LSPDFR\Cadence.ini
+echo      Grand Theft Auto V\plugins\LSPDFR\Cadence\Audio\PANIC_BUTTON.wav
+echo      Grand Theft Auto V\plugins\LSPDFR\Cadence\Logs\
 echo 3. Launch GTA V via RagePluginHook and go On Duty.
 echo.
-echo IN-GAME MENU:
-echo   Press Q + PageDown (configurable in Cadence.ini^) to open the Cadence menu.
+echo CONTROLS ^& KEYBINDINGS ^(DEFAULT^):
+echo   - Cadence Dashboard:   Q + PageDown  ^(MenuKey = PageDown, MenuModifierKey = Q^)
+echo   - Lean Backup Menu:    X + PageDown  ^(BackupMenuKey = PageDown, BackupMenuModifierKey = X^)
+echo   - Panic Button:        LControlKey + Z  ^(PanicButtonKey = Z, PanicButtonModifierKey = LControlKey^)
+echo   - Group Backup:        LControlKey + C  ^(GroupBackupKey = C, GroupBackupModifierKey = LControlKey^)
+echo   - Dismiss Backup:      Enter  ^(DismissBackupKey = Enter, hold ~1.2s^)
+echo.
+echo KEYBIND CONFIGURATION ^& DISABLING:
+echo   All keybinds are fully configurable in plugins\LSPDFR\Cadence.ini.
+echo   Setting any key or modifier to None, 0, Disabled, or false turns it off.
+echo.
+echo MASTER ACTIVATION TOGGLE:
+echo   To toggle or completely disable Cadence, set EnablePlugin = true/false
+echo   ^(or PluginActive = true/false^) under [General] in Cadence.ini.
+echo.
+echo AUDIO ASSETS:
+echo   plugins\LSPDFR\Cadence\Audio\PANIC_BUTTON.wav provides authentic dispatch
+echo   distress tones during Panic Button activation.
 echo.
 echo COMPATIBILITY:
 echo   Fully compatible with Ultimate Backup, StopThePed, and custom callout packs.

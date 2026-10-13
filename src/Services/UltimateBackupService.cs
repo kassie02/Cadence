@@ -16,6 +16,7 @@ namespace Cadence.Services
     {
         private static bool _initialized;
         private static bool _isAvailable;
+        private static readonly object _ubApiLock = new object();
 
         public static bool IsAvailable
         {
@@ -126,9 +127,12 @@ namespace Cadence.Services
 
             try
             {
-                Logger.Debug("UB", $"Requesting UB Local Patrol unit at {location} (peds: {numPeds})");
-                Tuple<Vehicle, List<Ped>> result = UBFunctions.getLocalPatrolUnit(location, Math.Max(1, numPeds));
-                return PrepareUltimateBackupUnit(result);
+                lock (_ubApiLock)
+                {
+                    Logger.Debug("UB", $"Requesting UB Local Patrol unit at {location} (peds: {numPeds})");
+                    Tuple<Vehicle, List<Ped>> result = UBFunctions.getLocalPatrolUnit(location, Math.Max(1, numPeds));
+                    return PrepareUltimateBackupUnit(result);
+                }
             }
             catch (Exception ex)
             {
@@ -144,13 +148,58 @@ namespace Cadence.Services
 
             try
             {
-                Logger.Debug("UB", $"Requesting UB State Patrol unit at {location} (peds: {numPeds})");
-                Tuple<Vehicle, List<Ped>> result = UBFunctions.getStatePatrolUnit(location, Math.Max(1, numPeds));
-                return PrepareUltimateBackupUnit(result);
+                lock (_ubApiLock)
+                {
+                    Logger.Debug("UB", $"Requesting UB State Patrol unit at {location} (peds: {numPeds})");
+                    Tuple<Vehicle, List<Ped>> result = UBFunctions.getStatePatrolUnit(location, Math.Max(1, numPeds));
+                    return PrepareUltimateBackupUnit(result);
+                }
             }
             catch (Exception ex)
             {
                 Logger.Error("UltimateBackupService.SpawnStatePatrol error", ex);
+                return null;
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        public static Tuple<Vehicle, List<Ped>> SpawnAmbulanceUnit(Vector3 location, int numPeds)
+        {
+            if (!IsAvailable) return null;
+
+            try
+            {
+                lock (_ubApiLock)
+                {
+                    Logger.Debug("UB", $"Requesting UB Ambulance unit at {location} (peds: {numPeds})");
+                    Tuple<Vehicle, List<Ped>> result = UBFunctions.getAmbulanceUnit(location, Math.Max(1, numPeds));
+                    return PrepareUltimateBackupUnit(result, isPolice: false);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("UltimateBackupService.SpawnAmbulanceUnit error", ex);
+                return null;
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        public static Tuple<Vehicle, List<Ped>> SpawnFireTruckUnit(Vector3 location, int numPeds)
+        {
+            if (!IsAvailable) return null;
+
+            try
+            {
+                lock (_ubApiLock)
+                {
+                    Logger.Debug("UB", $"Requesting UB Fire Truck unit at {location} (peds: {numPeds})");
+                    Tuple<Vehicle, List<Ped>> result = UBFunctions.getFireTruckUnit(location, Math.Max(1, numPeds));
+                    return PrepareUltimateBackupUnit(result, isPolice: false);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("UltimateBackupService.SpawnFireTruckUnit error", ex);
                 return null;
             }
         }
@@ -162,13 +211,16 @@ namespace Cadence.Services
 
             try
             {
-                Ped ped = UBFunctions.getLocalPatrolPed(location, heading);
-                if (ped != null && ped.Exists())
+                lock (_ubApiLock)
                 {
-                    ped.MakePersistent();
-                    ped.BlockPermanentEvents = false;
-                    try { LspdFunctions.SetPedAsCop(ped); } catch { }
-                    return ped;
+                    Ped ped = UBFunctions.getLocalPatrolPed(location, heading);
+                    if (ped != null && ped.Exists())
+                    {
+                        ped.MakePersistent();
+                        ped.BlockPermanentEvents = false;
+                        try { LspdFunctions.SetPedAsCop(ped); } catch { }
+                        return ped;
+                    }
                 }
             }
             catch (Exception ex)
@@ -186,13 +238,16 @@ namespace Cadence.Services
 
             try
             {
-                Ped ped = UBFunctions.geStatePatrolPed(location, heading);
-                if (ped != null && ped.Exists())
+                lock (_ubApiLock)
                 {
-                    ped.MakePersistent();
-                    ped.BlockPermanentEvents = false;
-                    try { LspdFunctions.SetPedAsCop(ped); } catch { }
-                    return ped;
+                    Ped ped = UBFunctions.geStatePatrolPed(location, heading);
+                    if (ped != null && ped.Exists())
+                    {
+                        ped.MakePersistent();
+                        ped.BlockPermanentEvents = false;
+                        try { LspdFunctions.SetPedAsCop(ped); } catch { }
+                        return ped;
+                    }
                 }
             }
             catch (Exception ex)
@@ -222,7 +277,7 @@ namespace Cadence.Services
         /// Prepares units spawned by Ultimate Backup: keeps entities persistent during their active
         /// lifecycle, sets engines on, places on ground properly, registers officers with LSPDFR, and seats them.
         /// </summary>
-        private static Tuple<Vehicle, List<Ped>> PrepareUltimateBackupUnit(Tuple<Vehicle, List<Ped>> result)
+        private static Tuple<Vehicle, List<Ped>> PrepareUltimateBackupUnit(Tuple<Vehicle, List<Ped>> result, bool isPolice = true)
         {
             if (result == null || result.Item1 == null || !result.Item1.Exists())
             {
@@ -252,7 +307,10 @@ namespace Cadence.Services
                         driver.WarpIntoVehicle(cruiser, -1);
                     }
                     driver.BlockPermanentEvents = false;
-                    try { LspdFunctions.SetPedAsCop(driver); } catch { }
+                    if (isPolice)
+                    {
+                        try { LspdFunctions.SetPedAsCop(driver); } catch { }
+                    }
                 }
 
                 int maxSeats = 4;
@@ -277,14 +335,17 @@ namespace Cadence.Services
                             }
                         }
                         pass.BlockPermanentEvents = false;
-                        try { LspdFunctions.SetPedAsCop(pass); } catch { }
+                        if (isPolice)
+                        {
+                            try { LspdFunctions.SetPedAsCop(pass); } catch { }
+                        }
                     }
                 }
             }
 
             string vName = cruiser != null && cruiser.Exists() ? cruiser.Model.Name : "Unknown";
             int pedCount = result.Item2 != null ? result.Item2.Count : 0;
-            Logger.Debug("UB", $"Prepared UB Unit: Vehicle={vName} (0x{cruiser?.Handle:X}), TotalPeds={pedCount}, EngineOn={cruiser?.IsEngineOn}");
+            Logger.Debug("UB", $"Prepared UB Unit: Vehicle={vName} (0x{cruiser?.Handle:X}), TotalPeds={pedCount}, EngineOn={cruiser?.IsEngineOn}, IsPolice={isPolice}");
 
             return result;
         }
@@ -340,6 +401,92 @@ namespace Cadence.Services
             catch (Exception ex)
             {
                 Logger.Error("UltimateBackupService.SpawnNativePatrolUnit error", ex);
+                return null;
+            }
+        }
+
+        public static Tuple<Vehicle, List<Ped>> SpawnNativeAmbulanceUnit(Vector3 location, float heading, string vehicleModel = "ambulance", string pedModel = "s_m_m_paramedic_01")
+        {
+            if (Settings.UseUltimateBackup && !Settings.AllowFallback)
+            {
+                Logger.Debug("UB", "SpawnNativeAmbulanceUnit rejected: Fallback is disabled in settings (Fallback=false).");
+                return null;
+            }
+
+            try
+            {
+                Logger.Debug("UB", $"Spawning Native Ambulance fallback: Vehicle={vehicleModel}, Ped={pedModel} at {location} (Heading: {heading:F1})");
+
+                Model vModel = new Model(vehicleModel);
+                Model pModel = new Model(pedModel);
+
+                vModel.LoadAndWait();
+                pModel.LoadAndWait();
+
+                Vehicle amb = new Vehicle(vModel, location, heading);
+                amb.MakePersistent();
+                amb.Heading = heading;
+                amb.IsEngineOn = true;
+                try { amb.PlaceOnGroundProperly(); } catch { }
+                WorldUtils.SecureEntityGround(amb);
+
+                Ped medic = new Ped(pModel, location, heading);
+                medic.MakePersistent();
+                medic.WarpIntoVehicle(amb, -1);
+                medic.BlockPermanentEvents = false;
+
+                vModel.Dismiss();
+                pModel.Dismiss();
+
+                var peds = new List<Ped> { medic };
+                return new Tuple<Vehicle, List<Ped>>(amb, peds);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("UltimateBackupService.SpawnNativeAmbulanceUnit error", ex);
+                return null;
+            }
+        }
+
+        public static Tuple<Vehicle, List<Ped>> SpawnNativeFireUnit(Vector3 location, float heading, string vehicleModel = "firetruk", string pedModel = "s_m_y_fireman_01")
+        {
+            if (Settings.UseUltimateBackup && !Settings.AllowFallback)
+            {
+                Logger.Debug("UB", "SpawnNativeFireUnit rejected: Fallback is disabled in settings (Fallback=false).");
+                return null;
+            }
+
+            try
+            {
+                Logger.Debug("UB", $"Spawning Native Fire fallback: Vehicle={vehicleModel}, Ped={pedModel} at {location} (Heading: {heading:F1})");
+
+                Model vModel = new Model(vehicleModel);
+                Model pModel = new Model(pedModel);
+
+                vModel.LoadAndWait();
+                pModel.LoadAndWait();
+
+                Vehicle fire = new Vehicle(vModel, location, heading);
+                fire.MakePersistent();
+                fire.Heading = heading;
+                fire.IsEngineOn = true;
+                try { fire.PlaceOnGroundProperly(); } catch { }
+                WorldUtils.SecureEntityGround(fire);
+
+                Ped fireman = new Ped(pModel, location, heading);
+                fireman.MakePersistent();
+                fireman.WarpIntoVehicle(fire, -1);
+                fireman.BlockPermanentEvents = false;
+
+                vModel.Dismiss();
+                pModel.Dismiss();
+
+                var peds = new List<Ped> { fireman };
+                return new Tuple<Vehicle, List<Ped>>(fire, peds);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("UltimateBackupService.SpawnNativeFireUnit error", ex);
                 return null;
             }
         }
