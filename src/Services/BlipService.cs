@@ -13,9 +13,9 @@ namespace Cadence.Services
 
         /// <summary>
         /// Executes the ironclad 4-step destructor protocol to completely eliminate blip memory leaks:
-        /// Step 1: Force GTA Scaleform HUD native flash engine to clear flash state.
-        /// Step 2: Terminate RPH managed flash background fiber.
-        /// Step 3: Delete blip handle from GTA radar memory pool.
+        /// Step 1: Clear native flash engine state.
+        /// Step 2: Stop RPH managed flash background fiber.
+        /// Step 3: Delete blip from GTA radar memory pool.
         /// Step 4: Nullify reference to prevent dangling pointer reuse.
         /// </summary>
         public static void SafeDeleteBlip(ref Blip blip)
@@ -24,15 +24,10 @@ namespace Cadence.Services
 
             try
             {
-                if (NativeFunction.Natives.DOES_BLIP_EXIST<bool>(blip))
+                if (blip.Exists())
                 {
-                    NativeFunction.Natives.SET_BLIP_FLASHES(blip, false);
-                    NativeFunction.Natives.REMOVE_BLIP(blip);
-                }
-                else if (blip.Exists())
-                {
-                    NativeFunction.Natives.SET_BLIP_FLASHES(blip, false);
-                    blip.StopFlashing();
+                    try { NativeFunction.Natives.SET_BLIP_FLASHES(blip, false); } catch { }
+                    try { blip.StopFlashing(); } catch { }
                     blip.Delete();
                 }
             }
@@ -44,6 +39,23 @@ namespace Cadence.Services
             {
                 blip = null;
             }
+        }
+
+        /// <summary>
+        /// Safely finds and deletes any attached blip on an entity to prevent ghost / duplicate radar markers.
+        /// </summary>
+        public static void SafeDeleteEntityBlip(Entity entity)
+        {
+            if (entity == null || !entity.Exists()) return;
+            try
+            {
+                Blip b = SafeGetAttachedBlip(entity);
+                if (b != null)
+                {
+                    SafeDeleteBlip(ref b);
+                }
+            }
+            catch { }
         }
 
         /// <summary>
@@ -89,7 +101,23 @@ namespace Cadence.Services
         }
 
         /// <summary>
-        /// Stationary / Radar Trap: Sprite 56, Color 2 (Mint Green), Solid, {Callsign} [STANDBY].
+        /// Stationary / Radar Trap: Sprite 56, Color 2 (Mint Green), Solid, {Callsign} [RADAR].
+        /// </summary>
+        public static Blip AttachRadarWatchBlip(Vehicle vehicle, string callsign)
+        {
+            return CreateOrUpdateBlip(vehicle, callsign, "RADAR", spriteId: 56, colorId: 2, isShortRange: Settings.ShortRangeBlips, flashIntervalMs: 0);
+        }
+
+        /// <summary>
+        /// Standing Ambient / Chilling Officer: Sprite 56, Color 2 (Mint Green), Solid, {Callsign} [CHILLING PATROL].
+        /// </summary>
+        public static Blip AttachChillingBlip(Vehicle vehicle, string callsign)
+        {
+            return CreateOrUpdateBlip(vehicle, callsign, "CHILLING PATROL", spriteId: 56, colorId: 2, isShortRange: Settings.ShortRangeBlips, flashIntervalMs: 0);
+        }
+
+        /// <summary>
+        /// Stationary / Standby Unit (Generic): Sprite 56, Color 2 (Mint Green), Solid, {Callsign} [STANDBY].
         /// </summary>
         public static Blip AttachStationaryBlip(Vehicle vehicle, string callsign)
         {
@@ -184,6 +212,16 @@ namespace Cadence.Services
         public static void TransitionToTrafficStop(Blip blip, string callsign)
         {
             ApplyBlipState(blip, callsign, "TRAFFIC STOP", spriteId: 56, colorId: 4, isShortRange: Settings.ShortRangeBlips, flashIntervalMs: 0);
+        }
+
+        public static void TransitionToRadar(Blip blip, string callsign)
+        {
+            ApplyBlipState(blip, callsign, "RADAR", spriteId: 56, colorId: 2, isShortRange: Settings.ShortRangeBlips, flashIntervalMs: 0);
+        }
+
+        public static void TransitionToChilling(Blip blip, string callsign)
+        {
+            ApplyBlipState(blip, callsign, "CHILLING PATROL", spriteId: 56, colorId: 2, isShortRange: Settings.ShortRangeBlips, flashIntervalMs: 0);
         }
 
         public static void TransitionToStationary(Blip blip, string callsign)

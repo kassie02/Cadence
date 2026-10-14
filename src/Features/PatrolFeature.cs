@@ -84,28 +84,59 @@ namespace Cadence.Features
 
                 Vector3 playerPos = player.Position;
                 float forwardHeading = player.Heading;
-                Vector3 searchTarget = playerPos + player.ForwardVector * 65.0f;
 
-                if (!WorldUtils.GetSafeStreetPosition(searchTarget, 1, out Vector3 streetPos, out float streetHeading))
+                List<Vector3> occupiedSpots = new List<Vector3>();
+                lock (_syncLock)
                 {
-                    streetPos = World.GetNextPositionOnStreet(searchTarget);
-                    streetHeading = forwardHeading;
+                    occupiedSpots.AddRange(_activeUnits.Where(u => u != null && u.Cruiser != null && u.Cruiser.Exists()).Select(u => u.Cruiser.Position));
                 }
 
-                if (streetPos == Vector3.Zero || WorldUtils.IsSubterraneanOrVoid(streetPos))
+                Vector3 chosenStreetPos = Vector3.Zero;
+                float chosenHeading = forwardHeading;
+
+                // Test multi-angle offsets around player (ahead, 35 deg left/right, 65 deg left/right, behind)
+                float[] angleOffsets = new float[] { 0f, 35f, -35f, 65f, -65f, 90f, -90f, 180f };
+                foreach (float angle in angleOffsets)
+                {
+                    float rad = (player.Heading + angle) * (float)(Math.PI / 180.0);
+                    Vector3 dir = new Vector3(-(float)Math.Sin(rad), (float)Math.Cos(rad), 0f);
+                    float testDist = 55.0f + (float)(_rand.NextDouble() * 30.0);
+                    Vector3 probe = playerPos + dir * testDist;
+
+                    if (WorldUtils.GetSafeStreetPosition(probe, 1, out Vector3 stPos, out float stH))
+                    {
+                        if (stPos != Vector3.Zero && !WorldUtils.IsSubterraneanOrVoid(stPos))
+                        {
+                            if (!occupiedSpots.Any(occ => occ.DistanceTo(stPos) < 25.0f) && WorldUtils.IsAreaClear(stPos, 9.0f))
+                            {
+                                chosenStreetPos = stPos;
+                                chosenHeading = stH;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (chosenStreetPos == Vector3.Zero)
+                {
+                    chosenStreetPos = World.GetNextPositionOnStreet(playerPos + player.ForwardVector * 65.0f);
+                    chosenHeading = forwardHeading;
+                }
+
+                if (chosenStreetPos == Vector3.Zero || WorldUtils.IsSubterraneanOrVoid(chosenStreetPos))
                 {
                     Logger.Warn("[PatrolFeature] Could not find valid street node for test patrol unit.");
                     return false;
                 }
 
-                PatrolUnitInstance unit = CreatePatrolUnitAt(streetPos, streetHeading);
+                PatrolUnitInstance unit = CreatePatrolUnitAt(chosenStreetPos, chosenHeading);
                 if (unit != null && unit.IsValid())
                 {
                     lock (_syncLock)
                     {
                         _activeUnits.Add(unit);
                     }
-                    Logger.Info($"[PatrolFeature] Successfully spawned test unit {unit.Callsign} at {streetPos}.");
+                    Logger.Info($"[PatrolFeature] Successfully spawned test unit {unit.Callsign} at {chosenStreetPos}.");
                     return true;
                 }
             }
@@ -533,6 +564,18 @@ namespace Cadence.Features
             public void Relinquish()
             {
                 BlipService.SafeDeleteBlip(ref RadarBlip);
+                if (Cruiser != null && Cruiser.Exists())
+                {
+                    BlipService.SafeDeleteEntityBlip(Cruiser);
+                }
+                if (Driver != null && Driver.Exists())
+                {
+                    BlipService.SafeDeleteEntityBlip(Driver);
+                }
+                if (Passenger != null && Passenger.Exists())
+                {
+                    BlipService.SafeDeleteEntityBlip(Passenger);
+                }
                 try
                 {
                     if (Driver != null && Driver.Exists())

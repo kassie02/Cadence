@@ -88,18 +88,60 @@ namespace Cadence.Features
                 Vector3 spotPos = Vector3.Zero;
                 float spotHeading = 0f;
 
-                // Attempt to find closest curated shoulder spot nearby (40m - 200m) so it is readily visible and well within DespawnDistance
-                float maxSearch = Math.Min(200.0f, Math.Max(60.0f, Settings.DespawnDistance - 150.0f));
-                if (!ZoneSpawnData.FindBestPulloverSpot(playerPos, 40.0f, maxSearch, out spotPos, out spotHeading))
+                List<Vector3> occupiedSpots = new List<Vector3>();
+                lock (_syncLock)
                 {
-                    // Fallback to roadside shoulder forward of player on local streets (never freeway centerlines)
-                    Vector3 searchAhead = playerPos + player.ForwardVector * 45.0f;
-                    if (!WorldUtils.IsHighway(searchAhead) && WorldUtils.GetSafeStreetPosition(searchAhead, 1, out Vector3 stPos, out float stH))
+                    occupiedSpots.AddRange(_activeStops.Where(s => s != null && s.Cruiser != null && s.Cruiser.Exists()).Select(s => s.Cruiser.Position));
+                }
+
+                float maxSearch = Math.Min(250.0f, Math.Max(60.0f, Settings.DespawnDistance - 150.0f));
+
+                // Find candidate pullover spots that are NOT within 35m of an occupied spot
+                var candidateSpots = new List<(Vector3 pos, float heading)>();
+                foreach (var zone in ZoneSpawnData.GetRoadsidePulloverZones())
+                {
+                    foreach (var spot in zone)
                     {
-                        float rad = stH * (float)(Math.PI / 180.0);
-                        Vector3 rightDir = new Vector3((float)Math.Cos(rad), (float)Math.Sin(rad), 0f);
-                        spotPos = stPos + rightDir * 3.6f;
-                        spotHeading = stH;
+                        float dist = spot.pos.DistanceTo(playerPos);
+                        if (dist >= 35.0f && dist <= maxSearch && WorldUtils.IsAreaClear(spot.pos, 12.0f))
+                        {
+                            if (!occupiedSpots.Any(occ => occ.DistanceTo(spot.pos) < 35.0f))
+                            {
+                                candidateSpots.Add(spot);
+                            }
+                        }
+                    }
+                }
+
+                if (candidateSpots.Count > 0)
+                {
+                    var chosen = candidateSpots[_rand.Next(candidateSpots.Count)];
+                    spotPos = chosen.pos;
+                    spotHeading = chosen.heading;
+                }
+                else
+                {
+                    // Fallback to roadside shoulder around player on local streets (never freeway centerlines)
+                    float[] testAngles = new float[] { 0f, 35f, -35f, 65f, -65f, 90f };
+                    foreach (float angle in testAngles)
+                    {
+                        float rad = (player.Heading + angle) * (float)(Math.PI / 180.0);
+                        Vector3 dir = new Vector3(-(float)Math.Sin(rad), (float)Math.Cos(rad), 0f);
+                        Vector3 probe = playerPos + dir * (45.0f + (float)(_rand.NextDouble() * 30.0));
+
+                        if (!WorldUtils.IsHighway(probe) && WorldUtils.GetSafeStreetPosition(probe, 1, out Vector3 stPos, out float stH))
+                        {
+                            float hRad = stH * (float)(Math.PI / 180.0);
+                            Vector3 rightDir = new Vector3((float)Math.Cos(hRad), (float)Math.Sin(hRad), 0f);
+                            Vector3 testShoulder = stPos + rightDir * 3.6f;
+
+                            if (!occupiedSpots.Any(occ => occ.DistanceTo(testShoulder) < 35.0f) && WorldUtils.IsAreaClear(testShoulder, 10.0f))
+                            {
+                                spotPos = testShoulder;
+                                spotHeading = stH;
+                                break;
+                            }
+                        }
                     }
                 }
 
@@ -1168,6 +1210,14 @@ namespace Cadence.Features
             {
                 CleanupProp();
                 BlipService.SafeDeleteBlip(ref RadarBlip);
+                if (Cruiser != null && Cruiser.Exists())
+                {
+                    BlipService.SafeDeleteEntityBlip(Cruiser);
+                }
+                if (Officer != null && Officer.Exists())
+                {
+                    BlipService.SafeDeleteEntityBlip(Officer);
+                }
 
                 try
                 {

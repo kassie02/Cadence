@@ -731,19 +731,24 @@ namespace Cadence.Features
                         }
                         else
                         {
-                            // If outside, allow natural standing / facing scene without despawn or interrupting arrest
+                            // Keep BlockPermanentEvents true so cops do not wander off or spasm before player dismisses them
+                            Driver.BlockPermanentEvents = true;
                             if (!Driver.IsInCombat && !Driver.IsCuffed)
                             {
-                                Driver.BlockPermanentEvents = false;
+                                NativeFunction.Natives.TASK_STAND_STILL(Driver, -1);
                             }
                         }
                     }
 
                     if (Passenger != null && Passenger.Exists() && Passenger.IsAlive)
                     {
-                        if (!Passenger.IsInVehicle(Cruiser, false) && !Passenger.IsInCombat && !Passenger.IsCuffed)
+                        if (!Passenger.IsInVehicle(Cruiser, false))
                         {
-                            Passenger.BlockPermanentEvents = false;
+                            Passenger.BlockPermanentEvents = true;
+                            if (!Passenger.IsInCombat && !Passenger.IsCuffed)
+                            {
+                                NativeFunction.Natives.TASK_STAND_STILL(Passenger, -1);
+                            }
                         }
                     }
                 }
@@ -858,6 +863,9 @@ namespace Cadence.Features
             {
                 // 1. Zero-leak blip destructor (4-step protocol)
                 BlipService.SafeDeleteBlip(ref RadarBlip);
+                BlipService.SafeDeleteEntityBlip(Cruiser);
+                BlipService.SafeDeleteEntityBlip(Driver);
+                BlipService.SafeDeleteEntityBlip(Passenger);
 
                 // 2. Entities clean up
                 try
