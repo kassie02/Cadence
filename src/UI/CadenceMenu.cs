@@ -59,7 +59,8 @@ namespace Cadence.UI
         // Submenu 4: Testing & Spawns
         private static UIMenuItem _spawnPatrolItem;
         private static UIMenuItem _spawnPulloverItem;
-        private static UIMenuItem _spawnStationaryItem;
+        private static UIMenuItem _spawnRadarItem;
+        private static UIMenuItem _spawnChillingItem;
         private static UIMenuItem _triggerEmergencyRunItem;
         private static UIMenuItem _triggerPanicItem;
         private static UIMenuItem _triggerGroupBackupItem;
@@ -69,7 +70,15 @@ namespace Cadence.UI
         private static UIMenuItem _reloadConfigItem;
 
         // Option Value Mappings
-        private static readonly object[] PresetLabels = new object[] { "Realistic", "Chaos" };
+        private static readonly object[] PresetLabels = new object[]
+        {
+            "Chaos (LA Living City)",
+            "Realistic (Authentic)",
+            "Metro (Downtown Patrol)",
+            "Highway (SAHP Patrol)",
+            "Rural (Blaine County)",
+            "Warzone (Extreme Tactical)"
+        };
 
         private static readonly int[] PatrolLimitValues = new int[] { 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16 };
         private static readonly object[] PatrolLimitLabels = new object[] { "1", "2", "3", "4 (Def)", "5", "6", "7", "8", "10", "12", "14", "16" };
@@ -464,7 +473,7 @@ namespace Cadence.UI
             _mainMenu.AddItem(settingsSubItem);
             _mainMenu.BindMenuToItem(_settingsMenu, settingsSubItem);
 
-            _presetItem = new UIMenuListItem("Preset Profile", "Toggle density profile: Realistic (default low-profile) vs Chaos (Living City density).", PresetLabels);
+            _presetItem = new UIMenuListItem("Preset Profile", "Toggle density profile: Chaos (LA Living City), Realistic, Metro, Highway, Rural, or Warzone.", PresetLabels);
             _maxPatrolItem = new UIMenuListItem("Max Patrol Cruisers", "Maximum ambient cruisers patrolling roadways simultaneously.", PatrolLimitLabels);
             _maxStopsItem = new UIMenuListItem("Max Traffic Stops", "Maximum roadside traffic stops and citations active at one time.", StopLimitLabels);
             _maxStationaryItem = new UIMenuListItem("Max Speed Traps", "Maximum parked speed traps and stationary watch units.", StationaryLimitLabels);
@@ -494,14 +503,16 @@ namespace Cadence.UI
 
             _spawnPatrolItem = new UIMenuItem("Spawn Patrol Cruiser", "Instantly spawns an ambient patrol cruiser on the road ahead.");
             _spawnPulloverItem = new UIMenuItem("Spawn Roadside Pullover", "Spawns a roadside pullover traffic stop at a safe shoulder spot.");
-            _spawnStationaryItem = new UIMenuItem("Spawn Radar Speed Trap", "Spawns a parked speed trap / stationary watch unit nearby.");
+            _spawnRadarItem = new UIMenuItem("Spawn Radar Speed Trap", "Spawns a parked radar speed trap unit monitoring passing traffic.");
+            _spawnChillingItem = new UIMenuItem("Spawn Chilling Patrol", "Spawns a parked officer chilling on foot outside their cruiser (coffee, phone, or leaning).");
             _triggerEmergencyRunItem = new UIMenuItem("Trigger Code 3 Emergency Run", "Dispatches an ambient cruiser Code 3 to an incident node.");
             _triggerPanicItem = new UIMenuItem("Trigger Panic Backup", "Immediately triggers high-priority emergency panic backup.");
             _triggerGroupBackupItem = new UIMenuItem("Trigger Group Backup", "Immediately dispatches multi-unit tactical group reinforcement.");
 
             _testingMenu.AddItem(_spawnPatrolItem);
             _testingMenu.AddItem(_spawnPulloverItem);
-            _testingMenu.AddItem(_spawnStationaryItem);
+            _testingMenu.AddItem(_spawnRadarItem);
+            _testingMenu.AddItem(_spawnChillingItem);
             _testingMenu.AddItem(_triggerEmergencyRunItem);
             _testingMenu.AddItem(_triggerPanicItem);
             _testingMenu.AddItem(_triggerGroupBackupItem);
@@ -528,10 +539,10 @@ namespace Cadence.UI
             {
                 if (listItem == _presetItem)
                 {
-                    bool isChaos = (newIndex == 1);
-                    Settings.ApplyChaosPreset(isChaos);
+                    string chosen = PresetLabels[newIndex].ToString();
+                    Settings.ApplyPreset(chosen);
                     SyncSettingsMenuValues();
-                    Game.DisplayNotification($"~b~Cadence~s~: Applied {(isChaos ? "~r~Chaos Preset~s~ (Living City Density)" : "~g~Realistic Preset~s~ (Default Density)")}.");
+                    Game.DisplayNotification($"~b~Cadence~s~: Applied ~y~{Settings.Preset} Preset~s~.");
                 }
                 else if (listItem == _maxPatrolItem)
                 {
@@ -671,11 +682,17 @@ namespace Cadence.UI
                     if (ok) Game.DisplayNotification("~b~Cadence~s~: Roadside pullover ~g~spawned~s~.");
                     else Game.DisplayNotification("~b~Cadence~s~: ~r~Failed~s~ to spawn roadside pullover (check shoulder spot).");
                 }
-                else if (item == _spawnStationaryItem)
+                else if (item == _spawnRadarItem)
                 {
-                    bool ok = InvokeFeatureSpawn("StationaryFeature", "SpawnTestStationary");
+                    bool ok = InvokeFeatureSpawn("StationaryFeature", "SpawnTestRadarUnit");
                     if (ok) Game.DisplayNotification("~b~Cadence~s~: Radar speed trap ~g~spawned~s~.");
-                    else Game.DisplayNotification("~b~Cadence~s~: ~r~Failed~s~ to spawn speed trap (check turnout spot).");
+                    else Game.DisplayNotification("~b~Cadence~s~: ~r~Failed~s~ to spawn radar speed trap (check turnout spot).");
+                }
+                else if (item == _spawnChillingItem)
+                {
+                    bool ok = InvokeFeatureSpawn("StationaryFeature", "SpawnTestChillingUnit");
+                    if (ok) Game.DisplayNotification("~b~Cadence~s~: Chilling patrol unit ~g~spawned~s~.");
+                    else Game.DisplayNotification("~b~Cadence~s~: ~r~Failed~s~ to spawn chilling patrol unit (check turnout spot).");
                 }
                 else if (item == _triggerEmergencyRunItem)
                 {
@@ -774,9 +791,23 @@ namespace Cadence.UI
             return 3;
         }
 
+        private static int GetPresetIndex()
+        {
+            switch (Settings.Preset?.ToLowerInvariant())
+            {
+                case "chaos": return 0;
+                case "realistic": return 1;
+                case "metro": return 2;
+                case "highway": return 3;
+                case "rural": return 4;
+                case "warzone": return 5;
+                default: return Settings.ChaosMode ? 0 : 1;
+            }
+        }
+
         private static void SyncSettingsMenuValues()
         {
-            if (_presetItem != null) _presetItem.Index = Settings.ChaosMode ? 1 : 0;
+            if (_presetItem != null) _presetItem.Index = GetPresetIndex();
             if (_maxPatrolItem != null) _maxPatrolItem.Index = GetClosestIndex(PatrolLimitValues, Settings.MaxPatrolUnits);
             if (_maxStopsItem != null) _maxStopsItem.Index = GetClosestIndex(StopLimitValues, Settings.MaxTrafficStops);
             if (_maxStationaryItem != null) _maxStationaryItem.Index = GetClosestIndex(StationaryLimitValues, Settings.MaxStationaryUnits);

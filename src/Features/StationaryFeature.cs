@@ -75,49 +75,112 @@ namespace Cadence.Features
             }
         }
 
-        public static bool SpawnTestStationary()
+        public static bool SpawnTestRadarUnit() => SpawnTestStationaryInternal(forcedRadar: true);
+        public static bool SpawnTestChillingUnit() => SpawnTestStationaryInternal(forcedChilling: true);
+        public static bool SpawnTestStationary() => SpawnTestStationaryInternal();
+
+        private static bool SpawnTestStationaryInternal(bool forcedRadar = false, bool forcedChilling = false)
         {
             try
             {
                 Ped player = Game.LocalPlayer?.Character;
                 if (player == null || !player.Exists()) return false;
 
-                Logger.Info("[StationaryFeature] Spawning manual test stationary unit near player.");
+                string unitTypeDesc = forcedRadar ? "radar speed trap" : (forcedChilling ? "chilling patrol" : "stationary");
+                Logger.Info($"[StationaryFeature] Spawning manual test {unitTypeDesc} unit near player.");
 
                 Vector3 playerPos = player.Position;
                 Vector3 spotPos = Vector3.Zero;
                 float spotHeading = 0f;
 
-                // Attempt to find curated standby location or turnout spot nearby (30m - 200m) so it is readily visible and well within DespawnDistance
-                float maxSearch = Math.Min(200.0f, Math.Max(60.0f, Settings.DespawnDistance - 150.0f));
-                if (!ZoneSpawnData.FindBestStandbyLocation(playerPos, 30.0f, maxSearch, out spotPos, out spotHeading) &&
-                    !ZoneSpawnData.FindBestPulloverSpot(playerPos, 30.0f, maxSearch, out spotPos, out spotHeading))
+                List<Vector3> occupiedSpots = new List<Vector3>();
+                lock (_syncLock)
                 {
-                    // Fallback to roadside turnout/median ahead of player with 3.6m shoulder offset on local streets (never freeways)
-                    Vector3 aheadPos = playerPos + player.ForwardVector * 50.0f;
-                    if (!WorldUtils.IsHighway(aheadPos) && WorldUtils.GetSafeStreetPosition(aheadPos, 1, out Vector3 stPos, out float stH))
+                    occupiedSpots.AddRange(_activeUnits.Where(u => u != null && u.Cruiser != null && u.Cruiser.Exists()).Select(u => u.Cruiser.Position));
+                }
+
+                float maxSearch = Math.Min(250.0f, Math.Max(60.0f, Settings.DespawnDistance - 150.0f));
+
+                // Find candidate spots that are NOT within 35m of an occupied spot
+                var candidateSpots = new List<(Vector3 pos, float heading)>();
+                foreach (var spot in ZoneSpawnData.CuratedStandbyLocations)
+                {
+                    float dist = spot.pos.DistanceTo(playerPos);
+                    if (dist >= 30.0f && dist <= maxSearch && WorldUtils.IsAreaClear(spot.pos, 10.0f))
                     {
-                        float rad = stH * (float)(Math.PI / 180.0);
-                        Vector3 rightDir = new Vector3((float)Math.Cos(rad), (float)Math.Sin(rad), 0f);
-                        spotPos = stPos + rightDir * 3.6f;
-                        spotHeading = stH;
+                        if (!occupiedSpots.Any(occ => occ.DistanceTo(spot.pos) < 35.0f))
+                        {
+                            candidateSpots.Add(spot);
+                        }
+                    }
+                }
+
+                foreach (var zone in ZoneSpawnData.GetStationaryStandbyZones())
+                {
+                    foreach (var spot in zone)
+                    {
+                        float dist = spot.pos.DistanceTo(playerPos);
+                        if (dist >= 30.0f && dist <= maxSearch && WorldUtils.IsAreaClear(spot.pos, 10.0f))
+                        {
+                            if (!occupiedSpots.Any(occ => occ.DistanceTo(spot.pos) < 35.0f))
+                            {
+                                candidateSpots.Add(spot);
+                            }
+                        }
+                    }
+                }
+
+                if (candidateSpots.Count > 0)
+                {
+                    // Pick a random available candidate to avoid always picking the exact same spot
+                    var chosen = candidateSpots[_rand.Next(candidateSpots.Count)];
+                    spotPos = chosen.pos;
+                    spotHeading = chosen.heading;
+                }
+                else
+                {
+                    // Fallback to roadside shoulder at variable angles around player
+                    float[] testAngles = new float[] { 0f, 45f, -45f, 90f, -90f, 180f };
+                    foreach (float angle in testAngles)
+                    {
+                        float rad = (player.Heading + angle) * (float)(Math.PI / 180.0);
+                        Vector3 dir = new Vector3(-(float)Math.Sin(rad), (float)Math.Cos(rad), 0f);
+                        Vector3 probe = playerPos + dir * (45.0f + (float)(_rand.NextDouble() * 30.0));
+
+                        if (!WorldUtils.IsHighway(probe) && WorldUtils.GetSafeStreetPosition(probe, 1, out Vector3 stPos, out float stH))
+                        {
+                            float hRad = stH * (float)(Math.PI / 180.0);
+                            Vector3 rightDir = new Vector3((float)Math.Cos(hRad), (float)Math.Sin(hRad), 0f);
+                            Vector3 testShoulder = stPos + rightDir * 3.6f;
+
+                            if (!occupiedSpots.Any(occ => occ.DistanceTo(testShoulder) < 35.0f) && WorldUtils.IsAreaClear(testShoulder, 9.0f))
+                            {
+                                spotPos = testShoulder;
+                                spotHeading = stH;
+                                break;
+                            }
+                        }
                     }
                 }
 
                 if (spotPos == Vector3.Zero || WorldUtils.IsSubterraneanOrVoid(spotPos))
                 {
-                    Logger.Warn("[StationaryFeature] Could not find valid coordinates for test stationary unit.");
+                    Logger.Warn("[StationaryFeature] Could not find unoccupied valid coordinates for test stationary unit.");
                     return false;
                 }
 
-                StationaryUnitInstance unit = CreateStationaryUnitAt(spotPos, spotHeading);
+                int forcedScen = -1;
+                if (forcedRadar) forcedScen = 0;
+                else if (forcedChilling) forcedScen = _rand.Next(1, 4); // 1 = Leaning, 2 = Coffee, 3 = Phone
+
+                StationaryUnitInstance unit = CreateStationaryUnitAt(spotPos, spotHeading, forcedScen);
                 if (unit != null && unit.IsValid())
                 {
                     lock (_syncLock)
                     {
                         _activeUnits.Add(unit);
                     }
-                    Logger.Info($"[StationaryFeature] Spawned test stationary unit {unit.Callsign} (Scenario {unit.Scenario}) at {spotPos}.");
+                    Logger.Info($"[StationaryFeature] Spawned test {unitTypeDesc} unit {unit.Callsign} (Scenario {unit.Scenario}) at {spotPos}.");
                     return true;
                 }
             }
@@ -440,7 +503,7 @@ namespace Cadence.Features
             return false;
         }
 
-        private static StationaryUnitInstance CreateStationaryUnitAt(Vector3 position, float heading)
+        private static StationaryUnitInstance CreateStationaryUnitAt(Vector3 position, float heading, int forcedScenario = -1)
         {
             string callsign = GenerateCallsign();
             Vehicle cruiser = null;
@@ -533,7 +596,11 @@ namespace Cadence.Features
                 }
 
                 int scenario = 0;
-                if (isOnActiveLane)
+                if (forcedScenario >= 0)
+                {
+                    scenario = forcedScenario;
+                }
+                else if (isOnActiveLane)
                 {
                     scenario = 0; // Seated radar watch (InVehicleObservation)
                 }
@@ -552,8 +619,15 @@ namespace Cadence.Features
                     else scenario = 4;
                 }
 
-                // 4. Attach Mint Green Standby Radar Blip
-                blip = BlipService.AttachStandbyBlip(cruiser, callsign);
+                // 4. Attach Mint Green Radar or Chilling Patrol Blip
+                if (scenario == 0 || scenario == 4)
+                {
+                    blip = BlipService.AttachRadarWatchBlip(cruiser, callsign);
+                }
+                else
+                {
+                    blip = BlipService.AttachChillingBlip(cruiser, callsign);
+                }
 
                 string scName = scenario == 0 ? "RadarWatch" : scenario == 1 ? "Leaning" : scenario == 2 ? "Coffee" : scenario == 3 ? "Phone" : "SpeedGunLidar";
                 Logger.Debug("StationaryFeature", $"Configured stationary unit {callsign} [{scName}]: Cruiser={cruiser.Model.Name} (0x{cruiser.Handle:X}), Officer={officer.Model.Name} (0x{officer.Handle:X}), Pos={spawnPos}");
@@ -917,6 +991,14 @@ namespace Cadence.Features
             {
                 // 1. Delete blip
                 BlipService.SafeDeleteBlip(ref RadarBlip);
+                if (Cruiser != null && Cruiser.Exists())
+                {
+                    BlipService.SafeDeleteEntityBlip(Cruiser);
+                }
+                if (Officer != null && Officer.Exists())
+                {
+                    BlipService.SafeDeleteEntityBlip(Officer);
+                }
 
                 // 2. Detach and delete props
                 CleanupProp();

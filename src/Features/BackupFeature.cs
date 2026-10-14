@@ -410,7 +410,13 @@ namespace Cadence.Features
                         return;
                     }
 
-                    _backupMenu.Visible = false;
+                    // Only close on Dismiss All; allow calling multiple backup units without auto-closing menu
+                    if (item == _itemDismissAll)
+                    {
+                        _backupMenu.Visible = false;
+                        DismissAll();
+                        return;
+                    }
 
                     if (item == _itemLocalCode3) RequestBackup(BackupType.LocalPatrolCode3);
                     else if (item == _itemStateCode3) RequestBackup(BackupType.StatePatrolCode3);
@@ -425,7 +431,6 @@ namespace Cadence.Features
                     else if (item == _itemLocalPursuit) RequestBackup(BackupType.LocalPursuit);
                     else if (item == _itemStatePursuit) RequestBackup(BackupType.StatePursuit);
                     else if (item == _itemGroupPursuit) RequestBackup(BackupType.GroupPursuit);
-                    else if (item == _itemDismissAll) DismissAll();
                 };
 
                 Logger.Info("[BackupFeature] Lean Backup Menu created successfully (UB Class74 parity).");
@@ -532,19 +537,21 @@ namespace Cadence.Features
                     switch (type)
                     {
                         case BackupType.PanicButton:
+                            int panicCount = Settings.PanicButtonUnits;
                             Game.DisplayNotification("Requesting ~r~Panic Backup~s~ to ~g~Dispatch~s~");
-                            Game.DisplayHelp("~r~Panic Backup Units~s~ are on the way. ~g~Please wait~s~", 4000);
+                            Game.DisplayHelp($"~r~Panic Backup Units ({panicCount})~s~ are on the way. ~g~Please wait~s~", 4000);
                             PlayPanicButtonSound();
                             Functions.PlayScannerAudioUsingPosition("ASSISTANCE_REQUIRED IN_OR_ON_POSITION", playerPos);
 
-                            DispatchUnitsSequence(type, Settings.PanicButtonUnits, isCode3: true);
+                            DispatchUnitsSequence(type, panicCount, isCode3: true);
                             break;
 
                         case BackupType.GroupBackup:
+                            int groupCount = Settings.GroupBackupUnits;
                             Game.DisplayNotification("Requesting ~y~Group Backup~s~ to ~g~Dispatch~s~");
-                            Game.DisplayHelp("~y~Group Backup Units~s~ are on the way. ~g~Please wait~s~", 4000);
+                            Game.DisplayHelp($"~y~Group Backup Units ({groupCount})~s~ are on the way. ~g~Please wait~s~", 4000);
                             Functions.PlayScannerAudioUsingPosition("ASSISTANCE_REQUIRED IN_OR_ON_POSITION", playerPos);
-                            DispatchUnitsSequence(type, Settings.GroupBackupUnits, Settings.GroupBackupCode3);
+                            DispatchUnitsSequence(type, groupCount, Settings.GroupBackupCode3);
                             break;
 
                         case BackupType.LocalPatrolCode2:
@@ -610,9 +617,10 @@ namespace Cadence.Features
                             break;
 
                         case BackupType.GroupPursuit:
+                            int groupPursuitCount = Settings.GroupBackupUnits;
                             Game.DisplayNotification("Requesting ~r~Group Pursuit Backup~s~ to ~g~Dispatch~s~");
                             Functions.PlayScannerAudioUsingPosition("ASSISTANCE_REQUIRED IN_OR_ON_POSITION", playerPos);
-                            PursuitFeature.RequestGroupPursuit(Settings.GroupBackupUnits);
+                            PursuitFeature.RequestGroupPursuit(groupPursuitCount);
                             break;
                     }
                 }
@@ -660,10 +668,10 @@ namespace Cadence.Features
                     Logger.Info($"[BackupFeature] Dispatched unit {dispatched}/{count} ({unit.Callsign}) for {type}.");
                 }
 
-                // 1500ms pacing delay between multiple unit dispatches to prevent vehicle stacking
+                // Pacing delay between multiple unit dispatches to prevent vehicle stacking (rapid for panic, staged for group)
                 if (i < count - 1)
                 {
-                    GameFiber.Sleep(1500);
+                    GameFiber.Sleep(type == BackupType.PanicButton ? 650 : 1200);
                 }
             }
         }
@@ -797,6 +805,59 @@ namespace Cadence.Features
                         // Vehicle MUST be an authentic police vehicle - under NO circumstances allow civilian vehicles!
                         bool isPolice = veh.IsPoliceVehicle || veh.Model.IsLawEnforcementVehicle;
                         if (!isPolice) continue;
+                    }
+
+                    // Guard against hijacking prisoner transport units
+                    bool hasPrisoner = false;
+                    try
+                    {
+                        Ped[] occupants = veh.Occupants;
+                        if (occupants != null)
+                        {
+                            foreach (Ped occ in occupants)
+                            {
+                                if (occ == null || !occ.Exists()) continue;
+                                if (Functions.IsPedArrested(occ) || occ.IsCuffed)
+                                {
+                                    hasPrisoner = true;
+                                    break;
+                                }
+                                if (occ != veh.Driver && !Functions.IsPedACop(occ) && occ.RelationshipGroup != "COP")
+                                {
+                                    hasPrisoner = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                    if (hasPrisoner) continue;
+
+                    try
+                    {
+                        Entity[] nearbyPeds = World.GetEntities(veh.Position, 15.0f, GetEntitiesFlags.ConsiderHumanPeds);
+                        if (nearbyPeds != null && nearbyPeds.OfType<Ped>().Any(p => p != null && p.Exists() && (Functions.IsPedArrested(p) || p.IsCuffed)))
+                        {
+                            continue;
+                        }
+                    }
+                    catch { }
+
+                    // Agency matching: prevent highway units responding to local police calls and vice-versa
+                    bool isStateRequested = type == BackupType.StatePatrolCode2 || type == BackupType.StatePatrolCode3;
+                    bool isLocalRequested = type == BackupType.LocalPatrolCode2 || type == BackupType.LocalPatrolCode3;
+                    bool isHighwayModel = vName.Contains("chp") || vName.Contains("hway") || 
+                                          vName.Contains("highway") || vName.Contains("sahp") || 
+                                          vName.Contains("state");
+
+                    if (isLocalRequested && isHighwayModel)
+                    {
+                        continue;
+                    }
+
+                    if (isStateRequested && !isHighwayModel && !WorldUtils.IsHighway(veh.Position))
+                    {
+                        continue;
                     }
 
                     // Check driver availability & designated officer verification
@@ -1307,6 +1368,11 @@ namespace Cadence.Features
                     NativeTasks.TaskLongRangeEmergencyDrive(driver, cruiser, destination, speed, 12.0f);
                 }
 
+                // Purge any preexisting blips from cruiser and officers before attaching new emergency blip
+                BlipService.SafeDeleteEntityBlip(cruiser);
+                BlipService.SafeDeleteEntityBlip(driver);
+                if (passenger != null) BlipService.SafeDeleteEntityBlip(passenger);
+
                 // Attach flashing emergency blip
                 string labelSuffix = isCode3 ? "CODE 3" : "CODE 2";
                 Blip blip = BlipService.AttachEmergencyBlip(cruiser, $"{callsign} [{labelSuffix}]");
@@ -1494,14 +1560,14 @@ namespace Cadence.Features
                 }
                 ClearFootBlips();
 
-                // Extinguish emergency lightbars and sirens
+                // Mute audible sirens, but keep emergency lights active while officers remount vehicle
                 if (Cruiser != null && Cruiser.Exists())
                 {
                     try
                     {
-                        Cruiser.IsSirenOn = false;
-                        Cruiser.IsSirenSilent = false;
-                        NativeTasks.SetSilentEmergencyLights(Cruiser, false);
+                        Cruiser.IsSirenOn = true;
+                        Cruiser.IsSirenSilent = true;
+                        NativeTasks.SetSilentEmergencyLights(Cruiser, true);
                     }
                     catch { }
                 }
@@ -1559,6 +1625,18 @@ namespace Cadence.Features
                 }
 
                 uint now = Game.GameTime;
+
+                // Strip foot blip immediately from any officer who has entered the cruiser
+                if (Officers != null && Cruiser != null && Cruiser.Exists())
+                {
+                    foreach (var ofc in Officers)
+                    {
+                        if (ofc != null && ofc.Exists() && ofc.IsInVehicle(Cruiser, false))
+                        {
+                            BlipService.SafeDeleteEntityBlip(ofc);
+                        }
+                    }
+                }
 
                 switch (State)
                 {
@@ -2088,6 +2166,17 @@ namespace Cadence.Features
                     BlipService.SafeDeleteBlip(ref temp);
                 }
                 FootBlips.Clear();
+
+                if (Officers != null)
+                {
+                    foreach (var ofc in Officers)
+                    {
+                        if (ofc != null && ofc.Exists())
+                        {
+                            BlipService.SafeDeleteEntityBlip(ofc);
+                        }
+                    }
+                }
             }
 
             public void Dispose(bool immediateDelete)

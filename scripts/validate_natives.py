@@ -25,6 +25,8 @@ Checks performed:
       - Raw hex calls (x...) are prohibited unless explicitly whitelisted.
   [G] SafeDeleteBlip Reference Semantics:
       - All call-sites to SafeDeleteBlip must pass arguments with the 'ref' keyword.
+  [H] Banned Pointer Native REMOVE_BLIP:
+      - REMOVE_BLIP takes a Blip* pointer in GTA V engine; RPH invocation causes AccessViolationException. Must use RPH Blip.Delete().
 
 Exit Code:
   0 - All validation checks passed cleanly.
@@ -154,6 +156,14 @@ class NativeValidator:
                                 f"SafeDeleteBlip invocation '{match.group(0)}' does not pass argument by 'ref'.",
                                 line
                             )
+
+            # [H] Banned Pointer Native REMOVE_BLIP
+            if "REMOVE_BLIP" in line and not is_comment:
+                self.add_violation(
+                    file_path, idx, "RULE-H-BANNED-POINTER-NATIVE",
+                    "REMOVE_BLIP is strictly banned. In GTA V engine it takes a Blip* pointer; invoking via RPH throws AccessViolationException. Use RPH Blip.Delete() instead.",
+                    line
+                )
 
     def run(self) -> int:
         print("=" * 80)
