@@ -24,7 +24,12 @@ namespace Cadence.Services
 
             try
             {
-                if (blip.Exists())
+                if (NativeFunction.Natives.DOES_BLIP_EXIST<bool>(blip))
+                {
+                    NativeFunction.Natives.SET_BLIP_FLASHES(blip, false);
+                    NativeFunction.Natives.REMOVE_BLIP(blip);
+                }
+                else if (blip.Exists())
                 {
                     NativeFunction.Natives.SET_BLIP_FLASHES(blip, false);
                     blip.StopFlashing();
@@ -39,15 +44,6 @@ namespace Cadence.Services
             {
                 blip = null;
             }
-        }
-
-        /// <summary>
-        /// Convenience overload for SafeDeleteBlip without the ref keyword.
-        /// </summary>
-        public static void SafeDeleteBlip(Blip blip)
-        {
-            Blip temp = blip;
-            SafeDeleteBlip(ref temp);
         }
 
         /// <summary>

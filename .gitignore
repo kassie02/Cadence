@@ -13,3 +13,8 @@ Cadence.log
 
 # Temporary distribution archives
 dist/*.zip
+
+# Python
+__pycache__/
+*.py[cod]
+

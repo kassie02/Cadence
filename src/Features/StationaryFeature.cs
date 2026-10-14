@@ -88,9 +88,10 @@ namespace Cadence.Features
                 Vector3 spotPos = Vector3.Zero;
                 float spotHeading = 0f;
 
-                // Attempt to find curated standby location or turnout spot within 400m
-                if (!ZoneSpawnData.FindBestStandbyLocation(playerPos, 40.0f, 400.0f, out spotPos, out spotHeading) &&
-                    !ZoneSpawnData.FindBestPulloverSpot(playerPos, 40.0f, 400.0f, out spotPos, out spotHeading))
+                // Attempt to find curated standby location or turnout spot nearby (30m - 200m) so it is readily visible and well within DespawnDistance
+                float maxSearch = Math.Min(200.0f, Math.Max(60.0f, Settings.DespawnDistance - 150.0f));
+                if (!ZoneSpawnData.FindBestStandbyLocation(playerPos, 30.0f, maxSearch, out spotPos, out spotHeading) &&
+                    !ZoneSpawnData.FindBestPulloverSpot(playerPos, 30.0f, maxSearch, out spotPos, out spotHeading))
                 {
                     // Fallback to roadside turnout/median ahead of player with 3.6m shoulder offset on local streets (never freeways)
                     Vector3 aheadPos = playerPos + player.ForwardVector * 50.0f;
@@ -279,11 +280,12 @@ namespace Cadence.Features
                         continue;
                     }
 
-                    // Despawn distance watchdog (> 450m)
+                    // Despawn distance watchdog (> 450m) with 45s grace period for newly created units
                     float dist = unit.GetDistanceTo(playerPos);
-                    if (dist > Settings.DespawnDistance)
+                    uint age = Game.GameTime - unit.CreatedTime;
+                    if (dist > Settings.DespawnDistance && age > 45000)
                     {
-                        Logger.Debug("StationaryFeature", $"Unit {unit.Callsign} out of range ({dist:F0}m > {Settings.DespawnDistance:F0}m). Cleaning up. Active remaining: {_activeUnits.Count - 1}/{Settings.MaxStationaryUnits}");
+                        Logger.Debug("StationaryFeature", $"Unit {unit.Callsign} out of range ({dist:F0}m > {Settings.DespawnDistance:F0}m, age: {age / 1000}s). Cleaning up. Active remaining: {_activeUnits.Count - 1}/{Settings.MaxStationaryUnits}");
                         unit.Dispose(immediateDelete: false);
                         _activeUnits.RemoveAt(i);
                         continue;
@@ -400,7 +402,7 @@ namespace Cadence.Features
                 bool foundNode = false;
                 try
                 {
-                    foundNode = NativeFunction.Natives.GetClosestVehicleNodeWithHeading<bool>(streetPos.X, streetPos.Y, streetPos.Z, out nodePos, out heading, 1, 3.0f, 0);
+                    foundNode = NativeFunction.Natives.GET_CLOSEST_VEHICLE_NODE_WITH_HEADING<bool>(streetPos.X, streetPos.Y, streetPos.Z, out nodePos, out heading, 1, 3.0f, 0f);
                 }
                 catch
                 {
@@ -419,7 +421,7 @@ namespace Cadence.Features
                 try
                 {
                     NativeFunction.Natives.REQUEST_COLLISION_AT_COORD(candidatePos.X, candidatePos.Y, candidatePos.Z);
-                    bool hasGround = NativeFunction.Natives.GET_GROUND_Z_FOR_3D_COORD<bool>(candidatePos.X, candidatePos.Y, candidatePos.Z + 2.0f, out float gZ, false);
+                    bool hasGround = NativeFunction.Natives.GET_GROUND_Z_FOR_3D_COORD<bool>(candidatePos.X, candidatePos.Y, candidatePos.Z + 2.0f, out float gZ, false, false);
                     if (hasGround && gZ > -50f)
                     {
                         candidatePos = new Vector3(candidatePos.X, candidatePos.Y, gZ + 0.35f);
@@ -522,7 +524,7 @@ namespace Cadence.Features
                         isOnActiveLane = true;
                     }
                 }
-                else if (NativeFunction.Natives.GetClosestVehicleNodeWithHeading<bool>(spawnPos.X, spawnPos.Y, spawnPos.Z, out Vector3 nodeCoord, out float nodeHeading, 1, 3.0f, 0))
+                else if (NativeFunction.Natives.GET_CLOSEST_VEHICLE_NODE_WITH_HEADING<bool>(spawnPos.X, spawnPos.Y, spawnPos.Z, out Vector3 nodeCoord, out float nodeHeading, 1, 3.0f, 0f))
                 {
                     if (spawnPos.DistanceTo(nodeCoord) < 6.5f)
                     {
@@ -614,6 +616,7 @@ namespace Cadence.Features
             public int Scenario { get; }
             public Vector3 OriginPosition { get; }
             public bool IsCompleted { get; private set; }
+            public uint CreatedTime { get; } = Game.GameTime;
 
             private StationaryState _state;
             private uint _stateStartTime;
@@ -944,6 +947,9 @@ namespace Cadence.Features
 
             public void Dispose(bool immediateDelete)
             {
+                _state = StationaryState.Completed;
+                IsCompleted = true;
+
                 // 1. 4-step destructor protocol for blip
                 BlipService.SafeDeleteBlip(ref RadarBlip);
 

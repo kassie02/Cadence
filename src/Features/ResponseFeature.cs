@@ -396,6 +396,16 @@ namespace Cadence.Features
                 return;
             }
 
+            // Suppress autonomous emergency runs while the player is handling an active LSPDFR callout
+            try
+            {
+                if (Functions.IsCalloutRunning())
+                {
+                    return;
+                }
+            }
+            catch { }
+
             int currentCount;
             lock (_syncLock)
             {
@@ -567,12 +577,19 @@ namespace Cadence.Features
 
                 if (Settings.UseUltimateBackup && UltimateBackupService.IsAvailable)
                 {
-                    var ubResult = UltimateBackupService.SpawnAmbulanceUnit(spawnPos, 2);
-                    if (ubResult != null && ubResult.Item1 != null && ubResult.Item1.Exists() && ubResult.Item2 != null && ubResult.Item2.Count > 0)
+                    try
                     {
-                        amb = ubResult.Item1;
-                        driver = ubResult.Item2[0];
-                        if (ubResult.Item2.Count > 1) passenger = ubResult.Item2[1];
+                        var ubResult = UltimateBackupService.SpawnAmbulanceUnit(spawnPos, 2);
+                        if (ubResult != null && ubResult.Item1 != null && ubResult.Item1.Exists() && ubResult.Item2 != null && ubResult.Item2.Count > 0)
+                        {
+                            amb = ubResult.Item1;
+                            driver = ubResult.Item2[0];
+                            if (ubResult.Item2.Count > 1) passenger = ubResult.Item2[1];
+                        }
+                    }
+                    catch (Exception ubEx)
+                    {
+                        Logger.Warn($"[ResponseFeature] Ultimate Backup Ambulance dispatch error: {ubEx.Message}");
                     }
                 }
 
@@ -616,12 +633,19 @@ namespace Cadence.Features
 
                 if (Settings.UseUltimateBackup && UltimateBackupService.IsAvailable)
                 {
-                    var ubResult = UltimateBackupService.SpawnFireTruckUnit(spawnPos, 2);
-                    if (ubResult != null && ubResult.Item1 != null && ubResult.Item1.Exists() && ubResult.Item2 != null && ubResult.Item2.Count > 0)
+                    try
                     {
-                        fire = ubResult.Item1;
-                        driver = ubResult.Item2[0];
-                        if (ubResult.Item2.Count > 1) passenger = ubResult.Item2[1];
+                        var ubResult = UltimateBackupService.SpawnFireTruckUnit(spawnPos, 2);
+                        if (ubResult != null && ubResult.Item1 != null && ubResult.Item1.Exists() && ubResult.Item2 != null && ubResult.Item2.Count > 0)
+                        {
+                            fire = ubResult.Item1;
+                            driver = ubResult.Item2[0];
+                            if (ubResult.Item2.Count > 1) passenger = ubResult.Item2[1];
+                        }
+                    }
+                    catch (Exception ubEx)
+                    {
+                        Logger.Warn($"[ResponseFeature] Ultimate Backup FireTruck dispatch error: {ubEx.Message}");
                     }
                 }
 
@@ -977,9 +1001,7 @@ namespace Cadence.Features
                     {
                         try
                         {
-                            Cruiser.IsSirenOn = false;
-                            Cruiser.IsSirenSilent = true;
-                            NativeFunction.Natives.SET_VEHICLE_SIREN(Cruiser, false);
+                            NativeTasks.SetSilentEmergencyLights(Cruiser, false);
                             NativeFunction.Natives.SET_VEHICLE_HANDBRAKE(Cruiser, false);
                         }
                         catch { }

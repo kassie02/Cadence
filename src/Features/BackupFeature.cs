@@ -26,7 +26,7 @@ namespace Cadence.Features
     {
         private const uint WeaponCombatPistol = 0x5EF9FEC4;
         private const uint WeaponCarbineRifle = 0x83BF0278;
-        private const uint WeaponUnarmed = 0xA2719248;
+        private const uint WeaponUnarmed = 0xA2719263; // Verified JOAAT for WEAPON_UNARMED
 
         public enum BackupType
         {
@@ -1092,12 +1092,19 @@ namespace Cadence.Features
 
                     if (Settings.UseUltimateBackup && UltimateBackupService.IsAvailable)
                     {
-                        var ubResult = UltimateBackupService.SpawnAmbulanceUnit(spawnPos, 2);
-                        if (ubResult != null && ubResult.Item1 != null && ubResult.Item1.Exists() && ubResult.Item2 != null && ubResult.Item2.Count > 0)
+                        try
                         {
-                            amb = ubResult.Item1;
-                            medic = ubResult.Item2[0];
-                            if (ubResult.Item2.Count > 1) passMedic = ubResult.Item2[1];
+                            var ubResult = UltimateBackupService.SpawnAmbulanceUnit(spawnPos, 2);
+                            if (ubResult != null && ubResult.Item1 != null && ubResult.Item1.Exists() && ubResult.Item2 != null && ubResult.Item2.Count > 0)
+                            {
+                                amb = ubResult.Item1;
+                                medic = ubResult.Item2[0];
+                                if (ubResult.Item2.Count > 1) passMedic = ubResult.Item2[1];
+                            }
+                        }
+                        catch (Exception ubEx)
+                        {
+                            Logger.Warn($"[BackupFeature] Ultimate Backup Ambulance dispatch error: {ubEx.Message}");
                         }
                     }
 
@@ -1137,12 +1144,19 @@ namespace Cadence.Features
 
                     if (Settings.UseUltimateBackup && UltimateBackupService.IsAvailable)
                     {
-                        var ubResult = UltimateBackupService.SpawnFireTruckUnit(spawnPos, 2);
-                        if (ubResult != null && ubResult.Item1 != null && ubResult.Item1.Exists() && ubResult.Item2 != null && ubResult.Item2.Count > 0)
+                        try
                         {
-                            fire = ubResult.Item1;
-                            fireman = ubResult.Item2[0];
-                            if (ubResult.Item2.Count > 1) passFireman = ubResult.Item2[1];
+                            var ubResult = UltimateBackupService.SpawnFireTruckUnit(spawnPos, 2);
+                            if (ubResult != null && ubResult.Item1 != null && ubResult.Item1.Exists() && ubResult.Item2 != null && ubResult.Item2.Count > 0)
+                            {
+                                fire = ubResult.Item1;
+                                fireman = ubResult.Item2[0];
+                                if (ubResult.Item2.Count > 1) passFireman = ubResult.Item2[1];
+                            }
+                        }
+                        catch (Exception ubEx)
+                        {
+                            Logger.Warn($"[BackupFeature] Ultimate Backup FireTruck dispatch error: {ubEx.Message}");
                         }
                     }
 

@@ -14,7 +14,8 @@ namespace Cadence.Common
         /// </summary>
         public static bool IsSubterraneanOrVoid(Vector3 pos)
         {
-            if (float.IsNaN(pos.Z) || float.IsInfinity(pos.Z)) return true;
+            if (pos == Vector3.Zero || (Math.Abs(pos.X) < 0.001f && Math.Abs(pos.Y) < 0.001f && Math.Abs(pos.Z) < 0.001f)) return true;
+            if (float.IsNaN(pos.X) || float.IsNaN(pos.Y) || float.IsNaN(pos.Z) || float.IsInfinity(pos.Z)) return true;
             return pos.Z < MinValidGroundZ;
         }
 
@@ -41,7 +42,7 @@ namespace Cadence.Common
                 // Probes tightly above origin: 2.0m for vehicles, 1.2m for peds.
                 // Avoids pulling rooftop / bridge elevation 15m above.
                 float probeZ = entity is Vehicle ? (pos.Z + 2.0f) : (pos.Z + 1.2f);
-                bool foundZ = NativeFunction.Natives.GET_GROUND_Z_FOR_3D_COORD<bool>(pos.X, pos.Y, probeZ, out groundZ, false);
+                bool foundZ = NativeFunction.Natives.GET_GROUND_Z_FOR_3D_COORD<bool>(pos.X, pos.Y, probeZ, out groundZ, false, false);
 
                 if (!foundZ || groundZ <= MinValidGroundZ || Math.Abs(groundZ - pos.Z) > MaxGroundDelta)
                 {
@@ -121,7 +122,7 @@ namespace Cadence.Common
                 NativeFunction.Natives.REQUEST_COLLISION_AT_COORD(queryPos.X, queryPos.Y, queryPos.Z);
                 float probeZ = queryPos.Z + 2.5f;
 
-                if (NativeFunction.Natives.GET_GROUND_Z_FOR_3D_COORD<bool>(queryPos.X, queryPos.Y, probeZ, out float nativeZ, false))
+                if (NativeFunction.Natives.GET_GROUND_Z_FOR_3D_COORD<bool>(queryPos.X, queryPos.Y, probeZ, out float nativeZ, false, false))
                 {
                     if (nativeZ > MinValidGroundZ && Math.Abs(nativeZ - queryPos.Z) <= MaxGroundDelta)
                     {

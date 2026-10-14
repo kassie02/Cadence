@@ -23,7 +23,7 @@ namespace Cadence.Features
     {
         private const uint WeaponCombatPistol = 0x5EF9FEC4;
         private const uint WeaponPistol = 0x1B06D571;
-        private const uint WeaponUnarmed = 0xA2719248;
+        private const uint WeaponUnarmed = 0xA2719263; // Verified JOAAT for WEAPON_UNARMED
 
         private static readonly object _syncLock = new object();
         private static readonly List<CombatDefenseSession> _activeSessions = new List<CombatDefenseSession>();
@@ -157,7 +157,6 @@ namespace Cadence.Features
                     if (session.State == CombatDefenseSession.CombatState.Completed)
                     {
                         Logger.Info($"[AssistFeature] Combat engagement completed for unit {session.Callsign}. Resumed normal patrol.");
-                        session.Dispose(immediateDelete: false);
                         _activeSessions.RemoveAt(i);
                     }
                 }
@@ -185,6 +184,15 @@ namespace Cadence.Features
                     {
                         continue;
                     }
+
+                    // Check if driver is in active LSPDFR pursuit
+                    bool inPursuit = false;
+                    try
+                    {
+                        inPursuit = Functions.IsPedInPursuit(driver);
+                    }
+                    catch { }
+                    if (inPursuit) continue;
 
                     // Skip if cruiser is already engaged in active combat
                     lock (_syncLock)
@@ -283,6 +291,12 @@ namespace Cadence.Features
         {
             try
             {
+                // Relinquish cruiser from any other Cadence feature tracking before commandeering
+                try { PatrolFeature.RelinquishCruiser(cruiser); } catch { }
+                try { StationaryFeature.RelinquishCruiser(cruiser); } catch { }
+                try { TrafficStopFeature.RelinquishCruiser(cruiser); } catch { }
+                try { ResponseFeature.RelinquishCruiser(cruiser); } catch { }
+
                 string callsign = GenerateCallsign();
                 Logger.Info($"[AssistFeature] Active hostile threat detected ({threat.Handle}) near cruiser ({cruiser.Model.Name}). Mobilizing tactical defense!");
 
@@ -558,8 +572,13 @@ namespace Cadence.Features
                 }
             }
 
+            private bool _isDisposed = false;
+
             public void Dispose(bool immediateDelete)
             {
+                if (_isDisposed) return;
+                _isDisposed = true;
+
                 // 1. Zero-leak blip destructor (4-step protocol)
                 BlipService.SafeDeleteBlip(ref RadarBlip);
 
@@ -569,7 +588,7 @@ namespace Cadence.Features
                     if (Cruiser != null && Cruiser.Exists())
                     {
                         NativeFunction.Natives.SET_VEHICLE_HANDBRAKE(Cruiser, false);
-                        NativeTasks.SetSilentSiren(Cruiser, false);
+                        NativeTasks.SetSilentEmergencyLights(Cruiser, false);
                     }
 
                     foreach (var ofc in Officers)
