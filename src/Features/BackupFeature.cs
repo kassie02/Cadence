@@ -26,7 +26,7 @@ namespace Cadence.Features
     {
         private const uint WeaponCombatPistol = 0x5EF9FEC4;
         private const uint WeaponCarbineRifle = 0x83BF0278;
-        private const uint WeaponUnarmed = 0xA2719248;
+        private const uint WeaponUnarmed = 0xA2719263; // Verified JOAAT for WEAPON_UNARMED
 
         public enum BackupType
         {
@@ -39,7 +39,10 @@ namespace Cadence.Features
             FireDeptCode2,
             FireDeptCode3,
             GroupBackup,
-            PanicButton
+            PanicButton,
+            LocalPursuit,
+            StatePursuit,
+            GroupPursuit
         }
 
         private static readonly object _syncLock = new object();
@@ -54,9 +57,15 @@ namespace Cadence.Features
         private static uint _lastPanicTriggerTime;
         private static uint _lastGroupTriggerTime;
 
-        // RAGENativeUI Lean Backup Menu
+        // RAGENativeUI Lean Backup Menu (UB Class74 Architecture)
         private static MenuPool _menuPool;
         private static UIMenu _backupMenu;
+        private static readonly object[] NormalModes = new object[] { "Code 3 (Emergency)", "Code 2 (Silent)" };
+        private static readonly object[] PursuitModes = new object[] { "Pursuit Backup", "Code 3 (Emergency)", "Code 2 (Silent)" };
+        private static UIMenuListItem _responseModeNormal;
+        private static UIMenuListItem _responseModePursuit;
+
+        // Code 3 & Code 2 Items
         private static UIMenuItem _itemLocalCode2;
         private static UIMenuItem _itemLocalCode3;
         private static UIMenuItem _itemStateCode2;
@@ -67,6 +76,12 @@ namespace Cadence.Features
         private static UIMenuItem _itemFireCode3;
         private static UIMenuItem _itemGroupBackup;
         private static UIMenuItem _itemPanicButton;
+
+        // Pursuit Backup Items
+        private static UIMenuItem _itemLocalPursuit;
+        private static UIMenuItem _itemStatePursuit;
+        private static UIMenuItem _itemGroupPursuit;
+
         private static UIMenuItem _itemDismissAll;
 
         private static readonly string[] Divisions = new[]
@@ -171,19 +186,22 @@ namespace Cadence.Features
         {
             lock (_syncLock)
             {
-                if (_activeUnits.Count == 0) return;
-
-                Logger.Info($"[BackupFeature] Dismissing all active backup units ({_activeUnits.Count}).");
-
-                foreach (var unit in _activeUnits)
+                if (_activeUnits.Count > 0)
                 {
-                    if (unit != null && unit.IsValid())
+                    Logger.Info($"[BackupFeature] Dismissing all active backup units ({_activeUnits.Count}).");
+
+                    foreach (var unit in _activeUnits)
                     {
-                        unit.Dismiss();
+                        if (unit != null && unit.IsValid())
+                        {
+                            unit.Dismiss();
+                        }
                     }
+
+                    Game.DisplayNotification("~b~Backup units~s~ dismissed. Returning to routine patrol.");
                 }
 
-                Game.DisplayNotification("~b~Backup units~s~ dismissed. Returning to routine patrol.");
+                PursuitFeature.DismissStandbyUnits();
             }
         }
 
@@ -351,53 +369,112 @@ namespace Cadence.Features
                 _backupMenu.MouseControlsEnabled = false;
                 _menuPool.Add(_backupMenu);
 
-                _itemLocalCode2 = new UIMenuItem("Local Patrol (Code 2)", "Dispatches local police cruiser with silent lightbars.");
-                _itemLocalCode3 = new UIMenuItem("Local Patrol (Code 3)", "Dispatches local police cruiser with full emergency sirens.");
-                _itemStateCode2 = new UIMenuItem("State Patrol (Code 2)", "Dispatches highway/state patrol cruiser with silent lightbars.");
-                _itemStateCode3 = new UIMenuItem("State Patrol (Code 3)", "Dispatches highway/state patrol cruiser with full emergency sirens.");
-                _itemAmbulanceCode2 = new UIMenuItem("Ambulance / EMS (Code 2)", "Dispatches paramedic ambulance with silent emergency lightbars.");
-                _itemAmbulanceCode3 = new UIMenuItem("Ambulance / EMS (Code 3)", "Dispatches paramedic ambulance with sirens and lightbars.");
-                _itemFireCode2 = new UIMenuItem("Fire Department (Code 2)", "Dispatches fire department engine with silent lightbars.");
-                _itemFireCode3 = new UIMenuItem("Fire Department (Code 3)", "Dispatches fire department engine with sirens and lightbars.");
-                _itemGroupBackup = new UIMenuItem("Group Backup (Code 3)", "Requests multi-unit tactical reinforcement to your location.");
-                _itemPanicButton = new UIMenuItem("Panic Button (Emergency Code Red)", "High-priority distress signal with maximum agency response.");
-                _itemDismissAll = new UIMenuItem("Dismiss All Backup Units", "Releases all active backup units and returns them to routine patrol.");
+                _responseModeNormal = new UIMenuListItem("Response Mode", "Select backup authorization level.", NormalModes);
+                _responseModePursuit = new UIMenuListItem("Response Mode", "Select backup authorization level.", PursuitModes);
 
-                _backupMenu.AddItem(_itemLocalCode2);
-                _backupMenu.AddItem(_itemLocalCode3);
-                _backupMenu.AddItem(_itemStateCode2);
-                _backupMenu.AddItem(_itemStateCode3);
-                _backupMenu.AddItem(_itemAmbulanceCode2);
-                _backupMenu.AddItem(_itemAmbulanceCode3);
-                _backupMenu.AddItem(_itemFireCode2);
-                _backupMenu.AddItem(_itemFireCode3);
-                _backupMenu.AddItem(_itemGroupBackup);
-                _backupMenu.AddItem(_itemPanicButton);
-                _backupMenu.AddItem(_itemDismissAll);
-                _backupMenu.RefreshIndex();
+                // Code 3 Actions
+                _itemLocalCode3 = new UIMenuItem("Local Patrol (Code 3)", "Dispatches local police cruiser with sirens and flashing lights.");
+                _itemStateCode3 = new UIMenuItem("State Patrol (Code 3)", "Dispatches highway/state patrol cruiser with full emergency sirens.");
+                _itemGroupBackup = new UIMenuItem("Group Backup (Code 3)", "Requests multi-unit tactical reinforcement to your location.");
+                _itemPanicButton = new UIMenuItem("Panic Button (Code Red)", "High-priority distress signal with maximum agency response.");
+                _itemAmbulanceCode3 = new UIMenuItem("Ambulance (Code 3)", "Dispatches paramedic ambulance with sirens and lightbars.");
+                _itemFireCode3 = new UIMenuItem("Fire Dept (Code 3)", "Dispatches fire department engine with sirens and lightbars.");
+
+                // Code 2 Actions
+                _itemLocalCode2 = new UIMenuItem("Local Patrol (Code 2)", "Dispatches local police cruiser with silent lightbars.");
+                _itemStateCode2 = new UIMenuItem("State Patrol (Code 2)", "Dispatches highway/state patrol cruiser with silent lightbars.");
+                _itemAmbulanceCode2 = new UIMenuItem("Ambulance (Code 2)", "Dispatches paramedic ambulance with silent emergency lightbars.");
+                _itemFireCode2 = new UIMenuItem("Fire Dept (Code 2)", "Dispatches fire department engine with silent lightbars.");
+
+                // Pursuit Actions
+                _itemLocalPursuit = new UIMenuItem("Local Pursuit Interceptor", "Dispatches local police cruiser directly into the active pursuit.");
+                _itemStatePursuit = new UIMenuItem("State Pursuit Interceptor", "Dispatches high-speed state interceptor into the active chase.");
+                _itemGroupPursuit = new UIMenuItem("Group Pursuit Backup", "Requests multiple tactical cruisers to box in and join the pursuit.");
+
+                // Common
+                _itemDismissAll = new UIMenuItem("Dismiss All", "Releases all active backup units and returns them to routine patrol.");
+
+                _backupMenu.OnListChange += (sender, listItem, newIndex) =>
+                {
+                    if (listItem == _responseModeNormal || listItem == _responseModePursuit)
+                    {
+                        string selectedMode = listItem.Collection[newIndex].ToString();
+                        RebuildActionsForMode(listItem, selectedMode);
+                    }
+                };
 
                 _backupMenu.OnItemSelect += (sender, item, index) =>
                 {
+                    if (item == _responseModeNormal || item == _responseModePursuit)
+                    {
+                        return;
+                    }
+
                     _backupMenu.Visible = false;
 
-                    if (item == _itemLocalCode2) RequestBackup(BackupType.LocalPatrolCode2);
-                    else if (item == _itemLocalCode3) RequestBackup(BackupType.LocalPatrolCode3);
-                    else if (item == _itemStateCode2) RequestBackup(BackupType.StatePatrolCode2);
+                    if (item == _itemLocalCode3) RequestBackup(BackupType.LocalPatrolCode3);
                     else if (item == _itemStateCode3) RequestBackup(BackupType.StatePatrolCode3);
-                    else if (item == _itemAmbulanceCode2) RequestBackup(BackupType.AmbulanceCode2);
-                    else if (item == _itemAmbulanceCode3) RequestBackup(BackupType.AmbulanceCode3);
-                    else if (item == _itemFireCode2) RequestBackup(BackupType.FireDeptCode2);
-                    else if (item == _itemFireCode3) RequestBackup(BackupType.FireDeptCode3);
                     else if (item == _itemGroupBackup) RequestBackup(BackupType.GroupBackup);
                     else if (item == _itemPanicButton) RequestBackup(BackupType.PanicButton);
+                    else if (item == _itemAmbulanceCode3) RequestBackup(BackupType.AmbulanceCode3);
+                    else if (item == _itemFireCode3) RequestBackup(BackupType.FireDeptCode3);
+                    else if (item == _itemLocalCode2) RequestBackup(BackupType.LocalPatrolCode2);
+                    else if (item == _itemStateCode2) RequestBackup(BackupType.StatePatrolCode2);
+                    else if (item == _itemAmbulanceCode2) RequestBackup(BackupType.AmbulanceCode2);
+                    else if (item == _itemFireCode2) RequestBackup(BackupType.FireDeptCode2);
+                    else if (item == _itemLocalPursuit) RequestBackup(BackupType.LocalPursuit);
+                    else if (item == _itemStatePursuit) RequestBackup(BackupType.StatePursuit);
+                    else if (item == _itemGroupPursuit) RequestBackup(BackupType.GroupPursuit);
                     else if (item == _itemDismissAll) DismissAll();
                 };
 
-                Logger.Info("[BackupFeature] Lean Backup Menu created successfully.");
+                Logger.Info("[BackupFeature] Lean Backup Menu created successfully (UB Class74 parity).");
             }
             catch (Exception ex)
             {
                 Logger.Error("[BackupFeature] Error building Lean Backup Menu", ex);
+            }
+        }
+
+        private static void RebuildActionsForMode(UIMenuListItem modeItem, string selectedMode)
+        {
+            try
+            {
+                _backupMenu.Clear();
+                _backupMenu.AddItem(modeItem);
+
+                if (selectedMode == "Pursuit Backup")
+                {
+                    _backupMenu.AddItem(_itemLocalPursuit);
+                    _backupMenu.AddItem(_itemStatePursuit);
+                    _backupMenu.AddItem(_itemGroupPursuit);
+                    _backupMenu.AddItem(_itemPanicButton);
+                    _backupMenu.AddItem(_itemDismissAll);
+                }
+                else if (selectedMode == "Code 2 (Silent)")
+                {
+                    _backupMenu.AddItem(_itemLocalCode2);
+                    _backupMenu.AddItem(_itemStateCode2);
+                    _backupMenu.AddItem(_itemAmbulanceCode2);
+                    _backupMenu.AddItem(_itemFireCode2);
+                    _backupMenu.AddItem(_itemDismissAll);
+                }
+                else // "Code 3 (Emergency)"
+                {
+                    _backupMenu.AddItem(_itemLocalCode3);
+                    _backupMenu.AddItem(_itemStateCode3);
+                    _backupMenu.AddItem(_itemGroupBackup);
+                    _backupMenu.AddItem(_itemPanicButton);
+                    _backupMenu.AddItem(_itemAmbulanceCode3);
+                    _backupMenu.AddItem(_itemFireCode3);
+                    _backupMenu.AddItem(_itemDismissAll);
+                }
+
+                _backupMenu.RefreshIndex();
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("[BackupFeature] RebuildActionsForMode error", ex);
             }
         }
 
@@ -408,11 +485,24 @@ namespace Cadence.Features
             if (_backupMenu.Visible)
             {
                 _backupMenu.Visible = false;
+                return;
             }
-            else if (!Game.IsPaused)
+
+            if (Game.IsPaused) return;
+
+            LHandle activePursuit = null;
+            try { activePursuit = Functions.GetActivePursuit(); } catch { }
+            bool inPursuit = activePursuit != null && Functions.IsPursuitStillRunning(activePursuit);
+
+            UIMenuListItem modeItem = inPursuit ? _responseModePursuit : _responseModeNormal;
+            if (modeItem.Index >= modeItem.Collection.Count)
             {
-                _backupMenu.Visible = true;
+                modeItem.Index = 0;
             }
+            string selectedMode = modeItem.Collection[modeItem.Index].ToString();
+            RebuildActionsForMode(modeItem, selectedMode);
+
+            _backupMenu.Visible = true;
         }
 
         public static void CloseMenu()
@@ -505,6 +595,24 @@ namespace Cadence.Features
                             Game.DisplayNotification("Requesting ~r~Fire Department~s~ Backup to ~g~Dispatch~s~");
                             Functions.PlayScannerAudioUsingPosition("FIRETRUCK ASSISTANCE_REQUIRED_01 IN_OR_ON_POSITION", playerPos);
                             DispatchSingleUnit(type, isCode3: true);
+                            break;
+
+                        case BackupType.LocalPursuit:
+                            Game.DisplayNotification("Requesting ~r~Local Pursuit Interceptor~s~ to ~g~Dispatch~s~");
+                            Functions.PlayScannerAudioUsingPosition("ASSISTANCE_REQUIRED IN_OR_ON_POSITION", playerPos);
+                            PursuitFeature.RequestPursuitInterceptor(isHighway: false);
+                            break;
+
+                        case BackupType.StatePursuit:
+                            Game.DisplayNotification("Requesting ~r~State Pursuit Interceptor~s~ to ~g~Dispatch~s~");
+                            Functions.PlayScannerAudioUsingPosition("ASSISTANCE_REQUIRED IN_OR_ON_POSITION", playerPos);
+                            PursuitFeature.RequestPursuitInterceptor(isHighway: true);
+                            break;
+
+                        case BackupType.GroupPursuit:
+                            Game.DisplayNotification("Requesting ~r~Group Pursuit Backup~s~ to ~g~Dispatch~s~");
+                            Functions.PlayScannerAudioUsingPosition("ASSISTANCE_REQUIRED IN_OR_ON_POSITION", playerPos);
+                            PursuitFeature.RequestGroupPursuit(Settings.GroupBackupUnits);
                             break;
                     }
                 }
@@ -799,6 +907,29 @@ namespace Cadence.Features
             catch { }
         }
 
+        public static Vector3 GetRoadsideCurbPosition(Vector3 playerPos)
+        {
+            try
+            {
+                if (WorldUtils.GetSafeStreetPosition(playerPos, 1, out Vector3 streetPos, out float streetHeading))
+                {
+                    if (streetPos != Vector3.Zero && !WorldUtils.IsSubterraneanOrVoid(streetPos))
+                    {
+                        return streetPos;
+                    }
+                }
+
+                Vector3 rphStreet = World.GetNextPositionOnStreet(playerPos);
+                if (rphStreet != Vector3.Zero && !WorldUtils.IsSubterraneanOrVoid(rphStreet))
+                {
+                    return rphStreet;
+                }
+            }
+            catch { }
+
+            return playerPos;
+        }
+
         private static BackupUnitSession CommandeerAmbientVehicle(Vehicle cruiser, Vector3 playerPos, BackupType type, bool isCode3)
         {
             try
@@ -876,7 +1007,8 @@ namespace Cadence.Features
                 catch { }
 
                 string callsign = GenerateCallsign();
-                return ConfigureBackupSession(cruiser, driver, passenger, playerPos, type, isCode3, callsign, isCommandeer: true, additionalOfficers: null, isAlreadyOnScene: isAlreadyOnScene);
+                Vector3 destination = isAlreadyOnScene ? cruiser.Position : GetRoadsideCurbPosition(playerPos);
+                return ConfigureBackupSession(cruiser, driver, passenger, destination, type, isCode3, callsign, isCommandeer: true, additionalOfficers: null, isAlreadyOnScene: isAlreadyOnScene);
             }
             catch (Exception ex)
             {
@@ -960,12 +1092,19 @@ namespace Cadence.Features
 
                     if (Settings.UseUltimateBackup && UltimateBackupService.IsAvailable)
                     {
-                        var ubResult = UltimateBackupService.SpawnAmbulanceUnit(spawnPos, 2);
-                        if (ubResult != null && ubResult.Item1 != null && ubResult.Item1.Exists() && ubResult.Item2 != null && ubResult.Item2.Count > 0)
+                        try
                         {
-                            amb = ubResult.Item1;
-                            medic = ubResult.Item2[0];
-                            if (ubResult.Item2.Count > 1) passMedic = ubResult.Item2[1];
+                            var ubResult = UltimateBackupService.SpawnAmbulanceUnit(spawnPos, 2);
+                            if (ubResult != null && ubResult.Item1 != null && ubResult.Item1.Exists() && ubResult.Item2 != null && ubResult.Item2.Count > 0)
+                            {
+                                amb = ubResult.Item1;
+                                medic = ubResult.Item2[0];
+                                if (ubResult.Item2.Count > 1) passMedic = ubResult.Item2[1];
+                            }
+                        }
+                        catch (Exception ubEx)
+                        {
+                            Logger.Warn($"[BackupFeature] Ultimate Backup Ambulance dispatch error: {ubEx.Message}");
                         }
                     }
 
@@ -989,7 +1128,8 @@ namespace Cadence.Features
                     {
                         amb.Heading = spawnHeading;
                         WorldUtils.SecureEntityGround(amb);
-                        return ConfigureBackupSession(amb, medic, passMedic, playerPos, type, isCode3, callsign, isCommandeer: false);
+                        Vector3 destination = GetRoadsideCurbPosition(playerPos);
+                        return ConfigureBackupSession(amb, medic, passMedic, destination, type, isCode3, callsign, isCommandeer: false);
                     }
 
                     return null;
@@ -1004,12 +1144,19 @@ namespace Cadence.Features
 
                     if (Settings.UseUltimateBackup && UltimateBackupService.IsAvailable)
                     {
-                        var ubResult = UltimateBackupService.SpawnFireTruckUnit(spawnPos, 2);
-                        if (ubResult != null && ubResult.Item1 != null && ubResult.Item1.Exists() && ubResult.Item2 != null && ubResult.Item2.Count > 0)
+                        try
                         {
-                            fire = ubResult.Item1;
-                            fireman = ubResult.Item2[0];
-                            if (ubResult.Item2.Count > 1) passFireman = ubResult.Item2[1];
+                            var ubResult = UltimateBackupService.SpawnFireTruckUnit(spawnPos, 2);
+                            if (ubResult != null && ubResult.Item1 != null && ubResult.Item1.Exists() && ubResult.Item2 != null && ubResult.Item2.Count > 0)
+                            {
+                                fire = ubResult.Item1;
+                                fireman = ubResult.Item2[0];
+                                if (ubResult.Item2.Count > 1) passFireman = ubResult.Item2[1];
+                            }
+                        }
+                        catch (Exception ubEx)
+                        {
+                            Logger.Warn($"[BackupFeature] Ultimate Backup FireTruck dispatch error: {ubEx.Message}");
                         }
                     }
 
@@ -1033,7 +1180,8 @@ namespace Cadence.Features
                     {
                         fire.Heading = spawnHeading;
                         WorldUtils.SecureEntityGround(fire);
-                        return ConfigureBackupSession(fire, fireman, passFireman, playerPos, type, isCode3, callsign, isCommandeer: false);
+                        Vector3 destination = GetRoadsideCurbPosition(playerPos);
+                        return ConfigureBackupSession(fire, fireman, passFireman, destination, type, isCode3, callsign, isCommandeer: false);
                     }
 
                     return null;
@@ -1094,7 +1242,8 @@ namespace Cadence.Features
                 {
                     cruiser.Heading = spawnHeading;
                     WorldUtils.SecureEntityGround(cruiser);
-                    return ConfigureBackupSession(cruiser, driver, passenger, playerPos, type, isCode3, callsign, isCommandeer: false, extraOfficers);
+                    Vector3 destination = GetRoadsideCurbPosition(playerPos);
+                    return ConfigureBackupSession(cruiser, driver, passenger, destination, type, isCode3, callsign, isCommandeer: false, extraOfficers);
                 }
             }
             catch (Exception ex)
@@ -1155,7 +1304,7 @@ namespace Cadence.Features
                     // High-speed emergency driving to destination using long-range task
                     float speed = isCode3 ? 32.0f : 20.0f; // ~71 mph vs ~45 mph
                     NativeFunction.Natives.SET_VEHICLE_FORWARD_SPEED(cruiser, 10.0f);
-                    NativeTasks.TaskLongRangeEmergencyDrive(driver, cruiser, destination, speed, 25.0f);
+                    NativeTasks.TaskLongRangeEmergencyDrive(driver, cruiser, destination, speed, 12.0f);
                 }
 
                 // Attach flashing emergency blip
@@ -1284,6 +1433,7 @@ namespace Cadence.Features
             private uint _lastThreatScan;
             private uint _lastCoverCheck;
             private uint _lastSlowdownCheck;
+            private uint _lastBuddyFollowUpdate;
             private bool _isArrivedSirenMuted;
             private bool _departureInitiated;
 
@@ -1433,6 +1583,7 @@ namespace Cadence.Features
             private void UpdateEnRoute(Ped player, Vector3 playerPos, uint now)
             {
                 float distToPlayer = Cruiser.Position.DistanceTo(playerPos);
+                float distToTarget = Cruiser.Position.DistanceTo(TargetPosition);
 
                 // Ensure lights & sirens remain active during approach
                 if (IsCode3)
@@ -1447,9 +1598,9 @@ namespace Cadence.Features
                     _lastNavigationRefresh = now;
                     if (TargetPosition.DistanceTo(playerPos) > 30.0f)
                     {
-                        TargetPosition = playerPos;
+                        TargetPosition = GetRoadsideCurbPosition(playerPos);
                         float speed = IsCode3 ? 32.0f : 20.0f;
-                        NativeTasks.TaskLongRangeEmergencyDrive(Driver, Cruiser, TargetPosition, speed, 25.0f);
+                        NativeTasks.TaskLongRangeEmergencyDrive(Driver, Cruiser, TargetPosition, speed, 12.0f);
                     }
                 }
 
@@ -1457,26 +1608,25 @@ namespace Cadence.Features
                 if (distToPlayer <= 55.0f && Cruiser.Speed > 14.0f && (now - _lastSlowdownCheck > 2000))
                 {
                     _lastSlowdownCheck = now;
-                    NativeTasks.TaskLongRangeEmergencyDrive(Driver, Cruiser, playerPos, 11.0f, 20.0f);
+                    NativeTasks.TaskLongRangeEmergencyDrive(Driver, Cruiser, TargetPosition, 11.0f, 12.0f);
                 }
 
-                // Scene arrival check with anti-premature grace period and proper pacing
+                // Scene arrival check with harmonized stopping radius (12.0m) and arrival distance
                 uint elapsedEnRoute = now - StateStartTime;
                 bool isArrived = false;
 
-                // 1. Definite close arrival: within 18m of player
-                if (distToPlayer <= 18.0f)
+                // 1. Definite close arrival: within 14.0m of target curb position or within 16.0m of player
+                if (distToTarget <= 14.0f || distToPlayer <= 16.0f)
                 {
                     isArrived = true;
                 }
-                // 2. Slowed to approach halt near player, but ONLY after pacing grace period (5s)
-                // (Prevents commandeered ambient units starting from stop at ~35-40m from instantly triggering)
-                else if (distToPlayer <= 28.0f && Cruiser.Speed < 1.8f && elapsedEnRoute > 5000)
+                // 2. Slowed to approach halt near target or player, but ONLY after pacing grace period (5s)
+                else if ((distToTarget <= 25.0f || distToPlayer <= 25.0f) && Cruiser.Speed < 1.8f && elapsedEnRoute > 5000)
                 {
                     isArrived = true;
                 }
                 // 3. Fallback: full stop within 35m after at least 8 seconds of active travel
-                else if (distToPlayer <= 35.0f && Cruiser.Speed < 0.5f && elapsedEnRoute > 8000)
+                else if ((distToTarget <= 35.0f || distToPlayer <= 35.0f) && Cruiser.Speed < 0.5f && elapsedEnRoute > 8000)
                 {
                     isArrived = true;
                 }
@@ -1603,6 +1753,13 @@ namespace Cadence.Features
                     return;
                 }
 
+                uint now = Game.GameTime;
+                if (now - _lastBuddyFollowUpdate < 1300)
+                {
+                    return;
+                }
+                _lastBuddyFollowUpdate = now;
+
                 float distToPlayer = Driver.DistanceTo(playerPos);
 
                 // Interior Watchdog: if distance > 25m into interior or building, teleport buddy to prevent lock-out
@@ -1622,7 +1779,7 @@ namespace Cadence.Features
                     return;
                 }
 
-                // Tactical following distances
+                // Tactical following distances with throttle protection against 60Hz navmesh task spam
                 if (distToPlayer > 12.0f)
                 {
                     // Sprint to catch up
@@ -1632,6 +1789,14 @@ namespace Cadence.Features
                 {
                     // Walk close support
                     TaskFollowPlayer(Driver, player, new Vector3(-1.2f, -1.5f, 0f), 1.2f);
+                }
+                else
+                {
+                    // Within 3.5m of player: stand naturally instead of vibrating/freezing
+                    if (Driver.Speed > 0.1f)
+                    {
+                        Driver.Tasks.Clear();
+                    }
                 }
 
                 // Passenger secondary position
@@ -1646,6 +1811,13 @@ namespace Cadence.Features
                     else if (passDist > 5.0f)
                     {
                         TaskFollowPlayer(Passenger, player, new Vector3(1.2f, -1.8f, 0f), 1.2f);
+                    }
+                    else
+                    {
+                        if (Passenger.Speed > 0.1f)
+                        {
+                            Passenger.Tasks.Clear();
+                        }
                     }
                 }
             }

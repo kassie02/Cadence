@@ -93,6 +93,7 @@ namespace Cadence.UI
         private static bool _isInitialized;
         private static bool _isRunning;
         private static uint _lastTelemetryUpdate;
+        private static uint _lastMenuToggleTime;
 
         // ====================================================================
         // Public API Contract
@@ -192,6 +193,10 @@ namespace Cadence.UI
 
         public static void ToggleVisibility()
         {
+            uint now = Game.GameTime;
+            if (now - _lastMenuToggleTime < 300) return;
+            _lastMenuToggleTime = now;
+
             if (IsVisible)
             {
                 Close();
@@ -251,9 +256,9 @@ namespace Cadence.UI
         // Feature Lifecycle & Ponytail Invocation Dispatchers
         // ====================================================================
 
-        public static void PurgeAllFeatures()
+        public static void PurgeAllFeatures(bool immediateDelete = false)
         {
-            Logger.Info("[CadenceMenu] Purging all active Cadence features, vehicles, sirens, and blips.");
+            Logger.Info($"[CadenceMenu] Purging all active Cadence features, vehicles, sirens, and blips (immediateDelete={immediateDelete}).");
             string[] featureNames = new[]
             {
                 "PatrolFeature",
@@ -273,47 +278,24 @@ namespace Cadence.UI
                     if (t != null)
                     {
                         MethodInfo method = t.GetMethod("PurgeAll", BindingFlags.Public | BindingFlags.Static);
-                        method?.Invoke(null, null);
+                        if (method != null)
+                        {
+                            var parameters = method.GetParameters();
+                            if (parameters.Length == 1 && parameters[0].ParameterType == typeof(bool))
+                            {
+                                method.Invoke(null, new object[] { immediateDelete });
+                            }
+                            else
+                            {
+                                method.Invoke(null, null);
+                            }
+                        }
                     }
                 }
                 catch (Exception ex)
                 {
                     Logger.Error($"[CadenceMenu] Failed to purge {feat}", ex);
                 }
-            }
-
-            // Clean up any remaining sirens nearby to prevent lingering GTA audio loops
-            try
-            {
-                Ped player = Game.LocalPlayer?.Character;
-                if (player != null && player.Exists())
-                {
-                    Vehicle[] nearby = World.GetAllVehicles();
-                    if (nearby != null)
-                    {
-                        foreach (Vehicle veh in nearby)
-                        {
-                            if (veh != null && veh.Exists() && veh.DistanceTo(player) <= 350f)
-                            {
-                                if (veh.HasSiren && veh.IsSirenOn)
-                                {
-                                    try
-                                    {
-                                        veh.IsSirenOn = false;
-                                        veh.IsSirenSilent = true;
-                                        NativeFunction.Natives.SET_VEHICLE_SIREN(veh, false);
-                                        NativeFunction.Natives.SET_VEHICLE_HAS_MUTED_SIRENS(veh, true);
-                                    }
-                                    catch { }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Logger.Error("[CadenceMenu] Exception during siren mute sweep in PurgeAllFeatures", ex);
             }
         }
 

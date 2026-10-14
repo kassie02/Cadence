@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
+using System.Security;
 using Rage;
 using Rage.Native;
 using Cadence.Core;
@@ -121,6 +123,8 @@ namespace Cadence.Services
         // ====================================================================
 
         [MethodImpl(MethodImplOptions.NoInlining)]
+        [HandleProcessCorruptedStateExceptions]
+        [SecurityCritical]
         public static Tuple<Vehicle, List<Ped>> SpawnLocalPatrol(Vector3 location, int numPeds)
         {
             if (!IsAvailable) return null;
@@ -142,6 +146,8 @@ namespace Cadence.Services
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
+        [HandleProcessCorruptedStateExceptions]
+        [SecurityCritical]
         public static Tuple<Vehicle, List<Ped>> SpawnStatePatrol(Vector3 location, int numPeds)
         {
             if (!IsAvailable) return null;
@@ -163,6 +169,8 @@ namespace Cadence.Services
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
+        [HandleProcessCorruptedStateExceptions]
+        [SecurityCritical]
         public static Tuple<Vehicle, List<Ped>> SpawnAmbulanceUnit(Vector3 location, int numPeds)
         {
             if (!IsAvailable) return null;
@@ -184,6 +192,8 @@ namespace Cadence.Services
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
+        [HandleProcessCorruptedStateExceptions]
+        [SecurityCritical]
         public static Tuple<Vehicle, List<Ped>> SpawnFireTruckUnit(Vector3 location, int numPeds)
         {
             if (!IsAvailable) return null;
@@ -205,6 +215,8 @@ namespace Cadence.Services
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
+        [HandleProcessCorruptedStateExceptions]
+        [SecurityCritical]
         public static Ped SpawnLocalPed(Vector3 location, float heading)
         {
             if (!IsAvailable) return null;
@@ -232,6 +244,8 @@ namespace Cadence.Services
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
+        [HandleProcessCorruptedStateExceptions]
+        [SecurityCritical]
         public static Ped SpawnStatePed(Vector3 location, float heading)
         {
             if (!IsAvailable) return null;
@@ -259,6 +273,8 @@ namespace Cadence.Services
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
+        [HandleProcessCorruptedStateExceptions]
+        [SecurityCritical]
         public static bool IsUltimateBackupCop(Ped ped)
         {
             if (!IsAvailable || ped == null || !ped.Exists()) return false;

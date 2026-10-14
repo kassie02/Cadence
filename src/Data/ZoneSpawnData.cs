@@ -27,8 +27,7 @@ namespace Cadence.Data
             (new Vector3(2735.24f, 5010.83f, 37.16f), 198.05f),
             (new Vector3(2472.64f, 5663.7f, 44.89f), 22.88f),
             (new Vector3(2484.76f, 5510.42f, 44.35f), 197.49f),
-            (new Vector3(2800.569f, 3410.84f, 55.265f), 334.474f),
-            (new Vector3(1913.825f, 3626.379f, 33.324f), 297.283f)
+            (new Vector3(2800.569f, 3410.84f, 55.265f), 334.474f)
         };
 
         public static readonly (Vector3 pos, float heading)[] BlainePaletoGreatOceanHwy = new (Vector3, float)[]
@@ -41,8 +40,7 @@ namespace Cadence.Data
             (new Vector3(571.797f, 6556.521f, 27.462f), 84.742f),
             (new Vector3(-965.713f, 5417.881f, 38.817f), 118.63f),
             (new Vector3(-1445.328f, 5071.627f, 61.249f), 127.512f),
-            (new Vector3(-2244.31f, 4294.07f, 46.78f), 147.23f),
-            (new Vector3(-2231.715f, 4319.681f, 47.999f), 158.729f)
+            (new Vector3(-2244.31f, 4294.07f, 46.78f), 147.23f)
         };
 
         public static readonly (Vector3 pos, float heading)[] SenoraLocal = new (Vector3, float)[]
@@ -52,7 +50,8 @@ namespace Cadence.Data
             (new Vector3(-673.35f, 2845.63f, 29.48f), 120.68f),
             (new Vector3(1805.17f, 2332.38f, 55.91f), 200.97f),
             (new Vector3(584.89f, 2334.08f, 48.52f), 237.15f),
-            (new Vector3(2071.439f, 3055.153f, 45.603f), 243.161f)
+            (new Vector3(2071.439f, 3055.153f, 45.603f), 243.161f),
+            (new Vector3(1913.825f, 3626.379f, 33.324f), 297.283f) // Alhambra Dr / Marina Dr local road
         };
 
         public static readonly (Vector3 pos, float heading)[] LSSouthPort = new (Vector3, float)[]
@@ -71,7 +70,6 @@ namespace Cadence.Data
             (new Vector3(2467.166f, -156.913f, 88.435f), 334.078f),
             (new Vector3(2554.416f, 777.331f, 89.473f), 14.106f),
             (new Vector3(2568.631f, 483.713f, 108.058f), 181.073f),
-            (new Vector3(1377.448f, 688.062f, 78.825f), 140.195f),
             (new Vector3(1817.543f, 2133.373f, 54.093f), 188.367f)
         };
 
@@ -144,7 +142,7 @@ namespace Cadence.Data
 
         public static readonly (Vector3 pos, float heading)[] LSCommercialPlazas = new (Vector3, float)[]
         {
-            (new Vector3(2555.22f, 380.78f, 108.62f), 0.0f),     // 24/7 Palomino Rest Stop
+            (new Vector3(2555.22f, 380.78f, 108.62f), 90.0f),    // 24/7 Palomino Rest Stop
             (new Vector3(-3040.6f, 583.9f, 7.91f), 19.0f),       // 24/7 Ineseno Banham Canyon
             (new Vector3(1707.9f, 4920.6f, 42.06f), 324.0f),     // 24/7 Senora Fwy / Desert
             (new Vector3(546.4f, 2669.8f, 42.16f), 96.0f),       // 24/7 Route 68 Harmony
@@ -161,7 +159,7 @@ namespace Cadence.Data
             (new Vector3(1043.2f, -776.4f, 57.94f), 140.0f),     // Mirror Park Shopping
             (new Vector3(-253.9f, -2005.1f, 30.15f), 105.0f),    // Maze Bank Arena South
             (new Vector3(-2260.5f, 264.4f, 174.6f), 85.0f),      // Kortz Center Lot
-            (new Vector3(155.8f, -3084.2f, 5.9f), 0.0f),         // Port of LS Terminal
+            (new Vector3(155.8f, -3084.2f, 5.9f), 90.0f),        // Port of LS Terminal
             (new Vector3(-1034.4f, -2733.8f, 13.76f), 330.0f),   // LSIA Airport Drop-off
             (new Vector3(-2178.6f, -394.2f, 13.3f), 235.0f),     // Pacific Bluffs Country Club
             (new Vector3(-1818.4f, 794.1f, 138.2f), 130.0f),     // Richman Glen Shopping
@@ -179,7 +177,7 @@ namespace Cadence.Data
         public static readonly string[] CivilianVehicles = new string[]
         {
             "premier", "felon", "asterope", "washington", "intruder", "stanier",
-            "tailgater", "oracle", "fugitive", "schafter", "glendale", "primo",
+            "tailgater", "oracle", "fugitive", "schafter2", "glendale", "primo",
             "ingot", "asea", "emperor", "regina", "stratum", "surge", "cognoscenti"
         };
 
@@ -202,7 +200,7 @@ namespace Cadence.Data
         // Query & Selection Helpers
         // ====================================================================
 
-        public static List<(Vector3 pos, float heading)[]> GetAllZones()
+        public static List<(Vector3 pos, float heading)[]> GetRoadsidePulloverZones()
         {
             return new List<(Vector3 pos, float heading)[]>
             {
@@ -215,10 +213,24 @@ namespace Cadence.Data
                 LSCentral,
                 LSWestSheriffRanger,
                 LSIA,
-                BlaineParkRanger,
+                BlaineParkRanger
+            };
+        }
+
+        public static List<(Vector3 pos, float heading)[]> GetStationaryStandbyZones()
+        {
+            return new List<(Vector3 pos, float heading)[]>
+            {
                 LSUrbanPoliceStations,
                 LSCommercialPlazas
             };
+        }
+
+        public static List<(Vector3 pos, float heading)[]> GetAllZones()
+        {
+            var all = GetRoadsidePulloverZones();
+            all.AddRange(GetStationaryStandbyZones());
+            return all;
         }
 
         // ====================================================================
@@ -250,47 +262,7 @@ namespace Cadence.Data
             (new Vector3(298.9492f, -268.1412f, 53.68773f), 320.6631f),
             (new Vector3(2166.917f, 4898.333f, 40.45398f), 291.9043f),
             (new Vector3(-405.9179f, 1192.172f, 325.3149f), 94.66913f),
-            (new Vector3(2499.215f, 4199.535f, 39.55725f), 165.1826f),
-
-            // Urban Police Stations & Precinct Bays
-            (new Vector3(430.73f, -1025.26f, 28.84f), 90.0f),    // Mission Row PD Rear Lot
-            (new Vector3(452.12f, -1019.55f, 28.47f), 91.5f),    // Mission Row PD Side Lot
-            (new Vector3(377.16f, -1612.33f, 29.29f), 320.0f),   // Davis PD / Sheriff Lot
-            (new Vector3(640.42f, 1.43f, 82.79f), 245.0f),       // Vinewood PD Front Lot
-            (new Vector3(-574.62f, -145.98f, 37.95f), 29.0f),    // Rockford Hills City Hall PD
-            (new Vector3(-1107.52f, -846.75f, 19.32f), 127.0f),  // Vespucci PD Lot
-            (new Vector3(1853.25f, 3687.97f, 33.80f), 213.0f),   // Sandy Shores Sheriff Lot
-            (new Vector3(-448.24f, 6012.31f, 31.72f), 225.0f),   // Paleto Bay Sheriff Lot
-            (new Vector3(-1635.8f, -1020.2f, 13.1f), 50.0f),     // Del Perro Police / Plaza
-            (new Vector3(827.4f, -1290.1f, 28.2f), 180.0f),      // La Mesa Precinct Lot
-
-            // Commercial Plazas, Convenience Stores & Overlooks
-            (new Vector3(2555.22f, 380.78f, 108.62f), 0.0f),     // 24/7 Palomino Rest Stop
-            (new Vector3(-3040.6f, 583.9f, 7.91f), 19.0f),       // 24/7 Ineseno Banham Canyon
-            (new Vector3(1707.9f, 4920.6f, 42.06f), 324.0f),     // 24/7 Senora Fwy / Desert
-            (new Vector3(546.4f, 2669.8f, 42.16f), 96.0f),       // 24/7 Route 68 Harmony
-            (new Vector3(378.2f, 333.3f, 103.57f), 255.0f),      // 24/7 Clinton Ave Vinewood
-            (new Vector3(24.4f, -1346.7f, 29.5f), 270.0f),       // 24/7 Strawberry Innocence
-            (new Vector3(-709.6f, -904.2f, 19.22f), 88.0f),      // LTD Gasoline Little Seoul
-            (new Vector3(1701.3f, 6416.7f, 32.76f), 245.0f),     // LTD Gasoline Grapeseed
-            (new Vector3(-48.4f, -1757.2f, 29.4f), 50.0f),       // LTD Gas Grove Street
-            (new Vector3(-1221.1f, -916.2f, 11.33f), 35.0f),     // Robs Liquor Chumash
-            (new Vector3(-3154.2f, 1129.8f, 20.86f), 65.0f),     // Chumash Plaza Shopping
-            (new Vector3(-438.3f, 1076.1f, 327.68f), 340.0f),    // Galileo Observatory
-            (new Vector3(-1680.1f, -1071.3f, 13.15f), 320.0f),   // Del Perro Pier Lot
-            (new Vector3(-354.5f, -134.8f, 39.01f), 70.0f),      // LS Customs Burton Lot
-            (new Vector3(1043.2f, -776.4f, 57.94f), 140.0f),     // Mirror Park Shopping
-            (new Vector3(-253.9f, -2005.1f, 30.15f), 105.0f),    // Maze Bank Arena South
-            (new Vector3(-2260.5f, 264.4f, 174.6f), 85.0f),      // Kortz Center Lot
-            (new Vector3(155.8f, -3084.2f, 5.9f), 0.0f),         // Port of LS Terminal
-            (new Vector3(-1034.4f, -2733.8f, 13.76f), 330.0f),   // LSIA Airport Drop-off
-            (new Vector3(-2178.6f, -394.2f, 13.3f), 235.0f),     // Pacific Bluffs Country Club
-            (new Vector3(-1818.4f, 794.1f, 138.2f), 130.0f),     // Richman Glen Shopping
-            (new Vector3(-680.2f, -245.8f, 36.8f), 35.0f),       // Rockford Hills Mall Lot
-            (new Vector3(-1390.5f, -290.4f, 42.9f), 215.0f),     // Morningwood Plaza
-            (new Vector3(-150.2f, -860.5f, 35.8f), 160.0f),      // Pillbox Hill Garage
-            (new Vector3(215.4f, -870.2f, 30.5f), 70.0f),        // Legion Square Plaza
-            (new Vector3(280.8f, -180.5f, 54.2f), 340.0f)        // Hawick Ave Retail Lot
+            (new Vector3(2499.215f, 4199.535f, 39.55725f), 165.1826f)
         };
 
         public static bool FindBestStandbyLocation(Vector3 playerPos, float minDistance, float maxDistance, out Vector3 spotPos, out float spotHeading)
@@ -306,6 +278,18 @@ namespace Cadence.Data
                 if (dist >= minDistance && dist <= maxDistance && WorldUtils.IsAreaClear(spot.pos, 12.0f))
                 {
                     candidates.Add(spot);
+                }
+            }
+
+            foreach (var zone in GetStationaryStandbyZones())
+            {
+                foreach (var spot in zone)
+                {
+                    float dist = spot.pos.DistanceTo(playerPos);
+                    if (dist >= minDistance && dist <= maxDistance && WorldUtils.IsAreaClear(spot.pos, 12.0f))
+                    {
+                        candidates.Add(spot);
+                    }
                 }
             }
 
@@ -327,7 +311,7 @@ namespace Cadence.Data
 
             var candidates = new List<(Vector3 pos, float heading)>();
 
-            foreach (var zone in GetAllZones())
+            foreach (var zone in GetRoadsidePulloverZones())
             {
                 foreach (var spot in zone)
                 {

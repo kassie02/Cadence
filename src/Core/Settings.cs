@@ -91,8 +91,15 @@ namespace Cadence.Core
         public static bool EnableEupOutfits { get; set; } = true;
         public static bool MuteTrafficStopSiren { get; set; } = true;
 
+        private static bool _presetApplied = false;
+
         public static void ApplyChaosPreset(bool enableChaos)
         {
+            if (_presetApplied && ChaosMode == enableChaos && Preset == (enableChaos ? "Chaos" : "Realistic"))
+            {
+                return;
+            }
+            _presetApplied = true;
             ChaosMode = enableChaos;
             Preset = enableChaos ? "Chaos" : "Realistic";
             if (enableChaos)
@@ -116,6 +123,7 @@ namespace Cadence.Core
 
         public static void Load(string customPath = null)
         {
+            _presetApplied = false;
             string iniPath = ResolveIniPath(customPath);
             ResolvedIniPath = iniPath;
 
@@ -140,9 +148,10 @@ namespace Cadence.Core
                         continue;
                     }
 
-                    if (line.StartsWith("[") && line.EndsWith("]"))
+                    int closeBracket = line.IndexOf(']');
+                    if (line.StartsWith("[") && closeBracket > 1)
                     {
-                        currentSection = line.Substring(1, line.Length - 2).Trim();
+                        currentSection = line.Substring(1, closeBracket - 1).Trim();
                         continue;
                     }
 
@@ -154,6 +163,9 @@ namespace Cadence.Core
 
                     ParseEntry(currentSection, key, value);
                 }
+
+                if (SpawnDistanceMin >= SpawnDistanceMax) SpawnDistanceMax = SpawnDistanceMin + 50.0f;
+                if (DespawnDistance <= SpawnDistanceMax) DespawnDistance = SpawnDistanceMax + 100.0f;
 
                 Logger.EnableFileLogging = EnableFileLogging;
                 Logger.EnableDebugLogging = EnableDebugLogging;
@@ -204,13 +216,6 @@ namespace Cadence.Core
 
                 case "backup":
                     if (k == "enablebackup") EnableBackup = ParseBool(value, EnableBackup);
-                    else if (k == "panicbuttonkey") PanicButtonKey = ParseKey(value, PanicButtonKey);
-                    else if (k == "panicbuttonmodifierkey" || k == "panicbuttonmodifier") PanicButtonModifierKey = ParseModifierKey(value, PanicButtonModifierKey);
-                    else if (k == "groupbackupkey") GroupBackupKey = ParseKey(value, GroupBackupKey);
-                    else if (k == "groupbackupmodifierkey" || k == "groupbackupmodifier") GroupBackupModifierKey = ParseModifierKey(value, GroupBackupModifierKey);
-                    else if (k == "backupmenukey") BackupMenuKey = ParseKey(value, BackupMenuKey);
-                    else if (k == "backupmenumodifierkey" || k == "backupmenumodifier") BackupMenuModifierKey = ParseModifierKey(value, BackupMenuModifierKey);
-                    else if (k == "dismissbackupkey" || k == "dismissallbackupkey") DismissBackupKey = ParseKey(value, DismissBackupKey);
                     else if (k == "panicbuttonunits" || k == "panicunits") PanicButtonUnits = Math.Max(1, Math.Min(6, ParseInt(value, PanicButtonUnits)));
                     else if (k == "groupbackupunits" || k == "groupunits") GroupBackupUnits = Math.Max(1, Math.Min(6, ParseInt(value, GroupBackupUnits)));
                     else if (k == "groupbackupcode3") GroupBackupCode3 = ParseBool(value, GroupBackupCode3);
@@ -369,7 +374,9 @@ namespace Cadence.Core
 
         private static float ParseFloat(string value, float defaultVal)
         {
-            return float.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float res) ? res : defaultVal;
+            if (string.IsNullOrWhiteSpace(value)) return defaultVal;
+            string normalized = value.Replace(',', '.');
+            return float.TryParse(normalized, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float res) ? res : defaultVal;
         }
 
         private static string CleanIniValue(string val)

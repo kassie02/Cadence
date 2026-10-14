@@ -45,7 +45,7 @@ namespace Cadence.Common
         /// Commands a driver to navigate an emergency vehicle to destination coordinates using the long-range pathing engine.
         /// Aggressiveness is set to 0.0f and ability to 1.0f to ensure clean navigation around obstacles without ramming.
         /// </summary>
-        public static void TaskLongRangeEmergencyDrive(Ped driver, Vehicle vehicle, Vector3 destination, float speedMps = 32.0f, float stoppingRadius = 25.0f)
+        public static void TaskLongRangeEmergencyDrive(Ped driver, Vehicle vehicle, Vector3 destination, float speedMps = 32.0f, float stoppingRadius = 12.0f)
         {
             if (driver == null || !driver.Exists() || vehicle == null || !vehicle.Exists()) return;
 
@@ -57,7 +57,7 @@ namespace Cadence.Common
 
                 try
                 {
-                    NativeFunction.Natives.TASK_VEHICLE_DRIVE_TO_COORD_LONGRANGE<uint>(
+                    NativeFunction.Natives.TASK_VEHICLE_DRIVE_TO_COORD_LONGRANGE(
                         driver,
                         vehicle,
                         destination.X,
@@ -95,7 +95,7 @@ namespace Cadence.Common
 
                 try
                 {
-                    NativeFunction.Natives.TASK_VEHICLE_DRIVE_TO_COORD_LONGRANGE<uint>(
+                    NativeFunction.Natives.TASK_VEHICLE_DRIVE_TO_COORD_LONGRANGE(
                         driver,
                         vehicle,
                         destination.X,
@@ -120,6 +120,7 @@ namespace Cadence.Common
 
         /// <summary>
         /// Configures high-performance emergency driving capabilities on police drivers.
+        /// Aggressiveness is set to 0.6f, ability to 1.0f, and chase behavior flag 8 is enabled for assertive pursuing, overtaking, and U-turns.
         /// </summary>
         public static void ConfigureEmergencyDriver(Ped driver, Vehicle cruiser = null)
         {
@@ -128,8 +129,9 @@ namespace Cadence.Common
             try
             {
                 NativeFunction.Natives.SET_DRIVER_ABILITY(driver, 1.0f);
-                NativeFunction.Natives.SET_DRIVER_AGGRESSIVENESS(driver, 0.0f);
+                NativeFunction.Natives.SET_DRIVER_AGGRESSIVENESS(driver, 0.6f);
                 NativeFunction.Natives.SET_DRIVER_RACING_MODIFIER(driver, 1.0f);
+                NativeFunction.Natives.SET_TASK_VEHICLE_CHASE_BEHAVIOR_FLAG(driver, 8, true);
                 driver.BlockPermanentEvents = true;
 
                 if (cruiser != null && cruiser.Exists())
@@ -185,17 +187,13 @@ namespace Cadence.Common
                     vehicle.IsSirenSilent = true;
                     NativeFunction.Natives.SET_VEHICLE_SIREN(vehicle, true);
                     NativeFunction.Natives.SET_VEHICLE_HAS_MUTED_SIRENS(vehicle, true);
-                    NativeFunction.Natives.x2497C4717C8B881E(vehicle, true, true, false); // SET_SIREN_WITH_NO_SOUND_ACTIVE
-                    NativeFunction.Natives.xF4924635A19EB37D(vehicle, true);               // SET_VEHICLE_HAS_MUTED_SIRENS
-                    NativeFunction.Natives.xD8050E0EB60CF274(vehicle, true);               // SET_VEHICLE_SIREN
                 }
                 else
                 {
                     vehicle.IsSirenOn = false;
                     vehicle.IsSirenSilent = false;
+                    NativeFunction.Natives.SET_VEHICLE_HAS_MUTED_SIRENS(vehicle, false);
                     NativeFunction.Natives.SET_VEHICLE_SIREN(vehicle, false);
-                    NativeFunction.Natives.xF4924635A19EB37D(vehicle, false);
-                    NativeFunction.Natives.xD8050E0EB60CF274(vehicle, false);
                 }
             }
             catch (Exception ex)

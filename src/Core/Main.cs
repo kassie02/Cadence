@@ -30,12 +30,38 @@ namespace Cadence.Core
                 // Subscribe to LSPDFR OnDuty state transitions
                 Functions.OnOnDutyStateChanged += OnDutyStateChanged;
 
+                if (IsPlayerOnDuty())
+                {
+                    Logger.Info("[Main] Player is already On Duty. Initializing Cadence immediately.");
+                    OnDutyStateChanged(true);
+                }
+
                 Logger.Info("[Main] Cadence hook registered successfully.");
             }
             catch (Exception ex)
             {
                 Logger.Error("[Main] Fatal exception during Main.Initialize()", ex);
             }
+        }
+
+        private static bool IsPlayerOnDuty()
+        {
+            try
+            {
+                if (Functions.IsPlayerAvailableForCalls() || Functions.IsCalloutRunning())
+                {
+                    return true;
+                }
+
+                Ped playerPed = Game.LocalPlayer?.Character;
+                if (playerPed != null && playerPed.Exists() && Functions.IsPedACop(playerPed))
+                {
+                    return true;
+                }
+            }
+            catch { }
+
+            return false;
         }
 
         public override void Finally()
@@ -51,9 +77,9 @@ namespace Cadence.Core
                 catch { }
 
                 _isOnDuty = false;
-                CadenceMenu.Stop();
+                CadenceMenu.PurgeAllFeatures(immediateDelete: true);
                 CadenceMenu.StopAllFeatures();
-                CadenceMenu.PurgeAllFeatures();
+                CadenceMenu.Stop();
 
                 Logger.Info("[Main] Cadence successfully unloaded.");
                 Logger.Shutdown();
@@ -137,8 +163,8 @@ namespace Cadence.Core
                     SessionMetrics.LogSummary();
 
                     CadenceMenu.Close();
-                    CadenceMenu.StopAllFeatures();
                     CadenceMenu.PurgeAllFeatures();
+                    CadenceMenu.StopAllFeatures();
 
                     Logger.Info("[Main] All Cadence units, blips, and features stood down.");
                 }

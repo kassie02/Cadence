@@ -63,9 +63,10 @@ Cadence was built from the ground up using the **"Ponytail" Delete-Friendly Arch
 
 ### Feature 5: Ambient Pursuit Drafting (`PursuitFeature.cs`)
 - Continuously monitors active LSPDFR pursuits via `Functions.GetActivePursuit()`.
-- If an active chase has fewer cruisers than `MaxPursuitUnits`, Cadence drafts nearby cruising officers into the chase, registering both driver and passenger into LSPDFR's pursuit engine (`Functions.AddCopToPursuit`).
-- Drafted cruisers activate pursuit driving AI, sirens, and emergency maneuvers.
-- **Code 4 Stand-Down**: When the pursuit terminates, drafted units are gracefully released, sirens are deactivated, and cruisers return to routine cruising patrol.
+- If an active chase has fewer cruisers than `MaxPursuitUnits`, Cadence drafts nearby cruising officers into the chase, clearing ambient tasks and registering both driver and passenger into LSPDFR's pursuit engine (`Functions.AddCopToPursuit`).
+- Drafted cruisers activate high-performance pursuit driving AI (aggressiveness 0.6, ability 100.0, chase behavior flag 8 for U-turns and overtaking), sirens, and tactical maneuvers.
+- **Scene Standby & Dismissal Protocol**: When the pursuit terminates, units transition to `OnSceneStandby`. Sirens mute while emergency lightbars stay active. Seated officers hold position (`VehicleManeuver.Wait`) and dismounted officers secure the perimeter without interrupting LSPDFR's suspect arrest routines.
+- **Standby Dismissal (`Enter` held >= 1.1s)**: Holding the dismissal key prompts and releases scene officers back to their cruisers, turning off lights, cruising away, and safely rejoining ambient traffic. Automatic distance (>250m) and 5-minute timeout watchdogs prevent entity leaks.
 - **Radar Minimap Identity**: Color-coded Flashing Orange blip (`Sprite 56`, `Color 17`, 400ms pulse).
 
 ### Feature 6: Nearby Threat Reaction & Combat Defense (`AssistFeature.cs`)
@@ -77,26 +78,22 @@ Cadence was built from the ground up using the **"Ponytail" Delete-Friendly Arch
 
 ### Feature 7: Ambient Backup & Response Systems (`BackupFeature.cs`)
 - **1:1 Ultimate Backup Audio & Notification Parity**:
-  - **Panic Button (`LControlKey + Z`)**: Plays authentic `PANIC_BUTTON.wav` tone, scanner audio (`ASSISTANCE_REQUIRED IN_OR_ON_POSITION`), player radio animation, red dispatch banner, subtitle prompt, and 4.5s confirmation audio (`UNIT_RESPONDING_DISPATCH`).
+  - **Panic Button (`LControlKey + Z`)**: Plays authentic `PANIC_BUTTON.wav` tone, scanner audio (`ASSISTANCE_REQUIRED IN_OR_ON_POSITION`), player radio animation, red dispatch banner, subtitle prompt, and multi-unit tactical Code 3 emergency response.
   - **Group Backup (`LControlKey + C`)**: Multi-unit tactical reinforcement request with synchronized dispatch and scanner audio.
-  - **Lean Backup Menu (`X + PageDown`)**: Clean, bloat-free RAGENativeUI menu with zero unnecessary submenus:
-    - *Local Patrol (Code 2 / Code 3)*
-    - *State Patrol (Code 2 / Code 3)*
-    - *Ambulance / EMS (Code 2 / Code 3)*
-    - *Fire Department (Code 2 / Code 3)*
-    - *Group Backup (Code 3)*
-    - *Panic Button (Emergency Code Red)*
-    - *Dismiss All Backup Units*
+  - **Redesigned Backup Menu (`X + PageDown`)**: Ultimate Backup `Class74.cs` parity featuring a top **Response Mode** selector:
+    - *Code 3 [Emergency]*: Local Police, State Patrol / Highway, EMS Ambulance, Fire Department, Group Backup, Panic Button, and Dismiss All.
+    - *Code 2 [Urgent]*: Urgent responses with sirens off and warning lights.
+    - *Pursuit Backup*: Local Pursuit Backup, Highway Pursuit Backup, Pursuit Interceptor, Group Pursuit Backup (2 Units), and Dismiss All Pursuit Units.
 - **Ambient-First Commandeering Architecture**:
   - Scans a 320m radius for existing ambient cruisers, stationary speed traps, ambulances, or fire engines.
-  - Commandeers active road units immediately, clearing cruising tasks, setting emergency sirens (Code 3: 32 m/s, Code 2: 20 m/s), and routing them to the player.
+  - Commandeers active road units immediately, clearing cruising tasks, setting emergency sirens, and routing them to roadside curb positions near the player.
   - Seamless fallback spawner fulfills requested unit quotas via Ultimate Backup or native fallback if ambient units are unavailable.
 - **Responding Unit Lifecycle & State Machine**:
-  - **En Route**: High-speed emergency driving with Backspace fast-spawn support.
-  - **Scene Arrival (within 25m)**: Mutes audible sirens immediately while keeping lightbars flashing, followed by staggered vehicle egress (driver exits first, passenger follows after 350ms).
+  - **En Route & Roadside Arrival**: High-speed emergency driving with road/curb node target snapping (`GetRoadsideCurbPosition`) and a 12m stopping radius, preventing cruiser circling loops.
+  - **Scene Arrival (within 14m/16m)**: Mutes audible sirens immediately while keeping lightbars flashing, followed by staggered vehicle egress (driver exits first, passenger follows after 350ms).
   - **Threat Engagement**: Scans for active gunfire, suspects attacking player/police, or active pursuits. Officers unholster sidearms, take tactical cover, and neutralize hostiles.
-  - **Follow / Buddy Support**: If no threat is present, officers follow the player with close support and an interior watchdog that teleports officers if distance > 25m into buildings.
-  - **Clean Dismissal (`Enter` held ~1.2s or menu option)**: Deletes blips atomically, extinguishes sirens, remounts cruiser, and cruises away before seamlessly merging back into ambient traffic.
+  - **Follow / Buddy Support**: Throttled 1300ms navigation mesh updates eliminate 60 Hz ped stutter/freezing; officers stand naturally when within 3.5m.
+  - **Clean Dismissal (`Enter` held ~1.1s or menu option)**: Deletes blips atomically, extinguishes sirens, remounts cruiser, and cruises away before seamlessly merging back into ambient traffic.
 
 ---
 

@@ -88,8 +88,9 @@ namespace Cadence.Features
                 Vector3 spotPos = Vector3.Zero;
                 float spotHeading = 0f;
 
-                // Attempt to find closest curated shoulder spot within 500m
-                if (!ZoneSpawnData.FindBestPulloverSpot(playerPos, 50.0f, 500.0f, out spotPos, out spotHeading))
+                // Attempt to find closest curated shoulder spot nearby (40m - 200m) so it is readily visible and well within DespawnDistance
+                float maxSearch = Math.Min(200.0f, Math.Max(60.0f, Settings.DespawnDistance - 150.0f));
+                if (!ZoneSpawnData.FindBestPulloverSpot(playerPos, 40.0f, maxSearch, out spotPos, out spotHeading))
                 {
                     // Fallback to roadside shoulder forward of player on local streets (never freeway centerlines)
                     Vector3 searchAhead = playerPos + player.ForwardVector * 45.0f;
@@ -249,42 +250,51 @@ namespace Cadence.Features
 
         private static void UpdateActiveStops(Vector3 playerPos)
         {
+            TrafficStopInstance[] snapshot;
             lock (_syncLock)
             {
-                for (int i = _activeStops.Count - 1; i >= 0; i--)
-                {
-                    TrafficStopInstance stop = _activeStops[i];
-                    if (stop == null)
-                    {
-                        _activeStops.RemoveAt(i);
-                        continue;
-                    }
+                snapshot = _activeStops.ToArray();
+            }
 
-                    if (!stop.IsValid())
+            for (int i = 0; i < snapshot.Length; i++)
+            {
+                TrafficStopInstance stop = snapshot[i];
+                if (stop == null) continue;
+
+                if (!stop.IsValid())
+                {
+                    lock (_syncLock)
                     {
                         Logger.Debug("TrafficStopFeature", $"Removing completed/invalid stop {stop.Callsign}. Active remaining: {_activeStops.Count - 1}/{Settings.MaxTrafficStops}");
                         stop.Dispose(immediateDelete: false);
-                        _activeStops.RemoveAt(i);
-                        continue;
+                        _activeStops.Remove(stop);
                     }
+                    continue;
+                }
 
-                    // Despawn distance watchdog (> 450m)
-                    float dist = stop.GetDistanceTo(playerPos);
-                    if (dist > Settings.DespawnDistance)
+                // Despawn distance watchdog (> 450m) with 45s grace period for newly created stops
+                float dist = stop.GetDistanceTo(playerPos);
+                uint age = Game.GameTime - stop.CreatedTime;
+                if (dist > Settings.DespawnDistance && age > 45000)
+                {
+                    lock (_syncLock)
                     {
-                        Logger.Debug("TrafficStopFeature", $"Stop {stop.Callsign} out of range ({dist:F0}m > {Settings.DespawnDistance:F0}m). Cleaning up. Active remaining: {_activeStops.Count - 1}/{Settings.MaxTrafficStops}");
+                        Logger.Debug("TrafficStopFeature", $"Stop {stop.Callsign} out of range ({dist:F0}m > {Settings.DespawnDistance:F0}m, age: {age / 1000}s). Cleaning up. Active remaining: {_activeStops.Count - 1}/{Settings.MaxTrafficStops}");
                         stop.Dispose(immediateDelete: false);
-                        _activeStops.RemoveAt(i);
-                        continue;
+                        _activeStops.Remove(stop);
                     }
+                    continue;
+                }
 
-                    // Advance scenario state machine
-                    stop.Update();
+                // Advance scenario state machine
+                stop.Update();
 
-                    if (stop.IsCompleted)
+                if (stop.IsCompleted)
+                {
+                    lock (_syncLock)
                     {
                         stop.Dispose(immediateDelete: false);
-                        _activeStops.RemoveAt(i);
+                        _activeStops.Remove(stop);
                     }
                 }
             }
@@ -378,7 +388,7 @@ namespace Cadence.Features
                 bool foundNode = false;
                 try
                 {
-                    foundNode = NativeFunction.Natives.GetClosestVehicleNodeWithHeading<bool>(streetPos.X, streetPos.Y, streetPos.Z, out nodePos, out heading, 1, 3.0f, 0);
+                    foundNode = NativeFunction.Natives.GET_CLOSEST_VEHICLE_NODE_WITH_HEADING<bool>(streetPos.X, streetPos.Y, streetPos.Z, out nodePos, out heading, 1, 3.0f, 0f);
                 }
                 catch
                 {
@@ -396,7 +406,7 @@ namespace Cadence.Features
                 try
                 {
                     NativeFunction.Natives.REQUEST_COLLISION_AT_COORD(candidatePos.X, candidatePos.Y, candidatePos.Z);
-                    bool hasGround = NativeFunction.Natives.GET_GROUND_Z_FOR_3D_COORD<bool>(candidatePos.X, candidatePos.Y, candidatePos.Z + 2.0f, out float gZ, false);
+                    bool hasGround = NativeFunction.Natives.GET_GROUND_Z_FOR_3D_COORD<bool>(candidatePos.X, candidatePos.Y, candidatePos.Z + 2.0f, out float gZ, false, false);
                     if (hasGround && gZ > -50f)
                     {
                         candidatePos = new Vector3(candidatePos.X, candidatePos.Y, gZ + 0.35f);
@@ -664,6 +674,7 @@ namespace Cadence.Features
             public int Scenario { get; }
             public Vector3 OriginPosition { get; }
             public bool IsCompleted { get; private set; }
+            public uint CreatedTime { get; } = Game.GameTime;
 
             private StopState _state;
             private uint _stateStartTime;

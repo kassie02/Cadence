@@ -4,6 +4,39 @@ All notable changes to the Cadence project are documented in this file.
 
 ---
 
+## [1.1.3] - 2026-10-13
+
+### Cadence Overhaul Phase 2 - Pursuit AI, Standby Scene Holding, Backup Navigation & UB Parity Menu
+- **Vehicle Model Correction (`ZoneSpawnData.cs`)**:
+  - Replaced invalid vehicle model hash name `"schafter"` with valid GTA V model `"schafter2"` in `ZoneSpawnData.CivilianVehicles`, eliminating invalid model hash lookup failures and spawn errors during ambient traffic generation.
+- **Pursuit Driving AI & U-Turn Navigation Overhaul (`NativeTasks.cs`, `PursuitFeature.cs`)**:
+  - Upgraded emergency pursuit driver AI in `ConfigureEmergencyDriver`:
+    - Increased driver aggressiveness from `0.0f` to `0.6f` and driving ability to `100.0f`.
+    - Enabled native chase behavior flag 8 (`SET_TASK_VEHICLE_CHASE_BEHAVIOR_FLAG(driver, 8, true)`), allowing pursuit units to aggressively overtake traffic, initiate assertive pursuit maneuvers, and execute U-turns to keep up with fleeing suspects.
+  - Purged conflicting ambient cruising tasks (`driver.Tasks.Clear()` and `passenger.Tasks.Clear()`) prior to calling `Functions.AddCopToPursuit()`, ensuring ambient officers drafted into pursuits immediately adopt pursuit AI without residual traffic-following behavior.
+  - Harmonized default stopping radius in `TaskLongRangeEmergencyDrive` to `12.0f`.
+- **Pursuit Conclusion Scene Hold & Standby Dismissal (`PursuitFeature.cs`)**:
+  - Introduced `OnSceneStandby` state in `PursuitUnitSession` when an active pursuit concludes:
+    - Cruisers switch to silent warning lights (sirens muted, flashing emergency lightbars remain illuminated).
+    - Seated officers hold position (`VehicleManeuver.Wait`), and dismounted officers maintain perimeter security without interfering with LSPDFR's native arrest and suspect-in-car routines.
+  - Implemented `ProcessStandbyDismissal`: Prompts the player (`Hold ~b~[ENTER]~s~ to dismiss pursuit scene officers`), tracking key hold duration for >= 1100ms (`_dismissHoldThresholdMs = 1100`) to prevent accidental dismissals.
+  - Added graceful dismissal transition (`DismissFromScene`): Officers return to cruisers, wait for driver entry (up to 6s), deactivate lightbars, transition blips back to routine Navy Blue, cruise away smoothly at 16 m/s, and ambiently release after 15 seconds.
+  - Implemented safety watchdog in `PruneAndWatchSessions`: Automatically dismisses standby units if the player moves > 250m away from the scene or after a 5-minute (300,000ms) scene inactivity timeout to prevent entity leaks.
+  - Added public dispatch helpers `RequestPursuitInterceptor(isHighway)` and `RequestGroupPursuit(count)` for direct backup menu integration.
+- **Panic Button & Emergency Backup Response AI (`BackupFeature.cs`)**:
+  - Resolved ped freezing / stuttering: Throttled `UpdateBuddyFollowing` to an asynchronous 1300ms cadence (`_lastBuddyFollowUpdate`), preventing 60 Hz navmesh spam (`Tasks.FollowNavigationMeshToPosition`) from continuously resetting officer pathfinding. Officers within 3.5m stop moving and stand naturally.
+  - Fixed cruiser circling loops: Implemented `GetRoadsideCurbPosition` using `WorldUtils.GetSafeStreetPosition` and `World.GetNextPositionOnStreet` to navigate responders to roadside/curb coordinates instead of raw player positions on sidewalks or off-road. Harmonized stopping radius to 12.0m and arrival check to 14.0m (target) / 16.0m (player) with 25m/35m deceleration arrival fallbacks.
+- **Redesigned Backup Menu - Ultimate Backup `Class74.cs` Parity (`BackupFeature.cs`)**:
+  - Rebuilt backup menu architecture to match Ultimate Backup's `Class74.cs` layout:
+    - Top `UIMenuListItem` for **Response Mode** (`Code 3 [Emergency]`, `Code 2 [Urgent]`, and `Pursuit Backup`).
+    - Dynamic menu item population based on the selected mode:
+      - Normal Modes (Code 2 / Code 3): Local Police Backup, State Patrol / Highway, EMS Ambulance, Fire Rescue Service, Group Backup, Emergency Panic Button, and Dismiss All Backup Units.
+      - Pursuit Backup Mode: Local Pursuit Backup, Highway Pursuit Backup, Pursuit Interceptor, Group Pursuit Backup (2 Units), and Dismiss All Pursuit Units.
+    - Integrated with `PursuitFeature.RequestPursuitInterceptor` and `PursuitFeature.RequestGroupPursuit` for instant tactical reinforcement during active chases.
+    - Dismiss All dispatches clean release commands to both active backup sessions and pursuit standby units.
+
+---
+
 ## [1.1.2] - 2026-10-12
 
 ### Ambient AI Driving & Organic Backup Drafting Stabilization
