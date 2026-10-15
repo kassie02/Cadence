@@ -939,7 +939,7 @@ namespace Cadence.Features
                 try
                 {
                     // Halt vehicle safely and engage handbrake
-                    NativeFunction.Natives.BRING_VEHICLE_TO_HALT(Cruiser, 2.0f, 1, false);
+                    NativeFunction.Natives.BRING_VEHICLE_TO_HALT(Cruiser, 2.0f, 0, false);
                     NativeFunction.Natives.SET_VEHICLE_HANDBRAKE(Cruiser, true);
 
                     // Mute siren on arrival, keep flashing lights active on scene
@@ -966,6 +966,7 @@ namespace Cadence.Features
                 {
                     if (Cruiser != null && Cruiser.Exists())
                     {
+                        NativeFunction.Natives.STOP_BRINGING_VEHICLE_TO_HALT(Cruiser);
                         NativeFunction.Natives.SET_VEHICLE_HANDBRAKE(Cruiser, false);
                     }
                 }
@@ -1001,6 +1002,7 @@ namespace Cadence.Features
                     {
                         try
                         {
+                            NativeFunction.Natives.STOP_BRINGING_VEHICLE_TO_HALT(Cruiser);
                             NativeTasks.SetSilentEmergencyLights(Cruiser, false);
                             NativeFunction.Natives.SET_VEHICLE_HANDBRAKE(Cruiser, false);
                         }

@@ -22,7 +22,7 @@ Cadence was built from the ground up using the **"Ponytail" Delete-Friendly Arch
 ## 2. Features
 
 ### Feature 1: Ambient Cruising Patrol (`PatrolFeature.cs`)
-- **Autonomous Roadway Patrols**: Ambient cruisers patrol naturally across San Andreas streets and highways using authentic driving flags (`CruisingFlags = 786603`), respecting traffic signals and maintaining realistic cruising speeds (16–20 m/s).
+- **Autonomous Roadway Patrols**: Ambient cruisers patrol naturally across San Andreas streets and highways using authentic driving flags (`CruisingFlags = 447` / `0x1BF`), respecting traffic signals and maintaining realistic cruising speeds (12–21 m/s).
 - **Safe Road Node Generation**: New units spawn on validated road nodes 180m–350m from the player, preventing visual pop-in or mid-air/subterranean anomalies.
 - **Dynamic Liveries & Uniforms**: Integrated with Ultimate Backup and native EUP uniform presets to ensure officers match local jurisdictions (LSPD, BCSO, SAHP, Park Rangers).
 - **Radar Minimap Identity**: Color-coded Navy Blue blip (`Sprite 56`, `Color 38`).

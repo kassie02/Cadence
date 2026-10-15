@@ -103,31 +103,14 @@ namespace Cadence.Features
 
                 // Find candidate spots that are NOT within 35m of an occupied spot
                 var candidateSpots = new List<(Vector3 pos, float heading)>();
-                foreach (var spot in ZoneSpawnData.CuratedStandbyLocations)
-                {
-                    float dist = spot.pos.DistanceTo(playerPos);
-                    if (dist >= 30.0f && dist <= maxSearch && WorldUtils.IsAreaClear(spot.pos, 10.0f))
-                    {
-                        if (!occupiedSpots.Any(occ => occ.DistanceTo(spot.pos) < 35.0f))
-                        {
-                            candidateSpots.Add(spot);
-                        }
-                    }
-                }
 
-                foreach (var zone in ZoneSpawnData.GetStationaryStandbyZones())
+                // Pass 1: Strict range (30m to maxSearch) across Standby, Commercial, and Roadside Pullover zones
+                CollectStationaryTestCandidates(playerPos, 30.0f, maxSearch, occupiedSpots, candidateSpots);
+
+                // Pass 2: Progressive expansion if player is in open/rural area (up to 450m)
+                if (candidateSpots.Count == 0)
                 {
-                    foreach (var spot in zone)
-                    {
-                        float dist = spot.pos.DistanceTo(playerPos);
-                        if (dist >= 30.0f && dist <= maxSearch && WorldUtils.IsAreaClear(spot.pos, 10.0f))
-                        {
-                            if (!occupiedSpots.Any(occ => occ.DistanceTo(spot.pos) < 35.0f))
-                            {
-                                candidateSpots.Add(spot);
-                            }
-                        }
-                    }
+                    CollectStationaryTestCandidates(playerPos, maxSearch, 450.0f, occupiedSpots, candidateSpots);
                 }
 
                 if (candidateSpots.Count > 0)
@@ -139,24 +122,21 @@ namespace Cadence.Features
                 }
                 else
                 {
-                    // Fallback to roadside shoulder at variable angles around player
+                    // Fallback to safe off-road / turnout detection (nodeType = 3 or road boundary)
+                    // NEVER spawn directly on road asphalt or centerline
                     float[] testAngles = new float[] { 0f, 45f, -45f, 90f, -90f, 180f };
                     foreach (float angle in testAngles)
                     {
                         float rad = (player.Heading + angle) * (float)(Math.PI / 180.0);
                         Vector3 dir = new Vector3(-(float)Math.Sin(rad), (float)Math.Cos(rad), 0f);
-                        Vector3 probe = playerPos + dir * (45.0f + (float)(_rand.NextDouble() * 30.0));
+                        Vector3 probe = playerPos + dir * (50.0f + (float)(_rand.NextDouble() * 35.0));
 
-                        if (!WorldUtils.IsHighway(probe) && WorldUtils.GetSafeStreetPosition(probe, 1, out Vector3 stPos, out float stH))
+                        if (WorldUtils.GetSafeOffroadPosition(probe, 25.0f, 120.0f, out Vector3 offPos, out float offHeading))
                         {
-                            float hRad = stH * (float)(Math.PI / 180.0);
-                            Vector3 rightDir = new Vector3((float)Math.Cos(hRad), (float)Math.Sin(hRad), 0f);
-                            Vector3 testShoulder = stPos + rightDir * 3.6f;
-
-                            if (!occupiedSpots.Any(occ => occ.DistanceTo(testShoulder) < 35.0f) && WorldUtils.IsAreaClear(testShoulder, 9.0f))
+                            if (!occupiedSpots.Any(occ => occ.DistanceTo(offPos) < 35.0f) && WorldUtils.IsAreaClear(offPos, 8.0f))
                             {
-                                spotPos = testShoulder;
-                                spotHeading = stH;
+                                spotPos = offPos;
+                                spotHeading = offHeading;
                                 break;
                             }
                         }
@@ -190,6 +170,51 @@ namespace Cadence.Features
             }
 
             return false;
+        }
+
+        private static void CollectStationaryTestCandidates(Vector3 playerPos, float minDistance, float maxDistance, List<Vector3> occupiedSpots, List<(Vector3 pos, float heading)> candidates)
+        {
+            foreach (var spot in ZoneSpawnData.CuratedStandbyLocations)
+            {
+                float dist = spot.pos.DistanceTo(playerPos);
+                if (dist >= minDistance && dist <= maxDistance && WorldUtils.IsAreaClear(spot.pos, 9.0f))
+                {
+                    if (!occupiedSpots.Any(occ => occ.DistanceTo(spot.pos) < 35.0f))
+                    {
+                        candidates.Add(spot);
+                    }
+                }
+            }
+
+            foreach (var zone in ZoneSpawnData.GetStationaryStandbyZones())
+            {
+                foreach (var spot in zone)
+                {
+                    float dist = spot.pos.DistanceTo(playerPos);
+                    if (dist >= minDistance && dist <= maxDistance && WorldUtils.IsAreaClear(spot.pos, 9.0f))
+                    {
+                        if (!occupiedSpots.Any(occ => occ.DistanceTo(spot.pos) < 35.0f))
+                        {
+                            candidates.Add(spot);
+                        }
+                    }
+                }
+            }
+
+            foreach (var zone in ZoneSpawnData.GetRoadsidePulloverZones())
+            {
+                foreach (var spot in zone)
+                {
+                    float dist = spot.pos.DistanceTo(playerPos);
+                    if (dist >= minDistance && dist <= maxDistance && WorldUtils.IsAreaClear(spot.pos, 9.0f))
+                    {
+                        if (!occupiedSpots.Any(occ => occ.DistanceTo(spot.pos) < 35.0f))
+                        {
+                            candidates.Add(spot);
+                        }
+                    }
+                }
+            }
         }
 
         public static void PurgeAll()
@@ -440,7 +465,7 @@ namespace Cadence.Features
                 }
             }
 
-            // Priority 3: Dynamic roadside shoulder generation (LivingCity parity - 3.6m curb offset)
+            // Priority 3: Dynamic safe offroad / shoulder generation (strictly prohibited on freeways/highways)
             for (int attempt = 0; attempt < 20; attempt++)
             {
                 float dist = (float)_rand.Next(75, 250);
@@ -452,52 +477,15 @@ namespace Cadence.Features
                     playerPos.Z
                 );
 
-                Vector3 streetPos = World.GetNextPositionOnStreet(probeCenter);
-                if (streetPos == Vector3.Zero || streetPos.DistanceTo(playerPos) < 55.0f) continue;
-                if (WorldUtils.IsSubterraneanOrVoid(streetPos)) continue;
-
-                // Prohibit dynamic roadside spawns on high-speed freeways / highways!
-                // Units on freeways must strictly only use curated off-road turnouts/rest stops.
-                if (WorldUtils.IsHighway(streetPos)) continue;
-
-                Vector3 nodePos = Vector3.Zero;
-                float heading = 0f;
-                bool foundNode = false;
-                try
+                if (WorldUtils.GetSafeOffroadPosition(probeCenter, 30.0f, 150.0f, out Vector3 offroadPos, out float offroadH))
                 {
-                    foundNode = NativeFunction.Natives.GET_CLOSEST_VEHICLE_NODE_WITH_HEADING<bool>(streetPos.X, streetPos.Y, streetPos.Z, out nodePos, out heading, 1, 3.0f, 0f);
-                }
-                catch
-                {
-                    foundNode = false;
-                }
-
-                if (!foundNode || nodePos == Vector3.Zero || WorldUtils.IsSubterraneanOrVoid(nodePos)) continue;
-                if (WorldUtils.IsHighway(nodePos)) continue;
-
-                // Offset 3.6m to the right shoulder/curb relative to road heading so cruisers park roadside instead of blocking traffic lanes
-                float rad = heading * (float)(Math.PI / 180.0);
-                Vector3 rightDir = new Vector3((float)Math.Cos(rad), (float)Math.Sin(rad), 0f);
-                Vector3 curbPos = nodePos + rightDir * 3.6f;
-                Vector3 candidatePos = (curbPos != Vector3.Zero) ? curbPos : nodePos;
-
-                try
-                {
-                    NativeFunction.Natives.REQUEST_COLLISION_AT_COORD(candidatePos.X, candidatePos.Y, candidatePos.Z);
-                    bool hasGround = NativeFunction.Natives.GET_GROUND_Z_FOR_3D_COORD<bool>(candidatePos.X, candidatePos.Y, candidatePos.Z + 2.0f, out float gZ, false, false);
-                    if (hasGround && gZ > -50f)
+                    if (!WorldUtils.IsSubterraneanOrVoid(offroadPos) && !WorldUtils.IsOnActiveRoadOrLane(offroadPos) && WorldUtils.IsAreaClear(offroadPos, 7.5f))
                     {
-                        candidatePos = new Vector3(candidatePos.X, candidatePos.Y, gZ + 0.35f);
+                        spawnPos = offroadPos;
+                        spawnHeading = offroadH;
+                        return true;
                     }
                 }
-                catch { }
-
-                if (WorldUtils.IsSubterraneanOrVoid(candidatePos)) continue;
-                if (!WorldUtils.IsAreaClear(candidatePos, 7.0f)) continue;
-
-                spawnPos = candidatePos;
-                spawnHeading = heading;
-                return true;
             }
 
             return false;
@@ -578,31 +566,27 @@ namespace Cadence.Features
 
                 // 3. Scenario Selection
                 // Determine whether unit is directly in or adjacent to active road lanes; if so, keep officer seated inside!
-                // LivingCity parity: 6.5m threshold forces InVehicleObservation so officers never dismount into active traffic.
-                bool isOnActiveLane = false;
-                if (WorldUtils.GetSafeStreetPosition(spawnPos, 1, out Vector3 nearNode, out _))
+                bool isOnActiveLane = WorldUtils.IsOnActiveRoadOrLane(spawnPos, 5.5f);
+                if (!isOnActiveLane)
                 {
-                    if (spawnPos.DistanceTo(nearNode) < 6.5f)
+                    if (WorldUtils.GetSafeStreetPosition(spawnPos, 1, out Vector3 nearNode, out _))
                     {
-                        isOnActiveLane = true;
-                    }
-                }
-                else if (NativeFunction.Natives.GET_CLOSEST_VEHICLE_NODE_WITH_HEADING<bool>(spawnPos.X, spawnPos.Y, spawnPos.Z, out Vector3 nodeCoord, out float nodeHeading, 1, 3.0f, 0f))
-                {
-                    if (spawnPos.DistanceTo(nodeCoord) < 6.5f)
-                    {
-                        isOnActiveLane = true;
+                        if (spawnPos.DistanceTo(nearNode) < 5.5f)
+                        {
+                            isOnActiveLane = true;
+                        }
                     }
                 }
 
                 int scenario = 0;
-                if (forcedScenario >= 0)
+                if (isOnActiveLane)
+                {
+                    // Officer must never dismount into active traffic lanes
+                    scenario = 0; // Seated radar watch (InVehicleObservation)
+                }
+                else if (forcedScenario >= 0)
                 {
                     scenario = forcedScenario;
-                }
-                else if (isOnActiveLane)
-                {
-                    scenario = 0; // Seated radar watch (InVehicleObservation)
                 }
                 else
                 {
@@ -812,14 +796,14 @@ namespace Cadence.Features
                         break;
 
                     case 1:
-                        // Scenario 1: Leaning against cruiser fender
+                        // Scenario 1: Leaning against cruiser passenger fender (off-road / curb side)
                         Officer.Tasks.LeaveVehicle(Cruiser, LeaveVehicleFlags.None);
                         GameFiber.StartNew(() =>
                         {
                             GameFiber.Sleep(2000);
                             if (Officer != null && Officer.Exists() && Cruiser != null && Cruiser.Exists() && _state == StationaryState.IdleScenario)
                             {
-                                Vector3 leanPoint = Cruiser.GetOffsetPosition(new Vector3(-1.1f, -0.2f, 0f));
+                                Vector3 leanPoint = Cruiser.GetOffsetPosition(new Vector3(1.15f, -0.2f, 0f));
                                 TaskGoTo(Officer, leanPoint);
                                 GameFiber.Sleep(2500);
                                 if (Officer != null && Officer.Exists() && _state == StationaryState.IdleScenario)
@@ -831,14 +815,14 @@ namespace Cadence.Features
                         break;
 
                     case 2:
-                        // Scenario 2: Coffee break
+                        // Scenario 2: Coffee break on curb / passenger side
                         Officer.Tasks.LeaveVehicle(Cruiser, LeaveVehicleFlags.None);
                         GameFiber.StartNew(() =>
                         {
                             GameFiber.Sleep(2000);
                             if (Officer != null && Officer.Exists() && Cruiser != null && Cruiser.Exists() && _state == StationaryState.IdleScenario)
                             {
-                                Vector3 coffeePoint = Cruiser.GetOffsetPosition(new Vector3(-1.3f, 0.5f, 0f));
+                                Vector3 coffeePoint = Cruiser.GetOffsetPosition(new Vector3(1.25f, 0.5f, 0f));
                                 TaskGoTo(Officer, coffeePoint);
                                 GameFiber.Sleep(2500);
 
@@ -855,14 +839,14 @@ namespace Cadence.Features
                         break;
 
                     case 3:
-                        // Scenario 3: Phone call
+                        // Scenario 3: Phone call on passenger side / curb
                         Officer.Tasks.LeaveVehicle(Cruiser, LeaveVehicleFlags.None);
                         GameFiber.StartNew(() =>
                         {
                             GameFiber.Sleep(2000);
                             if (Officer != null && Officer.Exists() && Cruiser != null && Cruiser.Exists() && _state == StationaryState.IdleScenario)
                             {
-                                Vector3 phonePoint = Cruiser.GetOffsetPosition(new Vector3(1.3f, 0.8f, 0f));
+                                Vector3 phonePoint = Cruiser.GetOffsetPosition(new Vector3(1.25f, 0.8f, 0f));
                                 TaskGoTo(Officer, phonePoint);
                                 GameFiber.Sleep(2500);
 
@@ -875,14 +859,14 @@ namespace Cadence.Features
                         break;
 
                     case 4:
-                        // Scenario 4: Radar gun / lidar observation at front bumper
+                        // Scenario 4: Radar gun / lidar observation at passenger front bumper corner
                         Officer.Tasks.LeaveVehicle(Cruiser, LeaveVehicleFlags.None);
                         GameFiber.StartNew(() =>
                         {
                             GameFiber.Sleep(2000);
                             if (Officer != null && Officer.Exists() && Cruiser != null && Cruiser.Exists() && _state == StationaryState.IdleScenario)
                             {
-                                Vector3 bumperPoint = Cruiser.GetOffsetPosition(new Vector3(-0.9f, 2.5f, 0f));
+                                Vector3 bumperPoint = Cruiser.GetOffsetPosition(new Vector3(1.0f, 2.2f, 0f));
                                 TaskGoTo(Officer, bumperPoint);
                                 GameFiber.Sleep(2500);
 
@@ -955,7 +939,7 @@ namespace Cadence.Features
                 try
                 {
                     Model cupModel = new Model("ng_proc_coffee_01a");
-                    cupModel.LoadAndWait();
+                    if (!cupModel.SafeLoad(2000)) return;
 
                     _activeProp = new Rage.Object(cupModel, Officer.Position);
                     cupModel.Dismiss();

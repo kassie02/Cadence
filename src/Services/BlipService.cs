@@ -75,6 +75,32 @@ namespace Cadence.Services
             }
         }
 
+        /// <summary>
+        /// Checks whether the entity (or, if a ped, their current vehicle) has any active radar blip attached.
+        /// Prevents redundant duplicate watchdog blips on suspects already marked by LSPDFR.
+        /// </summary>
+        public static bool HasAnyActiveRadarMarker(Entity entity)
+        {
+            if (entity == null || !entity.Exists() || !entity.IsValid()) return false;
+            Blip b = SafeGetAttachedBlip(entity);
+            if (b != null && b.Exists()) return true;
+
+            if (entity is Ped ped)
+            {
+                try
+                {
+                    if (ped.IsInAnyVehicle(false) && ped.CurrentVehicle != null && ped.CurrentVehicle.Exists())
+                    {
+                        Blip vb = SafeGetAttachedBlip(ped.CurrentVehicle);
+                        if (vb != null && vb.Exists()) return true;
+                    }
+                }
+                catch { }
+            }
+
+            return false;
+        }
+
         // ====================================================================
         // Universal Blip Attachment Engine
         // ====================================================================
@@ -199,6 +225,44 @@ namespace Cadence.Services
         {
             return CreateOrUpdateBlip(vehicle, callsign, "PARKED", spriteId: 56, colorId: 62, isShortRange: Settings.ShortRangeBlips, flashIntervalMs: 0);
         }
+
+        /// <summary>
+        /// Active Pursuit Suspect: Sprite 1 (Destination/Enemy), Color 1 (Red), Flashing 400ms, [SUSPECT].
+        /// Ensures fleeing suspects are clearly tracked on the minimap if LSPDFR fails to attach a marker.
+        /// Uses proportional scaling (0.85x) to maintain radar elegance without overwhelming minimap visuals.
+        /// </summary>
+        public static Blip AttachSuspectBlip(Entity entity, string label = "SUSPECT")
+        {
+            if (!Settings.ShowRadarBlips || entity == null || !entity.Exists() || !entity.IsValid()) return null;
+
+            try
+            {
+                Blip blip = SafeGetAttachedBlip(entity);
+                if (blip == null || !blip.Exists())
+                {
+                    blip = entity.AttachBlip();
+                }
+                if (blip == null || !blip.Exists()) return null;
+
+                blip.Sprite = (BlipSprite)1;
+                NativeFunction.Natives.SET_BLIP_COLOUR(blip, 1); // Red
+                blip.Scale = Settings.BlipScale * 0.85f;
+                NativeFunction.Natives.SET_BLIP_AS_SHORT_RANGE(blip, false);
+                blip.StopFlashing();
+                NativeFunction.Natives.SET_BLIP_FLASHES(blip, true);
+                NativeFunction.Natives.SET_BLIP_FLASH_INTERVAL(blip, 400);
+
+                blip.Name = $"[{label}]";
+                return blip;
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug($"AttachSuspectBlip error: {ex.Message}");
+                return null;
+            }
+        }
+
+        public static Blip AttachSuspectBlip(Ped suspect, string label = "SUSPECT") => AttachSuspectBlip((Entity)suspect, label);
 
         // ====================================================================
         // Dynamic State Transitions

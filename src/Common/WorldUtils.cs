@@ -360,5 +360,129 @@ namespace Cadence.Common
                 return roll < Math.Min(50, Math.Max(2, localHwyThreshold));
             }
         }
+
+        /// <summary>
+        /// Safe model streaming loader with timeout protection to prevent game freezes.
+        /// </summary>
+        public static bool SafeLoad(this Model model, int timeoutMs = 4000)
+        {
+            if (!model.IsValid) return false;
+            try
+            {
+                if (model.IsLoaded) return true;
+                model.Load();
+                uint start = Game.GameTime;
+                while (!model.IsLoaded)
+                {
+                    GameFiber.Yield();
+                    if (Game.GameTime - start > timeoutMs)
+                    {
+                        Core.Logger.Warn($"Model '{model.Name}' (0x{model.Hash:X}) timed out loading after {timeoutMs}ms");
+                        return false;
+                    }
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Core.Logger.Error($"SafeLoad error for model '{model.Name}'", ex);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Finds a safe off-road parking lot, turnout, or shoulder position away from traffic travel lanes.
+        /// Uses off-road vehicle nodes (nodeType 3) and road boundary detection.
+        /// </summary>
+        public static bool GetSafeOffroadPosition(Vector3 searchCenter, float minDistance, float maxDistance, out Vector3 offroadPos, out float offroadHeading)
+        {
+            offroadPos = Vector3.Zero;
+            offroadHeading = 0f;
+
+            try
+            {
+                // Priority 1: Check for off-road / parking lot / turnout vehicle nodes (nodeType = 3)
+                try
+                {
+                    bool foundOffroad = NativeFunction.Natives.GET_CLOSEST_VEHICLE_NODE_WITH_HEADING<bool>(
+                        searchCenter.X, searchCenter.Y, searchCenter.Z,
+                        out Vector3 offroadNode,
+                        out float offHeading,
+                        3, 3.0f, 0f
+                    );
+
+                    if (foundOffroad && offroadNode != Vector3.Zero && !IsSubterraneanOrVoid(offroadNode))
+                    {
+                        float dist = offroadNode.DistanceTo(searchCenter);
+                        if (dist >= minDistance && dist <= maxDistance && IsAreaClear(offroadNode, 8.0f))
+                        {
+                            offroadPos = offroadNode;
+                            offroadHeading = offHeading;
+                            return true;
+                        }
+                    }
+                }
+                catch { }
+
+                // Priority 2: Use road boundary detection to step completely beyond the asphalt into shoulder / turnout
+                if (GetSafeStreetPosition(searchCenter, 1, out Vector3 streetPos, out float streetHeading))
+                {
+                    try
+                    {
+                        bool foundBoundary = NativeFunction.Natives.GET_ROAD_BOUNDARY_USING_HEADING<bool>(
+                            streetPos.X, streetPos.Y, streetPos.Z,
+                            streetHeading,
+                            out Vector3 boundaryPos
+                        );
+
+                        if (foundBoundary && boundaryPos != Vector3.Zero && !IsSubterraneanOrVoid(boundaryPos))
+                        {
+                            float hRad = streetHeading * (float)(Math.PI / 180.0);
+                            Vector3 rightDir = new Vector3((float)Math.Cos(hRad), (float)Math.Sin(hRad), 0f);
+
+                            // Push 3.0m beyond the outer road edge into dirt / shoulder
+                            Vector3 shoulderSpot = boundaryPos + rightDir * 3.0f;
+                            if (GetAccurateGroundZ(shoulderSpot, out float safeGZ))
+                            {
+                                shoulderSpot.Z = safeGZ + 0.35f;
+                            }
+
+                            if (!IsSubterraneanOrVoid(shoulderSpot) && IsAreaClear(shoulderSpot, 8.0f))
+                            {
+                                offroadPos = shoulderSpot;
+                                offroadHeading = streetHeading;
+                                return true;
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch (Exception ex)
+            {
+                Core.Logger.Debug($"GetSafeOffroadPosition error: {ex.Message}");
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Checks whether a given position is located within an active vehicle travel lane or too close to street centerline.
+        /// </summary>
+        public static bool IsOnActiveRoadOrLane(Vector3 pos, float laneThreshold = 4.8f)
+        {
+            try
+            {
+                if (GetSafeStreetPosition(pos, 1, out Vector3 nodePos, out _))
+                {
+                    if (nodePos != Vector3.Zero && pos.DistanceTo(nodePos) < laneThreshold)
+                    {
+                        return true;
+                    }
+                }
+            }
+            catch { }
+            return false;
+        }
     }
 }

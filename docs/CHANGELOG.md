@@ -4,6 +4,23 @@ All notable changes to the Cadence project are documented in this file.
 
 ---
 
+## [1.1.4] - 2026-10-14
+
+### Code Audit, Native Verification & Vehicle Physics Deadlock Resolution
+- **Vehicle Physics & Engine Stall Deadlock Fix (`AssistFeature.cs`, `ResponseFeature.cs`)**:
+  - Resolved `BRING_VEHICLE_TO_HALT` parameter defect where `duration`/`killEngine` parameter was passed as `1`, causing GTA V's physics engine to permanently stall vehicle engines upon arrival or threat reaction.
+  - Set halt duration to `0` and implemented canonical native `STOP_BRINGING_VEHICLE_TO_HALT(Cruiser)` across `FinishStandDown`, `Relinquish`, and `Dispose` routines before issuing cruising tasks, ensuring cruisers smoothly resume patrol and merge into traffic without freezing in place.
+- **Blip Destructor Protocol & Standard Alignment (`CODING_STANDARDS.md`)**:
+  - Corrected Step 4 in `CODING_STANDARDS.md` to remove references to the banned native `HUD::REMOVE_BLIP` (which accepts an internal engine `Blip*` pointer, causing `AccessViolationException` in RPH).
+  - Aligned documentation with the battle-tested 4-step `BlipService.SafeDeleteBlip(ref Blip blip)` protocol: null check, visual flash cessation (`SET_BLIP_FLASHES` & `StopFlashing()`), managed deletion (`blip.Delete()`), and reference nullification (`blip = null`) in a `finally` block.
+- **Assembly Version Alignment (`AssemblyInfo.cs`)**:
+  - Synchronized `AssemblyVersion` and `AssemblyFileVersion` to `1.1.0.0` matching `build.bat` release packaging and plugin documentation.
+- **Native Verification & Static Analysis**:
+  - Confirmed 100% compliance across all 121 native call sites in 20 C# source files against alloc8or's GTA V native database via `gta5-dev` MCP server.
+  - Zero RDR2 natives, zero raw hex hacks, and zero-warning MSBuild compilation under `/p:TreatWarningsAsErrors=true`.
+
+---
+
 ## [1.1.3] - 2026-10-13
 
 ### Cadence Overhaul Phase 2 - Pursuit AI, Standby Scene Holding, Backup Navigation & UB Parity Menu

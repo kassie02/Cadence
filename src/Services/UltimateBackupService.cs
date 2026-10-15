@@ -18,7 +18,28 @@ namespace Cadence.Services
     {
         private static bool _initialized;
         private static bool _isAvailable;
-        private static readonly object _ubApiLock = new object();
+        private static bool _isUbRequestInProgress;
+
+        private static bool AcquireUbGate(int timeoutMs = 8000)
+        {
+            uint start = Game.GameTime;
+            while (_isUbRequestInProgress)
+            {
+                GameFiber.Yield();
+                if (Game.GameTime - start > timeoutMs)
+                {
+                    Logger.Warn("[UB] Timeout waiting for UB request gate. Proceeding cautiously.");
+                    break;
+                }
+            }
+            _isUbRequestInProgress = true;
+            return true;
+        }
+
+        private static void ReleaseUbGate()
+        {
+            _isUbRequestInProgress = false;
+        }
 
         public static bool IsAvailable
         {
@@ -131,11 +152,16 @@ namespace Cadence.Services
 
             try
             {
-                lock (_ubApiLock)
+                AcquireUbGate();
+                try
                 {
                     Logger.Debug("UB", $"Requesting UB Local Patrol unit at {location} (peds: {numPeds})");
                     Tuple<Vehicle, List<Ped>> result = UBFunctions.getLocalPatrolUnit(location, Math.Max(1, numPeds));
                     return PrepareUltimateBackupUnit(result);
+                }
+                finally
+                {
+                    ReleaseUbGate();
                 }
             }
             catch (Exception ex)
@@ -154,11 +180,16 @@ namespace Cadence.Services
 
             try
             {
-                lock (_ubApiLock)
+                AcquireUbGate();
+                try
                 {
                     Logger.Debug("UB", $"Requesting UB State Patrol unit at {location} (peds: {numPeds})");
                     Tuple<Vehicle, List<Ped>> result = UBFunctions.getStatePatrolUnit(location, Math.Max(1, numPeds));
                     return PrepareUltimateBackupUnit(result);
+                }
+                finally
+                {
+                    ReleaseUbGate();
                 }
             }
             catch (Exception ex)
@@ -177,11 +208,16 @@ namespace Cadence.Services
 
             try
             {
-                lock (_ubApiLock)
+                AcquireUbGate();
+                try
                 {
                     Logger.Debug("UB", $"Requesting UB Ambulance unit at {location} (peds: {numPeds})");
                     Tuple<Vehicle, List<Ped>> result = UBFunctions.getAmbulanceUnit(location, Math.Max(1, numPeds));
                     return PrepareUltimateBackupUnit(result, isPolice: false);
+                }
+                finally
+                {
+                    ReleaseUbGate();
                 }
             }
             catch (Exception ex)
@@ -200,11 +236,16 @@ namespace Cadence.Services
 
             try
             {
-                lock (_ubApiLock)
+                AcquireUbGate();
+                try
                 {
                     Logger.Debug("UB", $"Requesting UB Fire Truck unit at {location} (peds: {numPeds})");
                     Tuple<Vehicle, List<Ped>> result = UBFunctions.getFireTruckUnit(location, Math.Max(1, numPeds));
                     return PrepareUltimateBackupUnit(result, isPolice: false);
+                }
+                finally
+                {
+                    ReleaseUbGate();
                 }
             }
             catch (Exception ex)
@@ -223,7 +264,8 @@ namespace Cadence.Services
 
             try
             {
-                lock (_ubApiLock)
+                AcquireUbGate();
+                try
                 {
                     Ped ped = UBFunctions.getLocalPatrolPed(location, heading);
                     if (ped != null && ped.Exists())
@@ -233,6 +275,10 @@ namespace Cadence.Services
                         try { LspdFunctions.SetPedAsCop(ped); } catch { }
                         return ped;
                     }
+                }
+                finally
+                {
+                    ReleaseUbGate();
                 }
             }
             catch (Exception ex)
@@ -252,7 +298,8 @@ namespace Cadence.Services
 
             try
             {
-                lock (_ubApiLock)
+                AcquireUbGate();
+                try
                 {
                     Ped ped = UBFunctions.geStatePatrolPed(location, heading);
                     if (ped != null && ped.Exists())
@@ -262,6 +309,10 @@ namespace Cadence.Services
                         try { LspdFunctions.SetPedAsCop(ped); } catch { }
                         return ped;
                     }
+                }
+                finally
+                {
+                    ReleaseUbGate();
                 }
             }
             catch (Exception ex)
@@ -389,8 +440,13 @@ namespace Cadence.Services
                 Model vModel = new Model(vehicleModel);
                 Model pModel = new Model(copModel);
 
-                vModel.LoadAndWait();
-                pModel.LoadAndWait();
+                if (!vModel.SafeLoad(4000) || !pModel.SafeLoad(4000))
+                {
+                    Logger.Warn($"[UB] SafeLoad timed out loading models {vehicleModel} or {copModel}.");
+                    vModel.Dismiss();
+                    pModel.Dismiss();
+                    return null;
+                }
 
                 Vehicle cruiser = new Vehicle(vModel, location, heading);
                 cruiser.MakePersistent();
@@ -436,8 +492,13 @@ namespace Cadence.Services
                 Model vModel = new Model(vehicleModel);
                 Model pModel = new Model(pedModel);
 
-                vModel.LoadAndWait();
-                pModel.LoadAndWait();
+                if (!vModel.SafeLoad(4000) || !pModel.SafeLoad(4000))
+                {
+                    Logger.Warn($"[UB] SafeLoad timed out loading models {vehicleModel} or {pedModel}.");
+                    vModel.Dismiss();
+                    pModel.Dismiss();
+                    return null;
+                }
 
                 Vehicle amb = new Vehicle(vModel, location, heading);
                 amb.MakePersistent();
@@ -479,8 +540,13 @@ namespace Cadence.Services
                 Model vModel = new Model(vehicleModel);
                 Model pModel = new Model(pedModel);
 
-                vModel.LoadAndWait();
-                pModel.LoadAndWait();
+                if (!vModel.SafeLoad(4000) || !pModel.SafeLoad(4000))
+                {
+                    Logger.Warn($"[UB] SafeLoad timed out loading models {vehicleModel} or {pedModel}.");
+                    vModel.Dismiss();
+                    pModel.Dismiss();
+                    return null;
+                }
 
                 Vehicle fire = new Vehicle(vModel, location, heading);
                 fire.MakePersistent();

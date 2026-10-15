@@ -75,10 +75,9 @@
    - Blips must always be deleted using `BlipService.SafeDeleteBlip(ref Blip blip)`. Pass-by-value is prohibited.
    - Protocol steps:
      1. Null-check blip handle reference.
-     2. Halt visual flashing via native `SET_BLIP_FLASHES(blip, false)`.
+     2. Halt visual flashing via native `SET_BLIP_FLASHES(blip, false)` and `blip.StopFlashing()`.
      3. Remove blip using managed `blip.Delete()` wrapped in exception guard.
-     4. Fallback: Check native `HUD::DOES_BLIP_EXIST(blip)` and call `HUD::REMOVE_BLIP(blip)` if managed handle remains active.
-     5. Set `blip = null` to clear memory reference and prevent double-free crashes.
+     4. Clear memory reference (`blip = null`) in a `finally` block to prevent dangling pointer reuse.
 
 ## Lifecycle & Teardown Architecture
 1. **Inverted Teardown Lifecycle**:

@@ -89,11 +89,11 @@ namespace Cadence.Services
                         {
                             if (drawableId < 0)
                             {
-                                NativeFunction.Natives.CLEAR_PED_PROP(ped, propId);
+                                NativeFunction.Natives.CLEAR_PED_PROP(ped, propId, 0);
                             }
                             else
                             {
-                                NativeFunction.Natives.SET_PED_PROP_INDEX(ped, propId, drawableId, textureId, true);
+                                NativeFunction.Natives.SET_PED_PROP_INDEX(ped, propId, drawableId, textureId, true, 0);
                             }
                         }
                         catch (Exception ex)

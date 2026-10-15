@@ -22,6 +22,7 @@ namespace Cadence.Features
     {
         private static readonly object _syncLock = new object();
         private static readonly List<PursuitUnitSession> _activeSessions = new List<PursuitUnitSession>();
+        private static readonly Dictionary<Ped, Blip> _trackedSuspectBlips = new Dictionary<Ped, Blip>();
         private static readonly Random _rand = new Random();
 
         private static GameFiber _pursuitFiber;
@@ -94,6 +95,150 @@ namespace Cadence.Features
             }
         }
 
+        public static bool IsDraftedOfficer(Ped ped)
+        {
+            if (ped == null || !ped.Exists()) return false;
+            lock (_syncLock)
+            {
+                return _activeSessions.Any(s => s != null && (s.Driver == ped || s.Passenger == ped));
+            }
+        }
+
+        public static bool IsPursuitCruiser(Vehicle cruiser)
+        {
+            if (cruiser == null || !cruiser.Exists()) return false;
+            lock (_syncLock)
+            {
+                return _activeSessions.Any(s => s != null && s.Cruiser == cruiser);
+            }
+        }
+
+        /// <summary>
+        /// Retrieves genuine fleeing suspects enrolled in the active pursuit, filtering out officers,
+        /// players, emergency vehicles, and compliant/neutralized subjects.
+        /// </summary>
+        public static List<Ped> GetValidPursuitSuspects(LHandle activePursuit)
+        {
+            var list = new List<Ped>();
+            if (activePursuit == null) return list;
+
+            try
+            {
+                Ped[] peds = Functions.GetPursuitPeds(activePursuit);
+                if (peds == null || peds.Length == 0) return list;
+
+                Ped[] cops = null;
+                try { cops = Functions.GetPursuitCops(activePursuit); } catch { }
+
+                Ped player = Game.LocalPlayer?.Character;
+
+                foreach (var p in peds)
+                {
+                    if (p == null || !p.Exists() || p.IsDead) continue;
+                    if (p.IsPlayer || (player != null && p == player)) continue;
+
+                    // Exclude any law enforcement ped or emergency relationship group
+                    try
+                    {
+                        if (Functions.IsPedACop(p)) continue;
+                    }
+                    catch { }
+
+                    try
+                    {
+                        if (p.RelationshipGroup == "COP" || p.RelationshipGroup == "POLICE") continue;
+                    }
+                    catch { }
+
+                    // Exclude any ped inside a police or emergency service vehicle
+                    try
+                    {
+                        if (p.CurrentVehicle != null && p.CurrentVehicle.Exists())
+                        {
+                            if (p.CurrentVehicle.IsPoliceVehicle || p.CurrentVehicle.Model.IsLawEnforcementVehicle ||
+                                IsPursuitCruiser(p.CurrentVehicle) || BackupFeature.IsBackupCruiser(p.CurrentVehicle))
+                                continue;
+                        }
+                    }
+                    catch { }
+
+                    // Exclude peds enrolled as cops in this pursuit
+                    if (cops != null && cops.Contains(p)) continue;
+
+                    // Exclude Cadence registered backup or drafted officers
+                    if (BackupFeature.IsBackupOfficer(p) || IsDraftedOfficer(p)) continue;
+
+                    list.Add(p);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug($"[PursuitFeature] GetValidPursuitSuspects error: {ex.Message}");
+            }
+
+            return list;
+        }
+
+        /// <summary>
+        /// Evaluates whether any pursuit suspect is currently surrendering, kneeling, getting arrested,
+        /// being handcuffed, or already cuffed/arrested. While true, no new units may be drafted or added
+        /// to the pursuit to ensure LSPDFR's designated primary arresting officer can complete the arrest
+        /// uninterrupted without CopBustPed task aborts.
+        /// </summary>
+        public static bool IsAnySuspectSurrenderingOrArrested(LHandle activePursuit)
+        {
+            if (activePursuit == null) return false;
+            try
+            {
+                if (!Functions.IsPursuitStillRunning(activePursuit)) return false;
+
+                var suspects = GetValidPursuitSuspects(activePursuit);
+                if (suspects == null || suspects.Count == 0) return false;
+
+                bool isAnyArresting = false;
+                bool areAllNeutralized = true;
+
+                foreach (var s in suspects)
+                {
+                    if (s == null || !s.Exists()) continue;
+
+                    bool gettingArrested = false;
+                    try
+                    {
+                        gettingArrested = Functions.IsPedGettingArrested(s) ||
+                                          Functions.IsPedBeingCuffed(s) ||
+                                          Functions.IsPedKneelingTaskActive(s) ||
+                                          Functions.IsPedCuffedTaskActive(s) ||
+                                          (Functions.GetPedArrestingOfficer(s) != null && Functions.GetPedArrestingOfficer(s).Exists());
+                    }
+                    catch { }
+
+                    bool arrested = false;
+                    try { arrested = Functions.IsPedArrested(s); } catch { }
+
+                    bool cuffed = false;
+                    try { cuffed = s.IsCuffed; } catch { }
+
+                    if (gettingArrested)
+                    {
+                        isAnyArresting = true;
+                    }
+
+                    if (!gettingArrested && !arrested && !cuffed && s.IsAlive)
+                    {
+                        areAllNeutralized = false;
+                    }
+                }
+
+                return isAnyArresting || areAllNeutralized;
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug($"[PursuitFeature] IsAnySuspectSurrenderingOrArrested error: {ex.Message}");
+                return false;
+            }
+        }
+
         // ====================================================================
         // Background Process Fiber
         // ====================================================================
@@ -131,8 +276,14 @@ namespace Cadence.Features
 
                     if (!isPursuitRunning)
                     {
-                        // Pursuit has terminated or Code 4 was called: transition active units to OnSceneStandby
+                        // Pursuit has terminated or Code 4 was called: clean suspect markers and transition active units to OnSceneStandby
+                        ClearAllSuspectBlips();
                         TransitionToSceneStandby();
+                    }
+                    else
+                    {
+                        // Watchdog suspect blips: ensures all fleeing suspects are marked on the minimap
+                        UpdateSuspectRadarMarkers(activePursuit);
                     }
 
                     // Watchdog: prune invalid sessions and process standby/stand-down expiration
@@ -146,15 +297,38 @@ namespace Cadence.Features
                         continue;
                     }
 
-                    // Evaluate cruiser involvement count vs MaxPursuitUnits
+                    // Resolve target pursuit/suspect location
+                    Vector3 targetPos = GetPursuitTargetPosition(activePursuit, player);
+                    if (targetPos == Vector3.Zero)
+                    {
+                        continue;
+                    }
+
+                    // Update dynamic distance-aware blips for all active pursuit sessions:
+                    // Flashing Orange when close (<= 100m from suspect), Flashing Red when far (> 140m)
+                    lock (_syncLock)
+                    {
+                        foreach (var s in _activeSessions)
+                        {
+                            if (s != null && s.State == PursuitUnitSession.SessionState.InPursuit)
+                            {
+                                s.UpdatePursuitBlip(targetPos);
+                            }
+                        }
+                    }
+
+                    // Evaluate cruiser involvement count vs MaxPursuitUnits cap
                     int draftedCount;
                     lock (_syncLock)
                     {
                         draftedCount = _activeSessions.Count(s => s != null && s.State == PursuitUnitSession.SessionState.InPursuit);
                     }
 
-                    int distinctCruiserCount = GetActivePursuitCruiserCount(activePursuit);
-                    int totalInvolved = Math.Max(distinctCruiserCount, draftedCount);
+                    Ped[] pursuitCops = null;
+                    try { pursuitCops = Functions.GetPursuitCops(activePursuit); } catch { }
+                    int totalCopsInPursuit = pursuitCops?.Count(p => p != null && p.Exists() && p.IsAlive) ?? 0;
+                    int distinctCruisers = GetActivePursuitCruiserCount(activePursuit);
+                    int totalInvolved = Math.Max(totalCopsInPursuit, Math.Max(distinctCruisers, draftedCount));
 
                     if (totalInvolved >= Settings.MaxPursuitUnits || draftedCount >= Settings.MaxPursuitUnits)
                     {
@@ -168,9 +342,10 @@ namespace Cadence.Features
                         continue;
                     }
 
-                    // Resolve target pursuit/suspect location
-                    Vector3 targetPos = GetPursuitTargetPosition(activePursuit, player);
-                    if (targetPos == Vector3.Zero)
+                    // Check if any suspect is currently surrendering, kneeling, or being arrested:
+                    // If so, do not draft new pursuit cruisers into the chase to avoid exceeding
+                    // per-suspect pursuit slots and aborting LSPDFR's CopBustPed state machine.
+                    if (IsAnySuspectSurrenderingOrArrested(activePursuit))
                     {
                         continue;
                     }
@@ -197,11 +372,16 @@ namespace Cadence.Features
                 Ped[] pursuitCops = Functions.GetPursuitCops(activePursuit);
                 if (pursuitCops == null || pursuitCops.Length == 0) return 0;
 
-                return pursuitCops
+                int vehicleCruisers = pursuitCops
                     .Where(p => p != null && p.Exists() && p.CurrentVehicle != null && p.CurrentVehicle.Exists())
                     .Select(p => p.CurrentVehicle.Handle)
                     .Distinct()
                     .Count();
+
+                int footCops = pursuitCops
+                    .Count(p => p != null && p.Exists() && (p.CurrentVehicle == null || !p.CurrentVehicle.Exists()));
+
+                return vehicleCruisers + (footCops > 0 ? (footCops + 1) / 2 : 0);
             }
             catch
             {
@@ -213,7 +393,7 @@ namespace Cadence.Features
         {
             try
             {
-                Ped[] suspects = Functions.GetPursuitPeds(activePursuit);
+                var suspects = GetValidPursuitSuspects(activePursuit);
                 Ped primarySuspect = suspects?.FirstOrDefault(p => p != null && p.Exists() && p.IsAlive);
 
                 if (primarySuspect != null && primarySuspect.Exists())
@@ -226,8 +406,118 @@ namespace Cadence.Features
             return player != null && player.Exists() ? player.Position : Vector3.Zero;
         }
 
+        private static void UpdateSuspectRadarMarkers(LHandle activePursuit)
+        {
+            try
+            {
+                var validSuspects = GetValidPursuitSuspects(activePursuit);
+
+                // Clean up blips for suspects no longer alive, cuffed, arrested, getting arrested, or no longer in pursuit
+                var toRemove = new List<Ped>();
+                foreach (var kvp in _trackedSuspectBlips)
+                {
+                    Ped p = kvp.Key;
+                    Blip b = kvp.Value;
+                    bool shouldRemove = false;
+                    if (p == null || !p.Exists() || p.IsDead || p.IsCuffed)
+                    {
+                        shouldRemove = true;
+                    }
+                    else
+                    {
+                        try
+                        {
+                            if (Functions.IsPedArrested(p) || Functions.IsPedGettingArrested(p) ||
+                                Functions.IsPedBeingCuffed(p) || Functions.IsPedKneelingTaskActive(p) ||
+                                Functions.IsPedCuffedTaskActive(p) || !validSuspects.Contains(p))
+                            {
+                                shouldRemove = true;
+                            }
+                        }
+                        catch
+                        {
+                            shouldRemove = true;
+                        }
+                    }
+
+                    if (shouldRemove)
+                    {
+                        BlipService.SafeDeleteBlip(ref b);
+                        toRemove.Add(p);
+                    }
+                }
+                foreach (var p in toRemove)
+                {
+                    _trackedSuspectBlips.Remove(p);
+                }
+
+                // Check active fleeing suspects: if they have no attached blip, attach one!
+                foreach (Ped suspect in validSuspects)
+                {
+                    if (suspect == null || !suspect.Exists() || suspect.IsDead || suspect.IsCuffed)
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        if (Functions.IsPedArrested(suspect) || Functions.IsPedGettingArrested(suspect) ||
+                            Functions.IsPedBeingCuffed(suspect) || Functions.IsPedKneelingTaskActive(suspect) ||
+                            Functions.IsPedCuffedTaskActive(suspect) ||
+                            (Functions.GetPedArrestingOfficer(suspect) != null && Functions.GetPedArrestingOfficer(suspect).Exists()))
+                        {
+                            continue;
+                        }
+                    }
+                    catch { }
+
+                    // Check if suspect already has ANY active radar marker (on ped or on vehicle)
+                    if (BlipService.HasAnyActiveRadarMarker(suspect))
+                    {
+                        continue;
+                    }
+
+                    // Suspect does not have any blip! Attach high-visibility red blip
+                    Blip newBlip;
+                    if (suspect.IsInAnyVehicle(false) && suspect.CurrentVehicle != null && suspect.CurrentVehicle.Exists())
+                    {
+                        newBlip = BlipService.AttachSuspectBlip(suspect.CurrentVehicle, "SUSPECT");
+                    }
+                    else
+                    {
+                        newBlip = BlipService.AttachSuspectBlip(suspect, "SUSPECT");
+                    }
+
+                    if (newBlip != null && newBlip.Exists())
+                    {
+                        _trackedSuspectBlips[suspect] = newBlip;
+                        Logger.Debug($"[PursuitFeature] Attached watchdog suspect blip to {suspect.Model.Name} (0x{suspect.Handle:X}).");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug($"[PursuitFeature] UpdateSuspectRadarMarkers error: {ex.Message}");
+            }
+        }
+
+        private static void ClearAllSuspectBlips()
+        {
+            try
+            {
+                foreach (var kvp in _trackedSuspectBlips)
+                {
+                    Blip b = kvp.Value;
+                    BlipService.SafeDeleteBlip(ref b);
+                }
+                _trackedSuspectBlips.Clear();
+            }
+            catch { }
+        }
+
         private static void TransitionToSceneStandby()
         {
+            ClearAllSuspectBlips();
             lock (_syncLock)
             {
                 for (int i = _activeSessions.Count - 1; i >= 0; i--)
@@ -369,6 +659,11 @@ namespace Cadence.Features
             LHandle activePursuit = null;
             try { activePursuit = Functions.GetActivePursuit(); } catch { }
             if (activePursuit == null || !Functions.IsPursuitStillRunning(activePursuit))
+            {
+                return false;
+            }
+
+            if (IsAnySuspectSurrenderingOrArrested(activePursuit))
             {
                 return false;
             }
@@ -597,10 +892,25 @@ namespace Cadence.Features
                     Functions.AddCopToPursuit(activePursuit, passenger);
                 }
 
-                // Switch radar blip to Orange Flashing pursuit blip
-                Blip blip = BlipService.AttachPursuitBlip(cruiser, callsign);
+                // Distance-aware blip: Orange [PURSUIT] when within 100m of chase target, Red [CODE 3] when responding from far
+                Ped player = Game.LocalPlayer?.Character;
+                Vector3 targetPos = GetPursuitTargetPosition(activePursuit, player);
+                float distToTarget = (targetPos != Vector3.Zero) ? cruiser.Position.DistanceTo(targetPos) : 200.0f;
 
-                var session = new PursuitUnitSession(cruiser, driver, passenger, blip, callsign, wasSpawned);
+                Blip blip;
+                bool isOrange;
+                if (distToTarget <= 100.0f)
+                {
+                    blip = BlipService.AttachPursuitBlip(cruiser, callsign);
+                    isOrange = true;
+                }
+                else
+                {
+                    blip = BlipService.AttachEmergencyBlip(cruiser, $"{callsign} [CODE 3]");
+                    isOrange = false;
+                }
+
+                var session = new PursuitUnitSession(cruiser, driver, passenger, blip, callsign, wasSpawned, isOrange);
 
                 lock (_syncLock)
                 {
@@ -618,6 +928,7 @@ namespace Cadence.Features
 
         private static void ReleaseAllPursuitUnits(bool immediateDelete)
         {
+            ClearAllSuspectBlips();
             lock (_syncLock)
             {
                 foreach (var session in _activeSessions)
@@ -685,11 +996,12 @@ namespace Cadence.Features
             public string Callsign { get; }
             public uint JoinTime { get; }
             public bool WasAmbientSpawned { get; }
+            public bool IsOrangePursuitBlip { get; set; }
             public SessionState State { get; private set; }
             public uint StandbyStartTime { get; private set; }
             public uint StandDownStartTime { get; private set; }
 
-            public PursuitUnitSession(Vehicle cruiser, Ped driver, Ped passenger, Blip blip, string callsign, bool wasSpawned)
+            public PursuitUnitSession(Vehicle cruiser, Ped driver, Ped passenger, Blip blip, string callsign, bool wasSpawned, bool isOrange = true)
             {
                 Cruiser = cruiser;
                 Driver = driver;
@@ -699,6 +1011,24 @@ namespace Cadence.Features
                 JoinTime = Game.GameTime;
                 WasAmbientSpawned = wasSpawned;
                 State = SessionState.InPursuit;
+                IsOrangePursuitBlip = isOrange;
+            }
+
+            public void UpdatePursuitBlip(Vector3 targetPos)
+            {
+                if (RadarBlip == null || !RadarBlip.Exists() || Cruiser == null || !Cruiser.Exists() || State != SessionState.InPursuit) return;
+
+                float dist = Cruiser.Position.DistanceTo(targetPos);
+                if (dist <= 100.0f && !IsOrangePursuitBlip)
+                {
+                    IsOrangePursuitBlip = true;
+                    BlipService.TransitionToPursuit(RadarBlip, Callsign);
+                }
+                else if (dist > 140.0f && IsOrangePursuitBlip)
+                {
+                    IsOrangePursuitBlip = false;
+                    BlipService.TransitionToEmergency(RadarBlip, Callsign);
+                }
             }
 
             public bool IsValid()

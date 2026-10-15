@@ -245,7 +245,13 @@ namespace Cadence.Features
                     bool isCuffed = false;
                     try
                     {
-                        isCuffed = ped.IsCuffed || NativeFunction.Natives.IS_PED_CUFFED<bool>(ped) || Functions.IsPedArrested(ped);
+                        isCuffed = ped.IsCuffed ||
+                                   NativeFunction.Natives.IS_PED_CUFFED<bool>(ped) ||
+                                   Functions.IsPedArrested(ped) ||
+                                   Functions.IsPedGettingArrested(ped) ||
+                                   Functions.IsPedBeingCuffed(ped) ||
+                                   Functions.IsPedKneelingTaskActive(ped) ||
+                                   Functions.IsPedCuffedTaskActive(ped);
                     }
                     catch { }
                     if (isCuffed) continue;
@@ -301,7 +307,7 @@ namespace Cadence.Features
                 Logger.Info($"[AssistFeature] Active hostile threat detected ({threat.Handle}) near cruiser ({cruiser.Model.Name}). Mobilizing tactical defense!");
 
                 // 1. Cruiser halts immediately and engages handbrake
-                NativeFunction.Natives.BRING_VEHICLE_TO_HALT(cruiser, 2.0f, 1, false);
+                NativeFunction.Natives.BRING_VEHICLE_TO_HALT(cruiser, 2.0f, 0, false);
                 NativeFunction.Natives.SET_VEHICLE_HANDBRAKE(cruiser, true);
 
                 // 2. Activates emergency lights
@@ -448,7 +454,11 @@ namespace Cadence.Features
                             {
                                 isThreatNeutralized = ThreatPed.IsCuffed ||
                                                      NativeFunction.Natives.IS_PED_CUFFED<bool>(ThreatPed) ||
-                                                     Functions.IsPedArrested(ThreatPed);
+                                                     Functions.IsPedArrested(ThreatPed) ||
+                                                     Functions.IsPedGettingArrested(ThreatPed) ||
+                                                     Functions.IsPedBeingCuffed(ThreatPed) ||
+                                                     Functions.IsPedKneelingTaskActive(ThreatPed) ||
+                                                     Functions.IsPedCuffedTaskActive(ThreatPed);
                             }
                             catch { }
                         }
@@ -547,7 +557,8 @@ namespace Cadence.Features
                         }
                     }
 
-                    // Release handbrake and extinguish emergency lights
+                    // Stop vehicle halt task, release handbrake and extinguish emergency lights
+                    NativeFunction.Natives.STOP_BRINGING_VEHICLE_TO_HALT(Cruiser);
                     NativeFunction.Natives.SET_VEHICLE_HANDBRAKE(Cruiser, false);
                     NativeTasks.SetSilentSiren(Cruiser, false);
 
@@ -587,6 +598,7 @@ namespace Cadence.Features
                 {
                     if (Cruiser != null && Cruiser.Exists())
                     {
+                        NativeFunction.Natives.STOP_BRINGING_VEHICLE_TO_HALT(Cruiser);
                         NativeFunction.Natives.SET_VEHICLE_HANDBRAKE(Cruiser, false);
                         NativeTasks.SetSilentEmergencyLights(Cruiser, false);
                     }

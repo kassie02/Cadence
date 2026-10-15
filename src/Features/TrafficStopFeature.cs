@@ -98,19 +98,14 @@ namespace Cadence.Features
 
                 // Find candidate pullover spots that are NOT within 35m of an occupied spot
                 var candidateSpots = new List<(Vector3 pos, float heading)>();
-                foreach (var zone in ZoneSpawnData.GetRoadsidePulloverZones())
+
+                // Pass 1: Strict range (35m to maxSearch) across curated roadside pullover zones
+                CollectPulloverTestCandidates(playerPos, 35.0f, maxSearch, occupiedSpots, candidateSpots);
+
+                // Pass 2: Progressive expansion if player is in open/rural area (up to 450m)
+                if (candidateSpots.Count == 0)
                 {
-                    foreach (var spot in zone)
-                    {
-                        float dist = spot.pos.DistanceTo(playerPos);
-                        if (dist >= 35.0f && dist <= maxSearch && WorldUtils.IsAreaClear(spot.pos, 12.0f))
-                        {
-                            if (!occupiedSpots.Any(occ => occ.DistanceTo(spot.pos) < 35.0f))
-                            {
-                                candidateSpots.Add(spot);
-                            }
-                        }
-                    }
+                    CollectPulloverTestCandidates(playerPos, maxSearch, 450.0f, occupiedSpots, candidateSpots);
                 }
 
                 if (candidateSpots.Count > 0)
@@ -121,24 +116,21 @@ namespace Cadence.Features
                 }
                 else
                 {
-                    // Fallback to roadside shoulder around player on local streets (never freeway centerlines)
+                    // Fallback to safe off-road / turnout detection (nodeType = 3 or road boundary)
+                    // NEVER spawn directly on road asphalt or active travel lanes
                     float[] testAngles = new float[] { 0f, 35f, -35f, 65f, -65f, 90f };
                     foreach (float angle in testAngles)
                     {
                         float rad = (player.Heading + angle) * (float)(Math.PI / 180.0);
                         Vector3 dir = new Vector3(-(float)Math.Sin(rad), (float)Math.Cos(rad), 0f);
-                        Vector3 probe = playerPos + dir * (45.0f + (float)(_rand.NextDouble() * 30.0));
+                        Vector3 probe = playerPos + dir * (50.0f + (float)(_rand.NextDouble() * 35.0));
 
-                        if (!WorldUtils.IsHighway(probe) && WorldUtils.GetSafeStreetPosition(probe, 1, out Vector3 stPos, out float stH))
+                        if (WorldUtils.GetSafeOffroadPosition(probe, 25.0f, 120.0f, out Vector3 offPos, out float offHeading))
                         {
-                            float hRad = stH * (float)(Math.PI / 180.0);
-                            Vector3 rightDir = new Vector3((float)Math.Cos(hRad), (float)Math.Sin(hRad), 0f);
-                            Vector3 testShoulder = stPos + rightDir * 3.6f;
-
-                            if (!occupiedSpots.Any(occ => occ.DistanceTo(testShoulder) < 35.0f) && WorldUtils.IsAreaClear(testShoulder, 10.0f))
+                            if (!occupiedSpots.Any(occ => occ.DistanceTo(offPos) < 35.0f) && WorldUtils.IsAreaClear(offPos, 9.0f))
                             {
-                                spotPos = testShoulder;
-                                spotHeading = stH;
+                                spotPos = offPos;
+                                spotHeading = offHeading;
                                 break;
                             }
                         }
@@ -168,6 +160,24 @@ namespace Cadence.Features
             }
 
             return false;
+        }
+
+        private static void CollectPulloverTestCandidates(Vector3 playerPos, float minDistance, float maxDistance, List<Vector3> occupiedSpots, List<(Vector3 pos, float heading)> candidates)
+        {
+            foreach (var zone in ZoneSpawnData.GetRoadsidePulloverZones())
+            {
+                foreach (var spot in zone)
+                {
+                    float dist = spot.pos.DistanceTo(playerPos);
+                    if (dist >= minDistance && dist <= maxDistance && WorldUtils.IsAreaClear(spot.pos, 9.0f))
+                    {
+                        if (!occupiedSpots.Any(occ => occ.DistanceTo(spot.pos) < 35.0f))
+                        {
+                            candidates.Add(spot);
+                        }
+                    }
+                }
+            }
         }
 
         public static void PurgeAll()
@@ -406,7 +416,7 @@ namespace Cadence.Features
                 }
             }
 
-            // Priority 2: Safe dynamic roadside shoulder generation (strictly prohibited on freeways/highways)
+            // Priority 2: Safe dynamic off-road shoulder generation (strictly prohibited on freeways/highways)
             for (int attempt = 0; attempt < 20; attempt++)
             {
                 float dist = (float)_rand.Next(100, 260);
@@ -418,50 +428,15 @@ namespace Cadence.Features
                     playerPos.Z
                 );
 
-                Vector3 streetPos = World.GetNextPositionOnStreet(probeCenter);
-                if (streetPos == Vector3.Zero || streetPos.DistanceTo(playerPos) < 60.0f) continue;
-                if (WorldUtils.IsSubterraneanOrVoid(streetPos)) continue;
-
-                // Never drop traffic stops on high-speed freeways/highways unless in a curated off-road pullover
-                if (WorldUtils.IsHighway(streetPos)) continue;
-
-                Vector3 nodePos = Vector3.Zero;
-                float heading = 0f;
-                bool foundNode = false;
-                try
+                if (WorldUtils.GetSafeOffroadPosition(probeCenter, 30.0f, 150.0f, out Vector3 offroadPos, out float offroadH))
                 {
-                    foundNode = NativeFunction.Natives.GET_CLOSEST_VEHICLE_NODE_WITH_HEADING<bool>(streetPos.X, streetPos.Y, streetPos.Z, out nodePos, out heading, 1, 3.0f, 0f);
-                }
-                catch
-                {
-                    foundNode = false;
-                }
-
-                if (!foundNode || nodePos == Vector3.Zero || WorldUtils.IsSubterraneanOrVoid(nodePos)) continue;
-                if (WorldUtils.IsHighway(nodePos)) continue;
-
-                // Offset 3.6m to the right shoulder so vehicles do not block traffic lanes
-                float rad = heading * (float)(Math.PI / 180.0);
-                Vector3 rightDir = new Vector3((float)Math.Cos(rad), (float)Math.Sin(rad), 0f);
-                Vector3 candidatePos = nodePos + rightDir * 3.6f;
-
-                try
-                {
-                    NativeFunction.Natives.REQUEST_COLLISION_AT_COORD(candidatePos.X, candidatePos.Y, candidatePos.Z);
-                    bool hasGround = NativeFunction.Natives.GET_GROUND_Z_FOR_3D_COORD<bool>(candidatePos.X, candidatePos.Y, candidatePos.Z + 2.0f, out float gZ, false, false);
-                    if (hasGround && gZ > -50f)
+                    if (!WorldUtils.IsSubterraneanOrVoid(offroadPos) && !WorldUtils.IsOnActiveRoadOrLane(offroadPos) && WorldUtils.IsAreaClear(offroadPos, 9.0f))
                     {
-                        candidatePos = new Vector3(candidatePos.X, candidatePos.Y, gZ + 0.35f);
+                        spotPos = offroadPos;
+                        spotHeading = offroadH;
+                        return true;
                     }
                 }
-                catch { }
-
-                if (WorldUtils.IsSubterraneanOrVoid(candidatePos)) continue;
-                if (!WorldUtils.IsAreaClear(candidatePos, 10.0f)) continue;
-
-                spotPos = candidatePos;
-                spotHeading = heading;
-                return true;
             }
 
             return false;
@@ -564,7 +539,12 @@ namespace Cadence.Features
 
                 string civVehName = ZoneSpawnData.GetRandomCivilianVehicle();
                 Model civVehModel = new Model(civVehName);
-                civVehModel.LoadAndWait();
+                if (!civVehModel.SafeLoad(4000))
+                {
+                    officer.Delete();
+                    cruiser.Delete();
+                    return null;
+                }
 
                 civilianVehicle = new Vehicle(civVehModel, civPos, heading);
                 civVehModel.Dismiss();
@@ -587,13 +567,15 @@ namespace Cadence.Features
                 if (civilianDriver == null || !civilianDriver.Exists())
                 {
                     Model civPedModel = new Model("a_m_y_business_01");
-                    civPedModel.LoadAndWait();
-                    civilianDriver = new Ped(civPedModel, civPos, heading);
-                    civPedModel.Dismiss();
-
-                    if (civilianDriver != null && civilianDriver.Exists())
+                    if (civPedModel.SafeLoad(4000))
                     {
-                        civilianDriver.WarpIntoVehicle(civilianVehicle, -1);
+                        civilianDriver = new Ped(civPedModel, civPos, heading);
+                        civPedModel.Dismiss();
+
+                        if (civilianDriver != null && civilianDriver.Exists())
+                        {
+                            civilianDriver.WarpIntoVehicle(civilianVehicle, -1);
+                        }
                     }
                 }
 
@@ -614,22 +596,27 @@ namespace Cadence.Features
                     try
                     {
                         Model k9Model = new Model("a_c_shepherd");
-                        k9Model.LoadAndWait();
-
-                        Vector3 k9SpawnPos = cruiser.GetOffsetPosition(new Vector3(1.5f, -0.8f, 0f));
-                        k9Dog = new Ped(k9Model, k9SpawnPos, heading);
-                        k9Model.Dismiss();
-
-                        if (k9Dog != null && k9Dog.Exists())
+                        if (k9Model.SafeLoad(4000))
                         {
-                            k9Dog.MakePersistent();
-                            k9Dog.BlockPermanentEvents = true;
-                            WorldUtils.SecureEntityGround(k9Dog);
-                            k9Dog.Tasks.StandStill(10000);
+                            Vector3 k9SpawnPos = cruiser.GetOffsetPosition(new Vector3(1.5f, -0.8f, 0f));
+                            k9Dog = new Ped(k9Model, k9SpawnPos, heading);
+                            k9Model.Dismiss();
+
+                            if (k9Dog != null && k9Dog.Exists())
+                            {
+                                k9Dog.MakePersistent();
+                                k9Dog.BlockPermanentEvents = true;
+                                WorldUtils.SecureEntityGround(k9Dog);
+                                k9Dog.Tasks.StandStill(10000);
+                            }
+                            else
+                            {
+                                scenario = 1; // Fallback to routine citation if K9 model fails
+                            }
                         }
                         else
                         {
-                            scenario = 1; // Fallback to routine citation if K9 model fails
+                            scenario = 1;
                         }
                     }
                     catch
@@ -1116,15 +1103,15 @@ namespace Cadence.Features
                 try
                 {
                     Model propModel = new Model("prop_notepad_01");
-                    propModel.LoadAndWait();
+                    if (!propModel.SafeLoad(2000)) return;
 
                     _activeProp = new Rage.Object(propModel, Officer.Position);
                     propModel.Dismiss();
 
                     if (_activeProp != null && _activeProp.Exists())
                     {
-                        // Attach to left hand
-                        int handBone = NativeFunction.Natives.GET_PED_BONE_INDEX<int>(Officer, 60309); // SKEL_L_Hand
+                        // Attach to left skeletal hand (SKEL_L_Hand = 18905)
+                        int handBone = NativeFunction.Natives.GET_PED_BONE_INDEX<int>(Officer, 18905);
                         _activeProp.AttachTo(Officer, handBone, new Vector3(0.15f, 0.03f, 0.1f), new Rotator(-80f, 0f, 10f));
                     }
                 }
