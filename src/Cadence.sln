@@ -4,6 +4,8 @@ VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Cadence", "Cadence.csproj", "{4B9A1E02-86C3-4E81-A59B-5CF1D77C9862}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Cadence.Tests", "..\tests\Cadence.Tests\Cadence.Tests.csproj", "{D2E8E421-97F1-4A56-B1A3-138BC3F7C851}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -14,6 +16,10 @@ Global
 		{4B9A1E02-86C3-4E81-A59B-5CF1D77C9862}.Debug|x64.Build.0 = Debug|x64
 		{4B9A1E02-86C3-4E81-A59B-5CF1D77C9862}.Release|x64.ActiveCfg = Release|x64
 		{4B9A1E02-86C3-4E81-A59B-5CF1D77C9862}.Release|x64.Build.0 = Release|x64
+		{D2E8E421-97F1-4A56-B1A3-138BC3F7C851}.Debug|x64.ActiveCfg = Debug|x64
+		{D2E8E421-97F1-4A56-B1A3-138BC3F7C851}.Debug|x64.Build.0 = Debug|x64
+		{D2E8E421-97F1-4A56-B1A3-138BC3F7C851}.Release|x64.ActiveCfg = Release|x64
+		{D2E8E421-97F1-4A56-B1A3-138BC3F7C851}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

@@ -266,13 +266,6 @@ namespace Cadence.Data
             };
         }
 
-        public static List<(Vector3 pos, float heading)[]> GetAllZones()
-        {
-            var all = GetRoadsidePulloverZones();
-            all.AddRange(GetStationaryStandbyZones());
-            return all;
-        }
-
         // ====================================================================
         // Curated Urban / Station / Highway Standby Locations (LivingCity Parity + Urban Additions)
         // ====================================================================
@@ -318,25 +311,38 @@ namespace Cadence.Data
             (new Vector3(105.8f, 6622.1f, 31.8f), 270.0f)        // Paleto Bay Beeker's Garage
         };
 
+        private static string GetCoordKey(Vector3 pos)
+        {
+            int x = (int)Math.Round(pos.X);
+            int y = (int)Math.Round(pos.Y);
+            int z = (int)Math.Round(pos.Z);
+            return $"{x}_{y}_{z}";
+        }
+
         public static bool FindBestStandbyLocation(Vector3 playerPos, float minDistance, float maxDistance, out Vector3 spotPos, out float spotHeading)
         {
             spotPos = Vector3.Zero;
             spotHeading = 0f;
 
             var candidates = new List<(Vector3 pos, float heading)>();
+            var seenKeys = new HashSet<string>();
 
             // Pass 1: Strict range (minDistance to maxDistance)
-            CollectStandbyCandidates(playerPos, minDistance, maxDistance, candidates);
+            CollectStandbyCandidates(playerPos, minDistance, maxDistance, candidates, seenKeys);
 
             // Pass 2: Progressive expansion if no curated spot in immediate range (up to 450m)
             if (candidates.Count == 0 && maxDistance < 450.0f)
             {
-                CollectStandbyCandidates(playerPos, maxDistance, 450.0f, candidates);
+                CollectStandbyCandidates(playerPos, maxDistance, 450.0f, candidates, seenKeys);
             }
 
             if (candidates.Count > 0)
             {
-                int index = _rand.Next(candidates.Count);
+                int index;
+                lock (_rand)
+                {
+                    index = _rand.Next(candidates.Count);
+                }
                 spotPos = candidates[index].pos;
                 spotHeading = candidates[index].heading;
                 return true;
@@ -345,13 +351,17 @@ namespace Cadence.Data
             return false;
         }
 
-        private static void CollectStandbyCandidates(Vector3 playerPos, float minDistance, float maxDistance, List<(Vector3 pos, float heading)> candidates)
+        private static void CollectStandbyCandidates(Vector3 playerPos, float minDistance, float maxDistance, List<(Vector3 pos, float heading)> candidates, HashSet<string> seenKeys)
         {
             foreach (var spot in CuratedStandbyLocations)
             {
+                string key = GetCoordKey(spot.pos);
+                if (seenKeys.Contains(key)) continue;
+
                 float dist = spot.pos.DistanceTo(playerPos);
                 if (dist >= minDistance && dist <= maxDistance && WorldUtils.IsAreaClear(spot.pos, 9.0f))
                 {
+                    seenKeys.Add(key);
                     candidates.Add(spot);
                 }
             }
@@ -360,9 +370,13 @@ namespace Cadence.Data
             {
                 foreach (var spot in zone)
                 {
+                    string key = GetCoordKey(spot.pos);
+                    if (seenKeys.Contains(key)) continue;
+
                     float dist = spot.pos.DistanceTo(playerPos);
                     if (dist >= minDistance && dist <= maxDistance && WorldUtils.IsAreaClear(spot.pos, 9.0f))
                     {
+                        seenKeys.Add(key);
                         candidates.Add(spot);
                     }
                 }
@@ -375,19 +389,24 @@ namespace Cadence.Data
             spotHeading = 0f;
 
             var candidates = new List<(Vector3 pos, float heading)>();
+            var seenKeys = new HashSet<string>();
 
             // Pass 1: Strict range
-            CollectPulloverCandidates(playerPos, minDistance, maxDistance, candidates);
+            CollectPulloverCandidates(playerPos, minDistance, maxDistance, candidates, seenKeys);
 
             // Pass 2: Progressive expansion if no spot found (up to 450m)
             if (candidates.Count == 0 && maxDistance < 450.0f)
             {
-                CollectPulloverCandidates(playerPos, maxDistance, 450.0f, candidates);
+                CollectPulloverCandidates(playerPos, maxDistance, 450.0f, candidates, seenKeys);
             }
 
             if (candidates.Count > 0)
             {
-                int index = _rand.Next(candidates.Count);
+                int index;
+                lock (_rand)
+                {
+                    index = _rand.Next(candidates.Count);
+                }
                 spotPos = candidates[index].pos;
                 spotHeading = candidates[index].heading;
                 return true;
@@ -396,15 +415,21 @@ namespace Cadence.Data
             return false;
         }
 
-        private static void CollectPulloverCandidates(Vector3 playerPos, float minDistance, float maxDistance, List<(Vector3 pos, float heading)> candidates)
+        private static void CollectPulloverCandidates(Vector3 playerPos, float minDistance, float maxDistance, List<(Vector3 pos, float heading)> candidates, HashSet<string> seenKeys)
         {
             foreach (var zone in GetRoadsidePulloverZones())
             {
                 foreach (var spot in zone)
                 {
+                    string key = GetCoordKey(spot.pos);
+                    if (seenKeys.Contains(key)) continue;
+
                     float dist = spot.pos.DistanceTo(playerPos);
-                    if (dist >= minDistance && dist <= maxDistance && WorldUtils.IsAreaClear(spot.pos, 9.0f))
+                    if (dist >= minDistance && dist <= maxDistance &&
+                        !WorldUtils.IsOnActiveRoadOrLane(spot.pos, 3.5f) &&
+                        WorldUtils.IsAreaClear(spot.pos, 9.0f))
                     {
+                        seenKeys.Add(key);
                         candidates.Add(spot);
                     }
                 }
@@ -413,22 +438,30 @@ namespace Cadence.Data
 
         public static string GetRandomCivilianVehicle()
         {
-            return CivilianVehicles[_rand.Next(CivilianVehicles.Length)];
+            lock (_rand)
+            {
+                return CivilianVehicles[_rand.Next(CivilianVehicles.Length)];
+            }
         }
 
         public static string GetDefaultPoliceVehicleForPosition(Vector3 pos)
         {
-            if (WorldUtils.IsHighway(pos))
+            bool isHwy = WorldUtils.IsHighway(pos);
+            bool isBlaine = WorldUtils.IsBlaineCounty(pos);
+            lock (_rand)
             {
-                return PoliceVehiclesHighway[_rand.Next(PoliceVehiclesHighway.Length)];
-            }
+                if (isHwy)
+                {
+                    return PoliceVehiclesHighway[_rand.Next(PoliceVehiclesHighway.Length)];
+                }
 
-            if (WorldUtils.IsBlaineCounty(pos))
-            {
-                return PoliceVehiclesSheriff[_rand.Next(PoliceVehiclesSheriff.Length)];
-            }
+                if (isBlaine)
+                {
+                    return PoliceVehiclesSheriff[_rand.Next(PoliceVehiclesSheriff.Length)];
+                }
 
-            return PoliceVehiclesCity[_rand.Next(PoliceVehiclesCity.Length)];
+                return PoliceVehiclesCity[_rand.Next(PoliceVehiclesCity.Length)];
+            }
         }
 
         public static string GetDefaultCopPedModelForPosition(Vector3 pos)
@@ -443,7 +476,10 @@ namespace Cadence.Data
 
         public static string GetDefaultStatePatrolVehicle()
         {
-            return PoliceVehiclesHighway[_rand.Next(PoliceVehiclesHighway.Length)];
+            lock (_rand)
+            {
+                return PoliceVehiclesHighway[_rand.Next(PoliceVehiclesHighway.Length)];
+            }
         }
 
         public static string GetDefaultStatePatrolPed()

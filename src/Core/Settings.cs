@@ -1,11 +1,15 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using System.Windows.Forms;
 
 namespace Cadence.Core
 {
     public static class Settings
     {
+        private static readonly object _saveLock = new object();
+
         // General
         public static bool EnablePlugin { get; set; } = true;
         public static bool PluginActive
@@ -14,9 +18,9 @@ namespace Cadence.Core
             set => EnablePlugin = value;
         }
         public static bool EnableFileLogging { get; set; } = true;
-        public static bool EnableDebugLogging { get; set; } = true;
-        public static bool ChaosMode { get; set; } = true;
-        public static string Preset { get; set; } = "Chaos";
+        public static bool EnableDebugLogging { get; set; } = false;
+        public static bool ChaosMode { get; set; } = false;
+        public static string Preset { get; set; } = "Realistic";
 
         // Keybinds (with 0/None fallback)
         public static Keys MenuKey { get; set; } = Keys.PageDown;
@@ -98,17 +102,24 @@ namespace Cadence.Core
 
         public static bool GroupBackupCode3 { get; set; } = true;
         public static bool AllowAmbientCommandeer { get; set; } = true;
-        public static bool AllowFallbackSpawning { get; set; } = true;
 
-        // Limits & Caps (Default: Chaos / LA Living City)
-        public static int MaxPatrolUnits { get; set; } = 8;
-        public static int MaxTrafficStops { get; set; } = 4;
-        public static int MaxStationaryUnits { get; set; } = 4;
-        public static int MaxEmergencyRuns { get; set; } = 4;
-        public static int MaxPursuitUnits { get; set; } = 6;
-        public static float DespawnDistance { get; set; } = 480.0f;
-        public static float SpawnDistanceMin { get; set; } = 70.0f;
-        public static float SpawnDistanceMax { get; set; } = 220.0f;
+        // Reconciled fallback flags [A8, D15, E23, F14]: AllowFallbackSpawning maps to AllowFallback
+        public static bool AllowFallback { get; set; } = false;
+        public static bool AllowFallbackSpawning
+        {
+            get => AllowFallback;
+            set => AllowFallback = value;
+        }
+
+        // Limits & Caps (Default: Realistic production baseline)
+        public static int MaxPatrolUnits { get; set; } = 4;
+        public static int MaxTrafficStops { get; set; } = 2;
+        public static int MaxStationaryUnits { get; set; } = 2;
+        public static int MaxEmergencyRuns { get; set; } = 2;
+        public static int MaxPursuitUnits { get; set; } = 4;
+        public static float DespawnDistance { get; set; } = 450.0f;
+        public static float SpawnDistanceMin { get; set; } = 80.0f;
+        public static float SpawnDistanceMax { get; set; } = 250.0f;
 
         // Emergency Services Variety
         public static bool EnableEmergencyVariety { get; set; } = true;
@@ -123,12 +134,75 @@ namespace Cadence.Core
         public static bool ShowRadarBlips { get; set; } = true;
         public static float BlipScale { get; set; } = 0.45f;
         public static bool ShortRangeBlips { get; set; } = false;
+        public static bool EnablePlayerVehicleBlip { get; set; } = true;
+        public static int PlayerVehicleBlipColor { get; set; } = 27; // Purple
+        public static float PlayerVehicleBlipScale { get; set; } = 0.38f; // Compact: smaller than AI (0.45f) and much smaller than LSPDFR (1.0f)
+        public static int PlayerVehicleBlipSprite { get; set; } = 56; // PoliceCar icon
+
+        public static int PatrolBlipColor { get; set; } = 38;
+        public static float PatrolBlipScale { get; set; } = 0.45f;
+        public static int PatrolBlipSprite { get; set; } = 56;
+
+        public static int TrafficStopBlipColor { get; set; } = 4;
+        public static float TrafficStopBlipScale { get; set; } = 0.45f;
+        public static int TrafficStopBlipSprite { get; set; } = 56;
+
+        public static int StationaryBlipColor { get; set; } = 2;
+        public static float StationaryBlipScale { get; set; } = 0.45f;
+        public static int StationaryBlipSprite { get; set; } = 56;
+
+        public static int EmergencyBlipColor { get; set; } = 1;
+        public static float EmergencyBlipScale { get; set; } = 0.45f;
+        public static int EmergencyBlipSprite { get; set; } = 56;
+
+        public static int PursuitBlipColor { get; set; } = 38;
+        public static float PursuitBlipScale { get; set; } = 0.45f;
+        public static int PursuitBlipSprite { get; set; } = 56;
+
+        public static int CalloutResponseBlipColor { get; set; } = 27;
+        public static float CalloutResponseBlipScale { get; set; } = 0.45f;
+        public static int CalloutResponseBlipSprite { get; set; } = 56;
+
+        public static int CombatBlipColor { get; set; } = 49;
+        public static float CombatBlipScale { get; set; } = 0.45f;
+        public static int CombatBlipSprite { get; set; } = 56;
+
+        public static int OfficerFootBlipColor { get; set; } = 38;
+        public static float OfficerFootBlipScale { get; set; } = 0.40f;
+        public static int OfficerFootBlipSprite { get; set; } = 58;
+
+        public static int ParkedCruiserBlipColor { get; set; } = 0;
+        public static float ParkedCruiserBlipScale { get; set; } = 0.45f;
+        public static int ParkedCruiserBlipSprite { get; set; } = 56;
 
         // Integration
         public static bool UseUltimateBackup { get; set; } = true;
-        public static bool AllowFallback { get; set; } = false;
         public static bool EnableEupOutfits { get; set; } = true;
         public static bool MuteTrafficStopSiren { get; set; } = true;
+        public static bool RequireLightsForSiren { get; set; } = true;
+
+        /// <summary>
+        /// Validates relational distance invariants per CODING_STANDARDS.md [A9]:
+        /// SpawnDistanceMin < SpawnDistanceMax < DespawnDistance with +50m minimum margins.
+        /// Rejects NaN and non-finite values.
+        /// </summary>
+        public static void ValidateDistances()
+        {
+            if (float.IsNaN(SpawnDistanceMin) || float.IsInfinity(SpawnDistanceMin) || SpawnDistanceMin < 10.0f)
+            {
+                SpawnDistanceMin = 70.0f;
+            }
+
+            if (float.IsNaN(SpawnDistanceMax) || float.IsInfinity(SpawnDistanceMax) || SpawnDistanceMax < SpawnDistanceMin + 50.0f)
+            {
+                SpawnDistanceMax = SpawnDistanceMin + 50.0f;
+            }
+
+            if (float.IsNaN(DespawnDistance) || float.IsInfinity(DespawnDistance) || DespawnDistance < SpawnDistanceMax + 50.0f)
+            {
+                DespawnDistance = SpawnDistanceMax + 50.0f;
+            }
+        }
 
         public static void ApplyPreset(string presetName)
         {
@@ -221,6 +295,7 @@ namespace Cadence.Core
                 HighwayPatrolRatio = 50;
             }
 
+            ValidateDistances();
             Logger.Info($"[Settings] Applied preset: {Preset} (Chaos: {ChaosMode}, Patrol: {MaxPatrolUnits}, Stops: {MaxTrafficStops}, Stationary: {MaxStationaryUnits}, Emergency: {MaxEmergencyRuns}, Pursuit: {MaxPursuitUnits})");
         }
 
@@ -231,18 +306,129 @@ namespace Cadence.Core
 
         public static string ResolvedIniPath { get; private set; }
 
+        /// <summary>
+        /// Resets all settings to their baseline defaults [E28] before loading or reloading.
+        /// Prevents stale values from surviving when keys are removed from the INI file.
+        /// </summary>
+        public static void ResetToDefaults()
+        {
+            EnablePlugin = true;
+            EnableFileLogging = true;
+            EnableDebugLogging = false;
+            ChaosMode = false;
+            Preset = "Realistic";
+
+            MenuKey = Keys.PageDown;
+            MenuModifierKey = Keys.Q;
+
+            EnablePatrol = true;
+            EnableTrafficStops = true;
+            EnableStationary = true;
+            EnableEmergencyRuns = true;
+            EnableRejectedCallouts = true;
+            EnablePursuitDrafting = true;
+            EnableThreatDefense = true;
+
+            EnableBackup = true;
+            PanicButtonKey = Keys.Z;
+            PanicButtonModifierKey = Keys.LControlKey;
+            GroupBackupKey = Keys.C;
+            GroupBackupModifierKey = Keys.LControlKey;
+            BackupMenuKey = Keys.PageDown;
+            BackupMenuModifierKey = Keys.X;
+            DismissBackupKey = Keys.Enter;
+
+            PanicButtonUnitsMin = 4;
+            PanicButtonUnitsMax = 7;
+            GroupBackupUnitsMin = 2;
+            GroupBackupUnitsMax = 3;
+            GroupBackupCode3 = true;
+            AllowAmbientCommandeer = true;
+            AllowFallback = false;
+
+            MaxPatrolUnits = 4;
+            MaxTrafficStops = 2;
+            MaxStationaryUnits = 2;
+            MaxEmergencyRuns = 2;
+            MaxPursuitUnits = 4;
+            DespawnDistance = 450.0f;
+            SpawnDistanceMin = 80.0f;
+            SpawnDistanceMax = 250.0f;
+
+            EnableEmergencyVariety = true;
+            AllowPoliceRuns = true;
+            AllowFireRuns = true;
+            AllowAmbulanceRuns = true;
+
+            HighwayPatrolRatio = 50;
+
+            ShowRadarBlips = true;
+            BlipScale = 0.45f;
+            ShortRangeBlips = false;
+            EnablePlayerVehicleBlip = true;
+            PlayerVehicleBlipColor = 27;
+            PlayerVehicleBlipScale = 0.38f;
+            PlayerVehicleBlipSprite = 56;
+
+            PatrolBlipColor = 38;
+            PatrolBlipScale = 0.45f;
+            PatrolBlipSprite = 56;
+
+            TrafficStopBlipColor = 4;
+            TrafficStopBlipScale = 0.45f;
+            TrafficStopBlipSprite = 56;
+
+            StationaryBlipColor = 2;
+            StationaryBlipScale = 0.45f;
+            StationaryBlipSprite = 56;
+
+            EmergencyBlipColor = 1;
+            EmergencyBlipScale = 0.45f;
+            EmergencyBlipSprite = 56;
+
+            PursuitBlipColor = 38;
+            PursuitBlipScale = 0.45f;
+            PursuitBlipSprite = 56;
+
+            CalloutResponseBlipColor = 27;
+            CalloutResponseBlipScale = 0.45f;
+            CalloutResponseBlipSprite = 56;
+
+            CombatBlipColor = 49;
+            CombatBlipScale = 0.45f;
+            CombatBlipSprite = 56;
+
+            OfficerFootBlipColor = 38;
+            OfficerFootBlipScale = 0.40f;
+            OfficerFootBlipSprite = 58;
+
+            ParkedCruiserBlipColor = 0;
+            ParkedCruiserBlipScale = 0.45f;
+            ParkedCruiserBlipSprite = 56;
+
+            UseUltimateBackup = true;
+            EnableEupOutfits = true;
+            MuteTrafficStopSiren = true;
+            RequireLightsForSiren = true;
+        }
+
         public static void Load(string customPath = null)
         {
+            ResetToDefaults(); // [E28] Reset to defaults before parsing
+
             string iniPath = ResolveIniPath(customPath);
             ResolvedIniPath = iniPath;
 
             if (string.IsNullOrEmpty(iniPath) || !File.Exists(iniPath))
             {
+                ValidateDistances();
                 Logger.Warn($"Cadence.ini not found. Using default internal settings. Checked: {iniPath}");
                 return;
             }
 
             Logger.Info($"Loading configuration from: {iniPath}");
+
+            var unknownEntries = new List<string>();
 
             try
             {
@@ -270,29 +456,199 @@ namespace Cadence.Core
                     string key = line.Substring(0, equalsIdx).Trim();
                     string value = CleanIniValue(line.Substring(equalsIdx + 1));
 
-                    ParseEntry(currentSection, key, value);
+                    bool recognized = ParseEntry(currentSection, key, value);
+                    if (!recognized)
+                    {
+                        unknownEntries.Add($"[{currentSection}] {key}={value}");
+                    }
                 }
 
-                if (SpawnDistanceMin >= SpawnDistanceMax) SpawnDistanceMax = SpawnDistanceMin + 50.0f;
-                if (DespawnDistance <= SpawnDistanceMax) DespawnDistance = SpawnDistanceMax + 100.0f;
+                ValidateDistances(); // [A9] Strict invariant verification
 
                 if (PanicButtonUnitsMin > PanicButtonUnitsMax) PanicButtonUnitsMax = PanicButtonUnitsMin;
                 if (GroupBackupUnitsMin > GroupBackupUnitsMax) GroupBackupUnitsMax = GroupBackupUnitsMin;
 
+                // [E27] Apply logger settings
                 Logger.EnableFileLogging = EnableFileLogging;
                 Logger.EnableDebugLogging = EnableDebugLogging;
+
                 Logger.Info($"[Settings] Configuration loaded successfully. Debug: {EnableDebugLogging}, FileLogging: {EnableFileLogging}, MenuKey: {MenuKey}, Modifier: {MenuModifierKey}");
                 Logger.Debug($"[Settings] Limits -> MaxPatrol: {MaxPatrolUnits}, MaxStops: {MaxTrafficStops}, MaxStationary: {MaxStationaryUnits}, MaxEmergency: {MaxEmergencyRuns}, MaxPursuit: {MaxPursuitUnits}, DespawnDist: {DespawnDistance:F0}m, Preset: {Preset}");
                 Logger.Debug($"[Settings] Backup -> PanicUnits: {PanicButtonUnitsMin}-{PanicButtonUnitsMax}, GroupUnits: {GroupBackupUnitsMin}-{GroupBackupUnitsMax}, Commandeer: {AllowAmbientCommandeer}");
                 Logger.Debug($"[Settings] Integration -> UltimateBackup: {UseUltimateBackup}, Fallback: {AllowFallback}, Variety: {EnableEmergencyVariety}, HwyRatio: {HighwayPatrolRatio}%, EUP: {EnableEupOutfits}, MuteSiren: {MuteTrafficStopSiren}");
+
+                // [F15] Track and report unknown/rejected keys in a single warning
+                if (unknownEntries.Count > 0)
+                {
+                    Logger.Warn($"[Settings] {unknownEntries.Count} unknown or deprecated configuration entries detected in {iniPath}: {string.Join(", ", unknownEntries)}");
+                }
             }
             catch (Exception ex)
             {
                 Logger.Error($"Error loading settings from {iniPath}", ex);
+                ValidateDistances();
             }
         }
 
-        private static void ParseEntry(string section, string key, string value)
+        /// <summary>
+        /// Thread-safe persistence method writing back all configuration settings to Cadence.ini [E3].
+        /// </summary>
+        public static void Save(string customPath = null)
+        {
+            lock (_saveLock)
+            {
+                try
+                {
+                    string iniPath = customPath ?? ResolvedIniPath ?? ResolveIniPath(null);
+                    if (string.IsNullOrEmpty(iniPath))
+                    {
+                        iniPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "plugins", "LSPDFR", "Cadence.ini");
+                    }
+
+                    string dir = Path.GetDirectoryName(iniPath);
+                    if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                    {
+                        Directory.CreateDirectory(dir);
+                    }
+
+                    ValidateDistances();
+
+                    var sb = new StringBuilder();
+                    sb.AppendLine("// ==============================================================================");
+                    sb.AppendLine("// Cadence - Ambient Policing System for LSPDFR");
+                    sb.AppendLine("// Complete Configuration File");
+                    sb.AppendLine("// ==============================================================================");
+                    sb.AppendLine();
+
+                    // [General]
+                    sb.AppendLine("[General]");
+                    sb.AppendLine($"EnablePlugin = {EnablePlugin.ToString().ToLowerInvariant()}");
+                    sb.AppendLine($"PluginActive = {EnablePlugin.ToString().ToLowerInvariant()}");
+                    sb.AppendLine($"EnableFileLogging = {EnableFileLogging.ToString().ToLowerInvariant()}");
+                    sb.AppendLine($"Debug = {EnableDebugLogging.ToString().ToLowerInvariant()}");
+                    sb.AppendLine($"Preset = {Preset}");
+                    sb.AppendLine($"ChaosMode = {ChaosMode.ToString().ToLowerInvariant()}");
+                    sb.AppendLine();
+
+                    // [Keybinds]
+                    sb.AppendLine("[Keybinds]");
+                    sb.AppendLine($"MenuKey = {MenuKey}");
+                    sb.AppendLine($"MenuModifierKey = {MenuModifierKey}");
+                    sb.AppendLine($"PanicButtonKey = {PanicButtonKey}");
+                    sb.AppendLine($"PanicButtonModifierKey = {PanicButtonModifierKey}");
+                    sb.AppendLine($"GroupBackupKey = {GroupBackupKey}");
+                    sb.AppendLine($"GroupBackupModifierKey = {GroupBackupModifierKey}");
+                    sb.AppendLine($"BackupMenuKey = {BackupMenuKey}");
+                    sb.AppendLine($"BackupMenuModifierKey = {BackupMenuModifierKey}");
+                    sb.AppendLine($"DismissBackupKey = {DismissBackupKey}");
+                    sb.AppendLine();
+
+                    // [Features]
+                    sb.AppendLine("[Features]");
+                    sb.AppendLine($"EnablePatrol = {EnablePatrol.ToString().ToLowerInvariant()}");
+                    sb.AppendLine($"EnableTrafficStops = {EnableTrafficStops.ToString().ToLowerInvariant()}");
+                    sb.AppendLine($"EnableStationary = {EnableStationary.ToString().ToLowerInvariant()}");
+                    sb.AppendLine($"EnableEmergencyRuns = {EnableEmergencyRuns.ToString().ToLowerInvariant()}");
+                    sb.AppendLine($"EnableRejectedCallouts = {EnableRejectedCallouts.ToString().ToLowerInvariant()}");
+                    sb.AppendLine($"EnablePursuitDrafting = {EnablePursuitDrafting.ToString().ToLowerInvariant()}");
+                    sb.AppendLine($"EnableThreatDefense = {EnableThreatDefense.ToString().ToLowerInvariant()}");
+                    sb.AppendLine();
+
+                    // [Limits]
+                    sb.AppendLine("[Limits]");
+                    sb.AppendLine($"MaxPatrolUnits = {MaxPatrolUnits}");
+                    sb.AppendLine($"MaxTrafficStops = {MaxTrafficStops}");
+                    sb.AppendLine($"MaxStationaryUnits = {MaxStationaryUnits}");
+                    sb.AppendLine($"MaxEmergencyRuns = {MaxEmergencyRuns}");
+                    sb.AppendLine($"MaxPursuitUnits = {MaxPursuitUnits}");
+                    sb.AppendLine($"DespawnDistance = {DespawnDistance:F1}");
+                    sb.AppendLine($"SpawnDistanceMin = {SpawnDistanceMin:F1}");
+                    sb.AppendLine($"SpawnDistanceMax = {SpawnDistanceMax:F1}");
+                    sb.AppendLine();
+
+                    // [EmergencyServices]
+                    sb.AppendLine("[EmergencyServices]");
+                    sb.AppendLine($"EnableEmergencyVariety = {EnableEmergencyVariety.ToString().ToLowerInvariant()}");
+                    sb.AppendLine($"AllowPoliceRuns = {AllowPoliceRuns.ToString().ToLowerInvariant()}");
+                    sb.AppendLine($"AllowFireRuns = {AllowFireRuns.ToString().ToLowerInvariant()}");
+                    sb.AppendLine($"AllowAmbulanceRuns = {AllowAmbulanceRuns.ToString().ToLowerInvariant()}");
+                    sb.AppendLine();
+
+                    // [Jurisdiction]
+                    sb.AppendLine("[Jurisdiction]");
+                    sb.AppendLine($"HighwayPatrolRatio = {HighwayPatrolRatio}");
+                    sb.AppendLine();
+
+                    // [Radar]
+                    sb.AppendLine("[Radar]");
+                    sb.AppendLine($"ShowRadarBlips = {ShowRadarBlips.ToString().ToLowerInvariant()}");
+                    sb.AppendLine($"BlipScale = {BlipScale:F2}");
+                    sb.AppendLine($"ShortRangeBlips = {ShortRangeBlips.ToString().ToLowerInvariant()}");
+                    sb.AppendLine($"EnablePlayerVehicleBlip = {EnablePlayerVehicleBlip.ToString().ToLowerInvariant()}");
+                    sb.AppendLine($"PlayerVehicleBlipColor = {PlayerVehicleBlipColor}");
+                    sb.AppendLine($"PlayerVehicleBlipScale = {PlayerVehicleBlipScale:F2}");
+                    sb.AppendLine($"PlayerVehicleBlipSprite = {PlayerVehicleBlipSprite}");
+                    sb.AppendLine($"PatrolBlipColor = {PatrolBlipColor}");
+                    sb.AppendLine($"PatrolBlipScale = {PatrolBlipScale:F2}");
+                    sb.AppendLine($"PatrolBlipSprite = {PatrolBlipSprite}");
+                    sb.AppendLine($"TrafficStopBlipColor = {TrafficStopBlipColor}");
+                    sb.AppendLine($"TrafficStopBlipScale = {TrafficStopBlipScale:F2}");
+                    sb.AppendLine($"TrafficStopBlipSprite = {TrafficStopBlipSprite}");
+                    sb.AppendLine($"StationaryBlipColor = {StationaryBlipColor}");
+                    sb.AppendLine($"StationaryBlipScale = {StationaryBlipScale:F2}");
+                    sb.AppendLine($"StationaryBlipSprite = {StationaryBlipSprite}");
+                    sb.AppendLine($"EmergencyBlipColor = {EmergencyBlipColor}");
+                    sb.AppendLine($"EmergencyBlipScale = {EmergencyBlipScale:F2}");
+                    sb.AppendLine($"EmergencyBlipSprite = {EmergencyBlipSprite}");
+                    sb.AppendLine($"PursuitBlipColor = {PursuitBlipColor}");
+                    sb.AppendLine($"PursuitBlipScale = {PursuitBlipScale:F2}");
+                    sb.AppendLine($"PursuitBlipSprite = {PursuitBlipSprite}");
+                    sb.AppendLine($"CalloutResponseBlipColor = {CalloutResponseBlipColor}");
+                    sb.AppendLine($"CalloutResponseBlipScale = {CalloutResponseBlipScale:F2}");
+                    sb.AppendLine($"CalloutResponseBlipSprite = {CalloutResponseBlipSprite}");
+                    sb.AppendLine($"CombatBlipColor = {CombatBlipColor}");
+                    sb.AppendLine($"CombatBlipScale = {CombatBlipScale:F2}");
+                    sb.AppendLine($"CombatBlipSprite = {CombatBlipSprite}");
+                    sb.AppendLine($"OfficerFootBlipColor = {OfficerFootBlipColor}");
+                    sb.AppendLine($"OfficerFootBlipScale = {OfficerFootBlipScale:F2}");
+                    sb.AppendLine($"OfficerFootBlipSprite = {OfficerFootBlipSprite}");
+                    sb.AppendLine($"ParkedCruiserBlipColor = {ParkedCruiserBlipColor}");
+                    sb.AppendLine($"ParkedCruiserBlipScale = {ParkedCruiserBlipScale:F2}");
+                    sb.AppendLine($"ParkedCruiserBlipSprite = {ParkedCruiserBlipSprite}");
+                    sb.AppendLine();
+
+                    // [Integration]
+                    sb.AppendLine("[Integration]");
+                    sb.AppendLine($"UseUltimateBackup = {UseUltimateBackup.ToString().ToLowerInvariant()}");
+                    sb.AppendLine($"Fallback = {AllowFallback.ToString().ToLowerInvariant()}");
+                    sb.AppendLine($"AllowFallback = {AllowFallback.ToString().ToLowerInvariant()}");
+                    sb.AppendLine($"EnableEupOutfits = {EnableEupOutfits.ToString().ToLowerInvariant()}");
+                    sb.AppendLine($"MuteTrafficStopSiren = {MuteTrafficStopSiren.ToString().ToLowerInvariant()}");
+                    sb.AppendLine($"RequireLightsForSiren = {RequireLightsForSiren.ToString().ToLowerInvariant()}");
+                    sb.AppendLine();
+
+                    // [Backup]
+                    sb.AppendLine("[Backup]");
+                    sb.AppendLine($"EnableBackup = {EnableBackup.ToString().ToLowerInvariant()}");
+                    sb.AppendLine($"PanicButtonUnits = {PanicButtonUnitsMin}-{PanicButtonUnitsMax}");
+                    sb.AppendLine($"GroupBackupUnits = {GroupBackupUnitsMin}-{GroupBackupUnitsMax}");
+                    sb.AppendLine($"GroupBackupCode3 = {GroupBackupCode3.ToString().ToLowerInvariant()}");
+                    sb.AppendLine($"AllowAmbientCommandeer = {AllowAmbientCommandeer.ToString().ToLowerInvariant()}");
+                    sb.AppendLine($"AllowFallbackSpawning = {AllowFallback.ToString().ToLowerInvariant()}");
+                    sb.AppendLine();
+
+                    File.WriteAllText(iniPath, sb.ToString(), Encoding.UTF8);
+                    ResolvedIniPath = iniPath;
+                    Logger.Info($"[Settings] Configuration saved successfully to: {iniPath}");
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error($"[Settings] Failed to save configuration to {ResolvedIniPath}", ex);
+                }
+            }
+        }
+
+        private static bool ParseEntry(string section, string key, string value)
         {
             string sec = section.ToLowerInvariant();
             string k = key.ToLowerInvariant();
@@ -300,157 +656,184 @@ namespace Cadence.Core
             switch (sec)
             {
                 case "general":
-                    if (k == "enableplugin" || k == "pluginactive" || k == "active" || k == "activated") EnablePlugin = ParseBool(value, EnablePlugin);
-                    else if (k == "enablefilelogging") EnableFileLogging = ParseBool(value, EnableFileLogging);
-                    else if (k == "debug" || k == "enabledebuglogging" || k == "debuglogging") EnableDebugLogging = ParseBool(value, EnableDebugLogging);
-                    else if (k == "chaosmode" || k == "chaos")
+                    if (k == "enableplugin" || k == "pluginactive" || k == "active" || k == "activated") { EnablePlugin = ParseBool(value, EnablePlugin); return true; }
+                    if (k == "enablefilelogging")
+                    {
+                        EnableFileLogging = ParseBool(value, EnableFileLogging);
+                        Logger.EnableFileLogging = EnableFileLogging; // [E27]
+                        return true;
+                    }
+                    if (k == "debug" || k == "enabledebuglogging" || k == "debuglogging")
+                    {
+                        EnableDebugLogging = ParseBool(value, EnableDebugLogging);
+                        Logger.EnableDebugLogging = EnableDebugLogging; // [E27]
+                        return true;
+                    }
+                    if (k == "chaosmode" || k == "chaos")
                     {
                         bool isChaos = ParseBool(value, ChaosMode);
                         ApplyChaosPreset(isChaos);
+                        return true;
                     }
-                    else if (k == "preset")
+                    if (k == "preset")
                     {
                         ApplyPreset(value);
+                        return true;
                     }
-                    break;
+                    return false;
 
                 case "keybinds":
-                    if (k == "menukey") MenuKey = ParseKey(value, Keys.PageDown);
-                    else if (k == "menumodifierkey") MenuModifierKey = ParseModifierKey(value, Keys.Q);
-                    else if (k == "panicbuttonkey") PanicButtonKey = ParseKey(value, PanicButtonKey);
-                    else if (k == "panicbuttonmodifierkey" || k == "panicbuttonmodifier") PanicButtonModifierKey = ParseModifierKey(value, PanicButtonModifierKey);
-                    else if (k == "groupbackupkey") GroupBackupKey = ParseKey(value, GroupBackupKey);
-                    else if (k == "groupbackupmodifierkey" || k == "groupbackupmodifier") GroupBackupModifierKey = ParseModifierKey(value, GroupBackupModifierKey);
-                    else if (k == "backupmenukey") BackupMenuKey = ParseKey(value, BackupMenuKey);
-                    else if (k == "backupmenumodifierkey" || k == "backupmenumodifier") BackupMenuModifierKey = ParseModifierKey(value, BackupMenuModifierKey);
-                    else if (k == "dismissbackupkey" || k == "dismissallbackupkey") DismissBackupKey = ParseKey(value, DismissBackupKey);
-                    break;
-
-                case "backup":
-                    if (k == "enablebackup") EnableBackup = ParseBool(value, EnableBackup);
-                    else if (k == "panicbuttonunits" || k == "panicunits")
-                    {
-                        ParseRange(value, out int min, out int max, 1, 12, PanicButtonUnitsMin, PanicButtonUnitsMax);
-                        PanicButtonUnitsMin = min;
-                        PanicButtonUnitsMax = max;
-                    }
-                    else if (k == "panicbuttonunitsmin" || k == "panicunitsmin") PanicButtonUnitsMin = Math.Max(1, Math.Min(12, ParseInt(value, PanicButtonUnitsMin)));
-                    else if (k == "panicbuttonunitsmax" || k == "panicunitsmax") PanicButtonUnitsMax = Math.Max(1, Math.Min(12, ParseInt(value, PanicButtonUnitsMax)));
-                    else if (k == "groupbackupunits" || k == "groupunits")
-                    {
-                        ParseRange(value, out int min, out int max, 1, 12, GroupBackupUnitsMin, GroupBackupUnitsMax);
-                        GroupBackupUnitsMin = min;
-                        GroupBackupUnitsMax = max;
-                    }
-                    else if (k == "groupbackupunitsmin" || k == "groupunitsmin") GroupBackupUnitsMin = Math.Max(1, Math.Min(12, ParseInt(value, GroupBackupUnitsMin)));
-                    else if (k == "groupbackupunitsmax" || k == "groupunitsmax") GroupBackupUnitsMax = Math.Max(1, Math.Min(12, ParseInt(value, GroupBackupUnitsMax)));
-                    else if (k == "groupbackupcode3") GroupBackupCode3 = ParseBool(value, GroupBackupCode3);
-                    else if (k == "allowambientcommandeer" || k == "ambientcommandeer") AllowAmbientCommandeer = ParseBool(value, AllowAmbientCommandeer);
-                    else if (k == "allowfallbackspawning" || k == "fallbackspawning") AllowFallbackSpawning = ParseBool(value, AllowFallbackSpawning);
-                    break;
+                    if (k == "menukey") { MenuKey = ParseKey(value, MenuKey); return true; }
+                    if (k == "menumodifierkey" || k == "menumodifier") { MenuModifierKey = ParseModifierKey(value, MenuModifierKey); return true; }
+                    if (k == "panicbuttonkey" || k == "panickey") { PanicButtonKey = ParseKey(value, PanicButtonKey); return true; }
+                    if (k == "panicbuttonmodifierkey" || k == "panicmodifier") { PanicButtonModifierKey = ParseModifierKey(value, PanicButtonModifierKey); return true; }
+                    if (k == "groupbackupkey" || k == "groupkey") { GroupBackupKey = ParseKey(value, GroupBackupKey); return true; }
+                    if (k == "groupbackupmodifierkey" || k == "groupmodifier") { GroupBackupModifierKey = ParseModifierKey(value, GroupBackupModifierKey); return true; }
+                    if (k == "backupmenukey") { BackupMenuKey = ParseKey(value, BackupMenuKey); return true; }
+                    if (k == "backupmenumodifierkey" || k == "backupmenumodifier") { BackupMenuModifierKey = ParseModifierKey(value, BackupMenuModifierKey); return true; }
+                    if (k == "dismissbackupkey" || k == "dismisskey") { DismissBackupKey = ParseKey(value, DismissBackupKey); return true; }
+                    return false;
 
                 case "features":
-                    if (k == "enablepatrol") EnablePatrol = ParseBool(value, EnablePatrol);
-                    else if (k == "enabletrafficstops") EnableTrafficStops = ParseBool(value, EnableTrafficStops);
-                    else if (k == "enablestationary") EnableStationary = ParseBool(value, EnableStationary);
-                    else if (k == "enableemergencyruns") EnableEmergencyRuns = ParseBool(value, EnableEmergencyRuns);
-                    else if (k == "enablerejectedcallouts" || k == "enablecallouttakeover") EnableRejectedCallouts = ParseBool(value, EnableRejectedCallouts);
-                    else if (k == "enablepursuitdrafting" || k == "enablepursuitassist") EnablePursuitDrafting = ParseBool(value, EnablePursuitDrafting);
-                    else if (k == "enablethreatdefense" || k == "enablethreatassist") EnableThreatDefense = ParseBool(value, EnableThreatDefense);
-                    break;
+                    if (k == "enablepatrol" || k == "patrol") { EnablePatrol = ParseBool(value, EnablePatrol); return true; }
+                    if (k == "enabletrafficstops" || k == "trafficstops" || k == "trafficstop") { EnableTrafficStops = ParseBool(value, EnableTrafficStops); return true; }
+                    if (k == "enablestationary" || k == "stationary") { EnableStationary = ParseBool(value, EnableStationary); return true; }
+                    if (k == "enableemergencyruns" || k == "emergencyruns") { EnableEmergencyRuns = ParseBool(value, EnableEmergencyRuns); return true; }
+                    if (k == "enablerejectedcallouts" || k == "rejectedcallouts" || k == "enablecallouttakeover") { EnableRejectedCallouts = ParseBool(value, EnableRejectedCallouts); return true; }
+                    if (k == "enablepursuitdrafting" || k == "pursuitdrafting" || k == "enablepursuitassist") { EnablePursuitDrafting = ParseBool(value, EnablePursuitDrafting); return true; }
+                    if (k == "enablethreatdefense" || k == "threatdefense" || k == "enablethreatassist") { EnableThreatDefense = ParseBool(value, EnableThreatDefense); return true; }
+                    if (k == "enablebackup" || k == "backup") { EnableBackup = ParseBool(value, EnableBackup); return true; }
+                    return false;
+
+                case "backup":
+                    if (k == "enablebackup") { EnableBackup = ParseBool(value, EnableBackup); return true; }
+                    if (k == "panicbuttonunits" || k == "panicunits")
+                    {
+                        ParseRange(value, out int pMin, out int pMax, 1, 16, 4, 7);
+                        PanicButtonUnitsMin = pMin;
+                        PanicButtonUnitsMax = pMax;
+                        return true;
+                    }
+                    if (k == "groupbackupunits" || k == "groupunits")
+                    {
+                        ParseRange(value, out int gMin, out int gMax, 1, 16, 2, 3);
+                        GroupBackupUnitsMin = gMin;
+                        GroupBackupUnitsMax = gMax;
+                        return true;
+                    }
+                    if (k == "groupbackupcode3" || k == "groupcode3") { GroupBackupCode3 = ParseBool(value, GroupBackupCode3); return true; }
+                    if (k == "allowambientcommandeer" || k == "commandeer") { AllowAmbientCommandeer = ParseBool(value, AllowAmbientCommandeer); return true; }
+                    if (k == "allowfallbackspawning" || k == "fallbackspawning" || k == "allowfallback" || k == "fallback")
+                    {
+                        // [A8, D15, E23, F14] Reconcile to AllowFallback
+                        AllowFallback = ParseBool(value, AllowFallback);
+                        return true;
+                    }
+                    return false;
 
                 case "limits":
-                    if (k == "maxpatrolunits") MaxPatrolUnits = Math.Max(1, Math.Min(16, ParseInt(value, MaxPatrolUnits)));
-                    else if (k == "maxtrafficstops") MaxTrafficStops = Math.Max(0, Math.Min(8, ParseInt(value, MaxTrafficStops)));
-                    else if (k == "maxstationaryunits") MaxStationaryUnits = Math.Max(0, Math.Min(8, ParseInt(value, MaxStationaryUnits)));
-                    else if (k == "maxemergencyruns" || k == "maxemergency") MaxEmergencyRuns = Math.Max(0, Math.Min(8, ParseInt(value, MaxEmergencyRuns)));
-                    else if (k == "maxpursuitunits") MaxPursuitUnits = Math.Max(1, Math.Min(12, ParseInt(value, MaxPursuitUnits)));
-                    else if (k == "despawndistance") DespawnDistance = Math.Max(150.0f, Math.Min(1500.0f, ParseFloat(value, DespawnDistance)));
-                    else if (k == "spawndistancemin") SpawnDistanceMin = Math.Max(30.0f, Math.Min(300.0f, ParseFloat(value, SpawnDistanceMin)));
-                    else if (k == "spawndistancemax") SpawnDistanceMax = Math.Max(100.0f, Math.Min(600.0f, ParseFloat(value, SpawnDistanceMax)));
-                    break;
+                    if (k == "maxpatrolunits" || k == "maxpatrol") { MaxPatrolUnits = Math.Max(1, Math.Min(16, ParseInt(value, MaxPatrolUnits))); return true; }
+                    if (k == "maxtrafficstops" || k == "maxstops") { MaxTrafficStops = Math.Max(0, Math.Min(8, ParseInt(value, MaxTrafficStops))); return true; }
+                    if (k == "maxstationaryunits" || k == "maxstationary") { MaxStationaryUnits = Math.Max(0, Math.Min(8, ParseInt(value, MaxStationaryUnits))); return true; }
+                    if (k == "maxemergencyruns" || k == "maxemergency") { MaxEmergencyRuns = Math.Max(0, Math.Min(8, ParseInt(value, MaxEmergencyRuns))); return true; }
+                    if (k == "maxpursuitunits" || k == "maxpursuit") { MaxPursuitUnits = Math.Max(1, Math.Min(12, ParseInt(value, MaxPursuitUnits))); return true; }
+                    if (k == "despawndistance") { DespawnDistance = Math.Max(150.0f, Math.Min(1500.0f, ParseFloat(value, DespawnDistance))); return true; }
+                    if (k == "spawndistancemin") { SpawnDistanceMin = Math.Max(30.0f, Math.Min(300.0f, ParseFloat(value, SpawnDistanceMin))); return true; }
+                    if (k == "spawndistancemax") { SpawnDistanceMax = Math.Max(100.0f, Math.Min(600.0f, ParseFloat(value, SpawnDistanceMax))); return true; }
+                    return false;
 
                 case "emergencyservices":
-                case "emergency":
-                    if (k == "enableemergencyvariety" || k == "enableemergencyrunvariety") EnableEmergencyVariety = ParseBool(value, EnableEmergencyVariety);
-                    else if (k == "allowpoliceruns" || k == "allowpolice") AllowPoliceRuns = ParseBool(value, AllowPoliceRuns);
-                    else if (k == "allowfireruns" || k == "allowfire") AllowFireRuns = ParseBool(value, AllowFireRuns);
-                    else if (k == "allowambulanceruns" || k == "allowambulance" || k == "allowemsruns") AllowAmbulanceRuns = ParseBool(value, AllowAmbulanceRuns);
-                    break;
+                    if (k == "enableemergencyvariety" || k == "emergencyvariety") { EnableEmergencyVariety = ParseBool(value, EnableEmergencyVariety); return true; }
+                    if (k == "allowpoliceruns" || k == "policeruns") { AllowPoliceRuns = ParseBool(value, AllowPoliceRuns); return true; }
+                    if (k == "allowfireruns" || k == "fireruns") { AllowFireRuns = ParseBool(value, AllowFireRuns); return true; }
+                    if (k == "allowambulanceruns" || k == "ambulanceruns") { AllowAmbulanceRuns = ParseBool(value, AllowAmbulanceRuns); return true; }
+                    return false;
 
                 case "jurisdiction":
-                    if (k == "highwaypatrolratio" || k == "highwayratio" || k == "statepatrolratio") HighwayPatrolRatio = Math.Max(0, Math.Min(100, ParseInt(value, HighwayPatrolRatio)));
-                    break;
+                    if (k == "highwaypatrolratio" || k == "highwayratio" || k == "sahpratio") { HighwayPatrolRatio = Math.Max(0, Math.Min(100, ParseInt(value, HighwayPatrolRatio))); return true; }
+                    return false;
 
                 case "radar":
-                    if (k == "showradarblips") ShowRadarBlips = ParseBool(value, ShowRadarBlips);
-                    else if (k == "blipscale") BlipScale = Math.Max(0.2f, Math.Min(1.5f, ParseFloat(value, BlipScale)));
-                    else if (k == "shortrangeblips") ShortRangeBlips = ParseBool(value, ShortRangeBlips);
-                    break;
+                    if (k == "showradarblips" || k == "radarblips") { ShowRadarBlips = ParseBool(value, ShowRadarBlips); return true; }
+                    if (k == "blipscale") { BlipScale = Math.Max(0.1f, Math.Min(2.0f, ParseFloat(value, BlipScale))); return true; }
+                    if (k == "shortrangeblips" || k == "shortrange") { ShortRangeBlips = ParseBool(value, ShortRangeBlips); return true; }
+                    if (k == "enableplayervehicleblip" || k == "playervehicleblip") { EnablePlayerVehicleBlip = ParseBool(value, EnablePlayerVehicleBlip); return true; }
+                    if (k == "playervehicleblipcolor") { PlayerVehicleBlipColor = ParseInt(value, PlayerVehicleBlipColor); return true; }
+                    if (k == "playervehicleblipscale") { PlayerVehicleBlipScale = Math.Max(0.1f, Math.Min(2.0f, ParseFloat(value, PlayerVehicleBlipScale))); return true; }
+                    if (k == "playervehicleblipsprite") { PlayerVehicleBlipSprite = ParseInt(value, PlayerVehicleBlipSprite); return true; }
+
+                    if (k == "patrolblipcolor") { PatrolBlipColor = ParseInt(value, PatrolBlipColor); return true; }
+                    if (k == "patrolblipscale") { PatrolBlipScale = Math.Max(0.1f, Math.Min(2.0f, ParseFloat(value, PatrolBlipScale))); return true; }
+                    if (k == "patrolblipsprite") { PatrolBlipSprite = ParseInt(value, PatrolBlipSprite); return true; }
+
+                    if (k == "trafficstopblipcolor") { TrafficStopBlipColor = ParseInt(value, TrafficStopBlipColor); return true; }
+                    if (k == "trafficstopblipscale") { TrafficStopBlipScale = Math.Max(0.1f, Math.Min(2.0f, ParseFloat(value, TrafficStopBlipScale))); return true; }
+                    if (k == "trafficstopblipsprite") { TrafficStopBlipSprite = ParseInt(value, TrafficStopBlipSprite); return true; }
+
+                    if (k == "stationaryblipcolor") { StationaryBlipColor = ParseInt(value, StationaryBlipColor); return true; }
+                    if (k == "stationaryblipscale") { StationaryBlipScale = Math.Max(0.1f, Math.Min(2.0f, ParseFloat(value, StationaryBlipScale))); return true; }
+                    if (k == "stationaryblipsprite") { StationaryBlipSprite = ParseInt(value, StationaryBlipSprite); return true; }
+
+                    if (k == "emergencyblipcolor") { EmergencyBlipColor = ParseInt(value, EmergencyBlipColor); return true; }
+                    if (k == "emergencyblipscale") { EmergencyBlipScale = Math.Max(0.1f, Math.Min(2.0f, ParseFloat(value, EmergencyBlipScale))); return true; }
+                    if (k == "emergencyblipsprite") { EmergencyBlipSprite = ParseInt(value, EmergencyBlipSprite); return true; }
+
+                    if (k == "pursuitblipcolor") { PursuitBlipColor = ParseInt(value, PursuitBlipColor); return true; }
+                    if (k == "pursuitblipscale") { PursuitBlipScale = Math.Max(0.1f, Math.Min(2.0f, ParseFloat(value, PursuitBlipScale))); return true; }
+                    if (k == "pursuitblipsprite") { PursuitBlipSprite = ParseInt(value, PursuitBlipSprite); return true; }
+
+                    if (k == "calloutresponseblipcolor") { CalloutResponseBlipColor = ParseInt(value, CalloutResponseBlipColor); return true; }
+                    if (k == "calloutresponseblipscale") { CalloutResponseBlipScale = Math.Max(0.1f, Math.Min(2.0f, ParseFloat(value, CalloutResponseBlipScale))); return true; }
+                    if (k == "calloutresponseblipsprite") { CalloutResponseBlipSprite = ParseInt(value, CalloutResponseBlipSprite); return true; }
+
+                    if (k == "combatblipcolor") { CombatBlipColor = ParseInt(value, CombatBlipColor); return true; }
+                    if (k == "combatblipscale") { CombatBlipScale = Math.Max(0.1f, Math.Min(2.0f, ParseFloat(value, CombatBlipScale))); return true; }
+                    if (k == "combatblipsprite") { CombatBlipSprite = ParseInt(value, CombatBlipSprite); return true; }
+
+                    if (k == "officerfootblipcolor") { OfficerFootBlipColor = ParseInt(value, OfficerFootBlipColor); return true; }
+                    if (k == "officerfootblipscale") { OfficerFootBlipScale = Math.Max(0.1f, Math.Min(2.0f, ParseFloat(value, OfficerFootBlipScale))); return true; }
+                    if (k == "officerfootblipsprite") { OfficerFootBlipSprite = ParseInt(value, OfficerFootBlipSprite); return true; }
+
+                    if (k == "parkedcruiserblipcolor") { ParkedCruiserBlipColor = ParseInt(value, ParkedCruiserBlipColor); return true; }
+                    if (k == "parkedcruiserblipscale") { ParkedCruiserBlipScale = Math.Max(0.1f, Math.Min(2.0f, ParseFloat(value, ParkedCruiserBlipScale))); return true; }
+                    if (k == "parkedcruiserblipsprite") { ParkedCruiserBlipSprite = ParseInt(value, ParkedCruiserBlipSprite); return true; }
+                    return false;
 
                 case "integration":
-                    if (k == "useultimatebackup" || k == "ultimatebackup") UseUltimateBackup = ParseBool(value, UseUltimateBackup);
-                    else if (k == "fallback" || k == "allowfallback") AllowFallback = ParseBool(value, AllowFallback);
-                    else if (k == "enableeupoutfits") EnableEupOutfits = ParseBool(value, EnableEupOutfits);
-                    else if (k == "mutetrafficstopsiren") MuteTrafficStopSiren = ParseBool(value, MuteTrafficStopSiren);
-                    break;
+                    if (k == "useultimatebackup" || k == "ultimatebackup") { UseUltimateBackup = ParseBool(value, UseUltimateBackup); return true; }
+                    if (k == "fallback" || k == "allowfallback" || k == "allowultimatebackupfallback")
+                    {
+                        AllowFallback = ParseBool(value, AllowFallback);
+                        return true;
+                    }
+                    if (k == "enableeupoutfits" || k == "enableeup" || k == "eupoutfits") { EnableEupOutfits = ParseBool(value, EnableEupOutfits); return true; }
+                    if (k == "mutetrafficstopsiren" || k == "mutesiren") { MuteTrafficStopSiren = ParseBool(value, MuteTrafficStopSiren); return true; }
+                    if (k == "requirelightsforsiren" || k == "requirelights") { RequireLightsForSiren = ParseBool(value, RequireLightsForSiren); return true; }
+                    return false;
             }
+
+            return false;
         }
 
-        public static Keys ParseKey(string value, Keys defaultKey)
+        private static Keys ParseKey(string value, Keys defaultKey)
         {
             if (string.IsNullOrWhiteSpace(value)) return defaultKey;
-
             string clean = value.Trim();
 
-            // 0 or None fallback requirement: completely disables keybind
             if (clean.Equals("0", StringComparison.OrdinalIgnoreCase) ||
                 clean.Equals("none", StringComparison.OrdinalIgnoreCase) ||
                 clean.Equals("disabled", StringComparison.OrdinalIgnoreCase) ||
-                clean.Equals("false", StringComparison.OrdinalIgnoreCase) ||
-                clean.Equals("null", StringComparison.OrdinalIgnoreCase))
+                clean.Equals("false", StringComparison.OrdinalIgnoreCase))
             {
                 return Keys.None;
             }
 
-            if (clean.Equals("pagedown", StringComparison.OrdinalIgnoreCase) || clean.Equals("pgdn", StringComparison.OrdinalIgnoreCase))
-            {
-                return Keys.PageDown;
-            }
+            if (clean.Equals("pagedown", StringComparison.OrdinalIgnoreCase) || clean.Equals("pgdn", StringComparison.OrdinalIgnoreCase)) return Keys.PageDown;
+            if (clean.Equals("pageup", StringComparison.OrdinalIgnoreCase) || clean.Equals("pgup", StringComparison.OrdinalIgnoreCase)) return Keys.PageUp;
 
-            if (clean.Equals("pageup", StringComparison.OrdinalIgnoreCase) || clean.Equals("pgup", StringComparison.OrdinalIgnoreCase))
+            if (Enum.TryParse(clean, true, out Keys parsed))
             {
-                return Keys.PageUp;
-            }
-
-            if (clean.Equals("enter", StringComparison.OrdinalIgnoreCase) || clean.Equals("return", StringComparison.OrdinalIgnoreCase))
-            {
-                return Keys.Enter;
-            }
-
-            if (clean.Equals("rcontrol", StringComparison.OrdinalIgnoreCase) || clean.Equals("rcontrolkey", StringComparison.OrdinalIgnoreCase) || clean.Equals("rightcontrol", StringComparison.OrdinalIgnoreCase))
-            {
-                return Keys.RControlKey;
-            }
-
-            if (clean.Equals("lcontrol", StringComparison.OrdinalIgnoreCase) || clean.Equals("lcontrolkey", StringComparison.OrdinalIgnoreCase) || clean.Equals("leftcontrol", StringComparison.OrdinalIgnoreCase))
-            {
-                return Keys.LControlKey;
-            }
-
-            if (clean.Equals("numpad0", StringComparison.OrdinalIgnoreCase) || clean.Equals("num0", StringComparison.OrdinalIgnoreCase))
-            {
-                return Keys.NumPad0;
-            }
-
-            if (clean.Equals("numpad1", StringComparison.OrdinalIgnoreCase) || clean.Equals("num1", StringComparison.OrdinalIgnoreCase))
-            {
-                return Keys.NumPad1;
-            }
-
-            if (Enum.TryParse(clean, true, out Keys parsedKey))
-            {
-                return parsedKey;
+                return parsed;
             }
 
             return defaultKey;
@@ -459,21 +842,20 @@ namespace Cadence.Core
         private static Keys ParseModifierKey(string value, Keys defaultModifier)
         {
             if (string.IsNullOrWhiteSpace(value)) return defaultModifier;
-
             string clean = value.Trim();
+
             if (clean.Equals("0", StringComparison.OrdinalIgnoreCase) ||
                 clean.Equals("none", StringComparison.OrdinalIgnoreCase) ||
                 clean.Equals("disabled", StringComparison.OrdinalIgnoreCase) ||
-                clean.Equals("false", StringComparison.OrdinalIgnoreCase) ||
-                clean.Equals("null", StringComparison.OrdinalIgnoreCase))
+                clean.Equals("false", StringComparison.OrdinalIgnoreCase))
             {
                 return Keys.None;
             }
 
-            if (clean.Equals("ctrl", StringComparison.OrdinalIgnoreCase)) clean = "Control";
-            if (clean.Equals("alt", StringComparison.OrdinalIgnoreCase)) clean = "Menu";
-            if (clean.Equals("rcontrol", StringComparison.OrdinalIgnoreCase) || clean.Equals("rcontrolkey", StringComparison.OrdinalIgnoreCase) || clean.Equals("rctrl", StringComparison.OrdinalIgnoreCase) || clean.Equals("rightcontrol", StringComparison.OrdinalIgnoreCase)) return Keys.RControlKey;
-            if (clean.Equals("lcontrol", StringComparison.OrdinalIgnoreCase) || clean.Equals("lcontrolkey", StringComparison.OrdinalIgnoreCase) || clean.Equals("lctrl", StringComparison.OrdinalIgnoreCase) || clean.Equals("leftcontrol", StringComparison.OrdinalIgnoreCase)) return Keys.LControlKey;
+            if (clean.Equals("ctrl", StringComparison.OrdinalIgnoreCase) || clean.Equals("control", StringComparison.OrdinalIgnoreCase)) return Keys.ControlKey;
+            if (clean.Equals("lctrl", StringComparison.OrdinalIgnoreCase) || clean.Equals("lcontrol", StringComparison.OrdinalIgnoreCase)) return Keys.LControlKey;
+            if (clean.Equals("shift", StringComparison.OrdinalIgnoreCase) || clean.Equals("lshift", StringComparison.OrdinalIgnoreCase)) return Keys.LShiftKey;
+            if (clean.Equals("alt", StringComparison.OrdinalIgnoreCase) || clean.Equals("lalt", StringComparison.OrdinalIgnoreCase)) return Keys.LMenu;
             if (clean.Equals("pagedown", StringComparison.OrdinalIgnoreCase) || clean.Equals("pgdn", StringComparison.OrdinalIgnoreCase)) return Keys.PageDown;
             if (clean.Equals("pageup", StringComparison.OrdinalIgnoreCase) || clean.Equals("pgup", StringComparison.OrdinalIgnoreCase)) return Keys.PageUp;
 
@@ -498,13 +880,27 @@ namespace Cadence.Core
             return int.TryParse(value, out int res) ? res : defaultVal;
         }
 
+        /// <summary>
+        /// Parses floating point value, strictly rejecting NaN and Infinity [A3].
+        /// </summary>
         private static float ParseFloat(string value, float defaultVal)
         {
             if (string.IsNullOrWhiteSpace(value)) return defaultVal;
             string normalized = value.Replace(',', '.');
-            return float.TryParse(normalized, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float res) ? res : defaultVal;
+            if (float.TryParse(normalized, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float res))
+            {
+                if (float.IsNaN(res) || float.IsInfinity(res))
+                {
+                    return defaultVal;
+                }
+                return res;
+            }
+            return defaultVal;
         }
 
+        /// <summary>
+        /// Tokenizes range string (e.g. "4-7", "2 to 3") without splitting on decimals [A22].
+        /// </summary>
         private static void ParseRange(string value, out int min, out int max, int clampMin, int clampMax, int defaultMin, int defaultMax)
         {
             min = defaultMin;
@@ -512,9 +908,14 @@ namespace Cadence.Core
             if (string.IsNullOrWhiteSpace(value)) return;
 
             string clean = value.Trim();
-            string[] parts = clean.Split(new[] { '-', ',', ' ', '/', 't', 'o', 'T', 'O', '.' }, StringSplitOptions.RemoveEmptyEntries);
+            string[] parts = clean.Split(new[] { '-', ',', ' ', '/' }, StringSplitOptions.RemoveEmptyEntries);
 
-            if (parts.Length >= 2 && int.TryParse(parts[0], out int p1) && int.TryParse(parts[parts.Length - 1], out int p2))
+            if (parts.Length == 1 && clean.IndexOf("to", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                parts = System.Text.RegularExpressions.Regex.Split(clean, @"\s*to\s*", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            }
+
+            if (parts.Length >= 2 && int.TryParse(parts[0].Trim(), out int p1) && int.TryParse(parts[parts.Length - 1].Trim(), out int p2))
             {
                 min = Math.Min(p1, p2);
                 max = Math.Max(p1, p2);

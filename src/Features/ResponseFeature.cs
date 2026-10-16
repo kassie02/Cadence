@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Threading;
 using Rage;
 using Rage.Native;
 using LSPD_First_Response.Mod.API;
@@ -19,8 +20,17 @@ namespace Cadence.Features
     /// to silently take over rejected/declined player callouts with the nearest available cruiser.
     /// Strictly self-contained under the Ponytail architecture.
     /// </summary>
-    public static class ResponseFeature
+    public sealed class ResponseFeature : IFeature
     {
+        public static ResponseFeature Instance { get; } = new ResponseFeature();
+        public string Name => "Response";
+        public bool IsRunning => _isRunning;
+
+        void IFeature.Start() => Start();
+        void IFeature.Stop() => Stop();
+        void IFeature.PurgeAll(bool immediateDelete) => PurgeAll(immediateDelete);
+        int IFeature.GetActiveCount() => GetActiveCount();
+
         private static readonly object _syncLock = new object();
         private static readonly List<ResponseUnitInstance> _activeUnits = new List<ResponseUnitInstance>();
         private static readonly Random _rand = new Random();
@@ -69,30 +79,38 @@ namespace Cadence.Features
             {
                 if (!_isRunning) return;
                 _isRunning = false;
+            }
 
-                // Unhook LSPDFR rejected callout event
-                try
+            // Unhook LSPDFR rejected callout event
+            try
+            {
+                Events.OnCalloutNotAccepted -= OnLspdfrCalloutNotAccepted;
+                Logger.Info("[ResponseFeature] Unhooked LSPDFR Events.OnCalloutNotAccepted.");
+            }
+            catch { }
+
+            Logger.Info("[ResponseFeature] Stopping response feature and purging units.");
+            PurgeAllInternal(immediateDelete: false);
+
+            try
+            {
+                if (_responseFiber != null && _responseFiber.IsAlive)
                 {
-                    Events.OnCalloutNotAccepted -= OnLspdfrCalloutNotAccepted;
-                    Logger.Info("[ResponseFeature] Unhooked LSPDFR Events.OnCalloutNotAccepted.");
-                }
-                catch { }
-
-                Logger.Info("[ResponseFeature] Stopping response feature and purging units.");
-                PurgeAllInternal();
-
-                try
-                {
-                    if (_responseFiber != null && _responseFiber.IsAlive)
+                    uint startWait = Game.GameTime;
+                    while (_responseFiber.IsAlive && (Game.GameTime - startWait < 1500))
+                    {
+                        GameFiber.Sleep(50);
+                    }
+                    if (_responseFiber.IsAlive)
                     {
                         _responseFiber.Abort();
                     }
                 }
-                catch { }
-                finally
-                {
-                    _responseFiber = null;
-                }
+            }
+            catch { }
+            finally
+            {
+                _responseFiber = null;
             }
         }
 
@@ -133,13 +151,10 @@ namespace Cadence.Features
             return false;
         }
 
-        public static void PurgeAll()
+        public static void PurgeAll(bool immediateDelete = true)
         {
-            lock (_syncLock)
-            {
-                Logger.Info("[ResponseFeature] Purging all active response units.");
-                PurgeAllInternal();
-            }
+            Logger.Info("[ResponseFeature] Purging all active response units.");
+            PurgeAllInternal(immediateDelete);
         }
 
         public static int GetActiveCount()
@@ -159,6 +174,7 @@ namespace Cadence.Features
         {
             if (cruiser == null || !cruiser.Exists()) return false;
 
+            ResponseUnitInstance unitToRelinquish = null;
             lock (_syncLock)
             {
                 for (int i = _activeUnits.Count - 1; i >= 0; i--)
@@ -166,12 +182,18 @@ namespace Cadence.Features
                     ResponseUnitInstance unit = _activeUnits[i];
                     if (unit != null && unit.Cruiser == cruiser)
                     {
-                        Logger.Info($"[ResponseFeature] Relinquishing cruiser 0x{cruiser.Handle:X} ({unit.Callsign}) to external feature.");
-                        unit.Relinquish();
+                        unitToRelinquish = unit;
                         _activeUnits.RemoveAt(i);
-                        return true;
+                        break;
                     }
                 }
+            }
+
+            if (unitToRelinquish != null)
+            {
+                Logger.Info($"[ResponseFeature] Relinquishing cruiser 0x{cruiser.Handle:X} ({unitToRelinquish.Callsign}) to external feature.");
+                unitToRelinquish.Relinquish();
+                return true;
             }
 
             return false;
@@ -261,22 +283,49 @@ namespace Cadence.Features
 
             try
             {
-                PropertyInfo prop = typeof(LHandle).GetProperty("Object", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                object calloutObj = prop?.GetValue(lhandle);
+                PropertyInfo prop = null;
+                try
+                {
+                    prop = typeof(LHandle).GetProperty("Object", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                }
+                catch { }
+
+                object calloutObj = null;
+                try
+                {
+                    calloutObj = prop?.GetValue(lhandle);
+                }
+                catch { }
 
                 if (calloutObj is Callout callout)
                 {
-                    return callout.CalloutPosition;
+                    try
+                    {
+                        return callout.CalloutPosition;
+                    }
+                    catch { }
                 }
 
                 if (calloutObj != null)
                 {
-                    PropertyInfo posProp = calloutObj.GetType().GetProperty("CalloutPosition", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-                                        ?? calloutObj.GetType().GetProperty("Position", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-
-                    if (posProp != null && posProp.GetValue(calloutObj) is Vector3 v3)
+                    PropertyInfo posProp = null;
+                    try
                     {
-                        return v3;
+                        posProp = calloutObj.GetType().GetProperty("CalloutPosition", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                               ?? calloutObj.GetType().GetProperty("Position", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                    }
+                    catch { }
+
+                    if (posProp != null)
+                    {
+                        try
+                        {
+                            if (posProp.GetValue(calloutObj) is Vector3 v3)
+                            {
+                                return v3;
+                            }
+                        }
+                        catch { }
                     }
                 }
             }
@@ -331,53 +380,68 @@ namespace Cadence.Features
 
         private static void RunResponseWatchdog(Vector3 playerPos)
         {
+            ResponseUnitInstance[] snapshot;
             lock (_syncLock)
             {
-                for (int i = _activeUnits.Count - 1; i >= 0; i--)
+                snapshot = _activeUnits.ToArray();
+            }
+
+            for (int i = 0; i < snapshot.Length; i++)
+            {
+                ResponseUnitInstance unit = snapshot[i];
+                if (unit == null) continue;
+
+                if (!unit.IsValid())
                 {
-                    ResponseUnitInstance unit = _activeUnits[i];
-                    if (unit == null)
+                    lock (_syncLock)
                     {
-                        _activeUnits.RemoveAt(i);
-                        continue;
+                        if (!_activeUnits.Contains(unit)) continue;
+                        _activeUnits.Remove(unit);
+                        Logger.Debug($"[ResponseFeature] Removing invalid/dead response unit {unit.Callsign}. Active remaining: {_activeUnits.Count}/{Settings.MaxEmergencyRuns}");
                     }
+                    unit.Dispose(immediateDelete: false);
+                    continue;
+                }
 
-                    if (!unit.IsValid())
+                // Subterranean watchdog
+                if (WorldUtils.IsSubterraneanOrVoid(unit.Cruiser.Position))
+                {
+                    lock (_syncLock)
                     {
-                        Logger.Debug($"[ResponseFeature] Removing invalid/dead response unit {unit.Callsign}.");
-                        unit.Dispose(immediateDelete: false);
-                        _activeUnits.RemoveAt(i);
-                        continue;
+                        if (!_activeUnits.Contains(unit)) continue;
+                        _activeUnits.Remove(unit);
+                        Logger.Warn($"[ResponseFeature] Unit {unit.Callsign} fell into subterranean void. Removing. Active remaining: {_activeUnits.Count}/{Settings.MaxEmergencyRuns}");
                     }
+                    unit.Dispose(immediateDelete: true);
+                    continue;
+                }
 
-                    // Subterranean watchdog
-                    if (WorldUtils.IsSubterraneanOrVoid(unit.Cruiser.Position))
+                // Despawn distance watchdog: clean removal if far from player (> 550m)
+                float distToPlayer = unit.Cruiser.Position.DistanceTo(playerPos);
+                if (distToPlayer > (Settings.DespawnDistance + 100.0f))
+                {
+                    lock (_syncLock)
                     {
-                        Logger.Warn($"[ResponseFeature] Unit {unit.Callsign} fell into subterranean void. Removing.");
-                        unit.Dispose(immediateDelete: true);
-                        _activeUnits.RemoveAt(i);
-                        continue;
+                        if (!_activeUnits.Contains(unit)) continue;
+                        _activeUnits.Remove(unit);
+                        Logger.Debug($"[ResponseFeature] Unit {unit.Callsign} out of range ({distToPlayer:F0}m). Cleaning up. Active remaining: {_activeUnits.Count}/{Settings.MaxEmergencyRuns}");
                     }
+                    unit.Dispose(immediateDelete: false);
+                    continue;
+                }
 
-                    // Despawn distance watchdog: clean removal if far from player (> 550m)
-                    float distToPlayer = unit.Cruiser.Position.DistanceTo(playerPos);
-                    if (distToPlayer > (Settings.DespawnDistance + 100.0f))
+                // Manage State Transitions (EnRoute -> Arrived -> Finished)
+                unit.UpdateState(playerPos);
+
+                if (unit.IsFinished)
+                {
+                    lock (_syncLock)
                     {
-                        Logger.Debug($"[ResponseFeature] Unit {unit.Callsign} out of range ({distToPlayer:F0}m). Cleaning up.");
-                        unit.Dispose(immediateDelete: false);
-                        _activeUnits.RemoveAt(i);
-                        continue;
+                        if (!_activeUnits.Contains(unit)) continue;
+                        _activeUnits.Remove(unit);
+                        Logger.Info($"[ResponseFeature] Unit {unit.Callsign} finished response lifecycle. Cleaning up. Active remaining: {_activeUnits.Count}/{Settings.MaxEmergencyRuns}");
                     }
-
-                    // Manage State Transitions (EnRoute -> Arrived -> Finished)
-                    unit.UpdateState(playerPos);
-
-                    if (unit.IsFinished)
-                    {
-                        Logger.Info($"[ResponseFeature] Unit {unit.Callsign} finished response lifecycle. Cleaning up.");
-                        unit.Dispose(immediateDelete: false);
-                        _activeUnits.RemoveAt(i);
-                    }
+                    unit.Dispose(immediateDelete: false);
                 }
             }
         }
@@ -401,7 +465,11 @@ namespace Cadence.Features
             {
                 if (Functions.IsCalloutRunning())
                 {
-                    return;
+                    LHandle currentCallout = Functions.GetCurrentCallout();
+                    if (currentCallout != null && Functions.GetCalloutAcceptanceState(currentCallout) == CalloutAcceptanceState.Running)
+                    {
+                        return;
+                    }
                 }
             }
             catch { }
@@ -420,23 +488,31 @@ namespace Cadence.Features
 
             // Pacing: 60 - 95 seconds between autonomous runs (30 - 50s in Chaos mode)
             uint now = Game.GameTime;
-            uint cooldown = Settings.ChaosMode ? (uint)_rand.Next(30000, 50000) : (uint)_rand.Next(60000, 95000);
+            uint cooldown;
+            lock (_rand)
+            {
+                cooldown = Settings.ChaosMode ? (uint)_rand.Next(30000, 50000) : (uint)_rand.Next(60000, 95000);
+            }
             if (now < _lastAutonomousRunTime || now - _lastAutonomousRunTime < cooldown)
             {
                 return;
             }
+            _lastAutonomousRunTime = now; // [D8] Immediately advance pacing timer
 
             // Road node 400m - 800m away from player
             if (TryFindRoadDestination(playerPos, 400.0f, 800.0f, out Vector3 targetPos))
             {
-                bool isCode3 = _rand.NextDouble() >= 0.30; // 70% Code 3, 30% Code 2
+                bool isCode3;
+                lock (_rand)
+                {
+                    isCode3 = _rand.NextDouble() >= 0.30; // 70% Code 3, 30% Code 2
+                }
                 ResponseUnitInstance unit = DispatchOrSpawnCruiser(targetPos, isCode3, isCalloutTakeover: false);
                 if (unit != null && unit.IsValid())
                 {
                     lock (_syncLock)
                     {
                         _activeUnits.Add(unit);
-                        _lastAutonomousRunTime = Game.GameTime;
                     }
                     SessionMetrics.IncrementEmergencyRun();
                     Logger.Info($"[ResponseFeature] Autonomous {(isCode3 ? "Code 3" : "Code 2")} {unit.ServiceType} response run dispatched for unit {unit.Callsign} to {targetPos}.");
@@ -455,7 +531,7 @@ namespace Cadence.Features
 
             // Determine service type (Police, Fire, Ambulance)
             EmergencyServiceType serviceType = EmergencyServiceType.Police;
-            if (!isCalloutTakeover && Settings.EnableEmergencyVariety)
+            if (!isCalloutTakeover)
             {
                 var candidateServices = new List<EmergencyServiceType>();
                 if (Settings.AllowPoliceRuns)
@@ -463,16 +539,25 @@ namespace Cadence.Features
                     candidateServices.Add(EmergencyServiceType.Police);
                     candidateServices.Add(EmergencyServiceType.Police); // 50% base weight
                 }
-                if (Settings.AllowFireRuns)
+                if (Settings.EnableEmergencyVariety)
                 {
-                    candidateServices.Add(EmergencyServiceType.Fire); // 25% base weight
-                }
-                if (Settings.AllowAmbulanceRuns)
-                {
-                    candidateServices.Add(EmergencyServiceType.Ambulance); // 25% base weight
+                    if (Settings.AllowFireRuns)
+                    {
+                        candidateServices.Add(EmergencyServiceType.Fire); // 25% base weight
+                    }
+                    if (Settings.AllowAmbulanceRuns)
+                    {
+                        candidateServices.Add(EmergencyServiceType.Ambulance); // 25% base weight
+                    }
                 }
 
-                if (candidateServices.Count > 0)
+                if (candidateServices.Count == 0)
+                {
+                    Logger.Debug("ResponseFeature", "No emergency service types allowed by settings. Aborting spawn.");
+                    return null;
+                }
+
+                lock (_rand)
                 {
                     serviceType = candidateServices[_rand.Next(candidateServices.Count)];
                 }
@@ -484,15 +569,27 @@ namespace Cadence.Features
                 Vehicle candidateVeh = FindIdleAmbientPoliceVehicle(playerPos, targetPos);
                 if (candidateVeh != null && candidateVeh.Exists())
                 {
-                    PatrolFeature.RelinquishCruiser(candidateVeh);
-                    StationaryFeature.RelinquishCruiser(candidateVeh);
-                    TrafficStopFeature.RelinquishCruiser(candidateVeh);
-
                     Ped driver = candidateVeh.Driver;
                     if (driver != null && driver.Exists() && driver.IsAlive)
                     {
-                        string existingCallsign = GenerateCallsign();
-                        return SetupResponseUnit(candidateVeh, driver, null, targetPos, isCode3, existingCallsign, EmergencyServiceType.Police);
+                        PatrolFeature.RelinquishCruiser(candidateVeh);
+                        StationaryFeature.RelinquishCruiser(candidateVeh);
+                        TrafficStopFeature.RelinquishCruiser(candidateVeh);
+
+                        if (UnitRegistry.TryClaim(candidateVeh, UnitRegistry.OwnerResponse))
+                        {
+                            if (UnitRegistry.TryClaim(driver, UnitRegistry.OwnerResponse))
+                            {
+                                string existingCallsign = GenerateCallsign();
+                                ResponseUnitInstance unit = SetupResponseUnit(candidateVeh, driver, null, targetPos, isCode3, existingCallsign, EmergencyServiceType.Police, isCalloutTakeover);
+                                if (unit != null)
+                                {
+                                    return unit;
+                                }
+                                UnitRegistry.Release(driver, UnitRegistry.OwnerResponse);
+                            }
+                            UnitRegistry.Release(candidateVeh, UnitRegistry.OwnerResponse);
+                        }
                     }
                 }
             }
@@ -558,7 +655,37 @@ namespace Cadence.Features
                     {
                         cruiser.Heading = spawnHeading;
                         WorldUtils.SecureEntityGround(cruiser);
-                        return SetupResponseUnit(cruiser, driver, passenger, targetPos, isCode3, callsign, EmergencyServiceType.Police);
+
+                        if (UnitRegistry.TryClaim(cruiser, UnitRegistry.OwnerResponse))
+                        {
+                            if (UnitRegistry.TryClaim(driver, UnitRegistry.OwnerResponse))
+                            {
+                                if (passenger != null && passenger.Exists())
+                                {
+                                    UnitRegistry.TryClaim(passenger, UnitRegistry.OwnerResponse);
+                                }
+
+                                ResponseUnitInstance unit = SetupResponseUnit(cruiser, driver, passenger, targetPos, isCode3, callsign, EmergencyServiceType.Police, isCalloutTakeover);
+                                if (unit != null)
+                                {
+                                    return unit;
+                                }
+
+                                if (passenger != null && passenger.Exists())
+                                {
+                                    UnitRegistry.Release(passenger, UnitRegistry.OwnerResponse);
+                                }
+                                UnitRegistry.Release(driver, UnitRegistry.OwnerResponse);
+                            }
+                            UnitRegistry.Release(cruiser, UnitRegistry.OwnerResponse);
+                        }
+
+                        TeardownHelper.SafeDismissPed(driver, delete: true);
+                        if (passenger != null && passenger.Exists())
+                        {
+                            TeardownHelper.SafeDismissPed(passenger, delete: true);
+                        }
+                        TeardownHelper.SafeDismissVehicle(cruiser, delete: true);
                     }
                 }
             }
@@ -570,7 +697,11 @@ namespace Cadence.Features
         {
             try
             {
-                string callsign = $"MEDIC-{_rand.Next(1, 99):D2}";
+                string callsign;
+                lock (_rand)
+                {
+                    callsign = $"MEDIC-{_rand.Next(1, 100):D2}";
+                }
                 Vehicle amb = null;
                 Ped driver = null;
                 Ped passenger = null;
@@ -613,7 +744,38 @@ namespace Cadence.Features
 
                 amb.Heading = spawnHeading;
                 WorldUtils.SecureEntityGround(amb);
-                return SetupResponseUnit(amb, driver, passenger, destination, true, callsign, EmergencyServiceType.Ambulance);
+
+                if (UnitRegistry.TryClaim(amb, UnitRegistry.OwnerResponse))
+                {
+                    if (UnitRegistry.TryClaim(driver, UnitRegistry.OwnerResponse))
+                    {
+                        if (passenger != null && passenger.Exists())
+                        {
+                            UnitRegistry.TryClaim(passenger, UnitRegistry.OwnerResponse);
+                        }
+
+                        ResponseUnitInstance unit = SetupResponseUnit(amb, driver, passenger, destination, true, callsign, EmergencyServiceType.Ambulance);
+                        if (unit != null)
+                        {
+                            return unit;
+                        }
+
+                        if (passenger != null && passenger.Exists())
+                        {
+                            UnitRegistry.Release(passenger, UnitRegistry.OwnerResponse);
+                        }
+                        UnitRegistry.Release(driver, UnitRegistry.OwnerResponse);
+                    }
+                    UnitRegistry.Release(amb, UnitRegistry.OwnerResponse);
+                }
+
+                TeardownHelper.SafeDismissPed(driver, delete: true);
+                if (passenger != null && passenger.Exists())
+                {
+                    TeardownHelper.SafeDismissPed(passenger, delete: true);
+                }
+                TeardownHelper.SafeDismissVehicle(amb, delete: true);
+                return null;
             }
             catch (Exception ex)
             {
@@ -626,7 +788,11 @@ namespace Cadence.Features
         {
             try
             {
-                string callsign = $"ENGINE-{_rand.Next(1, 99):D2}";
+                string callsign;
+                lock (_rand)
+                {
+                    callsign = $"ENGINE-{_rand.Next(1, 100):D2}";
+                }
                 Vehicle fire = null;
                 Ped driver = null;
                 Ped passenger = null;
@@ -669,7 +835,38 @@ namespace Cadence.Features
 
                 fire.Heading = spawnHeading;
                 WorldUtils.SecureEntityGround(fire);
-                return SetupResponseUnit(fire, driver, passenger, destination, true, callsign, EmergencyServiceType.Fire);
+
+                if (UnitRegistry.TryClaim(fire, UnitRegistry.OwnerResponse))
+                {
+                    if (UnitRegistry.TryClaim(driver, UnitRegistry.OwnerResponse))
+                    {
+                        if (passenger != null && passenger.Exists())
+                        {
+                            UnitRegistry.TryClaim(passenger, UnitRegistry.OwnerResponse);
+                        }
+
+                        ResponseUnitInstance unit = SetupResponseUnit(fire, driver, passenger, destination, true, callsign, EmergencyServiceType.Fire);
+                        if (unit != null)
+                        {
+                            return unit;
+                        }
+
+                        if (passenger != null && passenger.Exists())
+                        {
+                            UnitRegistry.Release(passenger, UnitRegistry.OwnerResponse);
+                        }
+                        UnitRegistry.Release(driver, UnitRegistry.OwnerResponse);
+                    }
+                    UnitRegistry.Release(fire, UnitRegistry.OwnerResponse);
+                }
+
+                TeardownHelper.SafeDismissPed(driver, delete: true);
+                if (passenger != null && passenger.Exists())
+                {
+                    TeardownHelper.SafeDismissPed(passenger, delete: true);
+                }
+                TeardownHelper.SafeDismissVehicle(fire, delete: true);
+                return null;
             }
             catch (Exception ex)
             {
@@ -678,7 +875,7 @@ namespace Cadence.Features
             }
         }
 
-        private static ResponseUnitInstance SetupResponseUnit(Vehicle cruiser, Ped driver, Ped passenger, Vector3 destination, bool isCode3, string callsign, EmergencyServiceType serviceType = EmergencyServiceType.Police)
+        private static ResponseUnitInstance SetupResponseUnit(Vehicle cruiser, Ped driver, Ped passenger, Vector3 destination, bool isCode3, string callsign, EmergencyServiceType serviceType = EmergencyServiceType.Police, bool isCalloutTakeover = false)
         {
             try
             {
@@ -697,19 +894,33 @@ namespace Cadence.Features
                 NativeFunction.Natives.SET_VEHICLE_FORWARD_SPEED(cruiser, 12.0f);
                 NativeTasks.TaskLongRangeEmergencyDrive(driver, cruiser, destination, targetSpeed, 15.0f);
 
-                // Attach Red flashing radar blip
-                string blipLabel = serviceType == EmergencyServiceType.Ambulance ? $"{callsign} [EMS]" :
-                                   serviceType == EmergencyServiceType.Fire ? $"{callsign} [FIRE]" :
-                                   callsign;
-                Blip blip = BlipService.AttachEmergencyBlip(cruiser, blipLabel);
+                // Attach blip: Callout units get Purple Flashing (Color 27), Ambulance gets EMS, Fire gets Fire, generic police gets emergency blip
+                Blip blip;
+                if (serviceType == EmergencyServiceType.Police && isCalloutTakeover)
+                {
+                    blip = BlipService.AttachCalloutResponseBlip(cruiser, callsign);
+                }
+                else
+                {
+                    string blipLabel = serviceType == EmergencyServiceType.Ambulance ? $"{callsign} [EMS]" :
+                                       serviceType == EmergencyServiceType.Fire ? $"{callsign} [FIRE]" :
+                                       callsign;
+                    blip = BlipService.AttachEmergencyBlip(cruiser, blipLabel);
+                }
 
-                Logger.Debug("ResponseFeature", $"Configured {serviceType} response unit {callsign} [{(isCode3 ? "Code 3" : "Code 2")}]: Cruiser={cruiser.Model.Name} (0x{cruiser.Handle:X}), Driver={driver.Model.Name} (0x{driver.Handle:X}), Target={destination}");
+                Logger.Debug("ResponseFeature", $"Configured {serviceType} response unit {callsign} [{(isCode3 ? "Code 3" : "Code 2")}] (CalloutTakeover={isCalloutTakeover}): Cruiser={cruiser.Model.Name} (0x{cruiser.Handle:X}), Driver={driver.Model.Name} (0x{driver.Handle:X}), Target={destination}");
 
                 return new ResponseUnitInstance(cruiser, driver, passenger, destination, blip, callsign, isCode3, serviceType);
             }
             catch (Exception ex)
             {
                 Logger.Error($"[ResponseFeature] Error setting up response unit {callsign}", ex);
+                TeardownHelper.SafeDismissPed(driver, delete: true);
+                if (passenger != null && passenger.Exists())
+                {
+                    TeardownHelper.SafeDismissPed(passenger, delete: true);
+                }
+                TeardownHelper.SafeDismissVehicle(cruiser, delete: true);
                 return null;
             }
         }
@@ -736,16 +947,39 @@ namespace Cadence.Features
                                         Functions.IsPedACop(drv) || drv.RelationshipGroup == "COP";
                         if (!isPolice) continue;
 
+                        // Never commandeer cruisers managed by other Cadence features
+                        if (BackupFeature.IsBackupCruiser(veh) || PursuitFeature.IsPursuitCruiser(veh) || TrafficStopFeature.IsActiveCruiser(veh) || IsActiveCruiser(veh)) continue;
+
+                        if (UnitRegistry.IsClaimed(veh))
+                        {
+                            if (!UnitRegistry.IsClaimedBy(veh, UnitRegistry.OwnerPatrol) && !UnitRegistry.IsClaimedBy(veh, UnitRegistry.OwnerStationary))
+                            {
+                                continue;
+                            }
+                        }
+
+                        if (UnitRegistry.IsClaimed(drv))
+                        {
+                            if (!UnitRegistry.IsClaimedBy(drv, UnitRegistry.OwnerPatrol) && !UnitRegistry.IsClaimedBy(drv, UnitRegistry.OwnerStationary))
+                            {
+                                continue;
+                            }
+                        }
+
                         // Ensure not already tracked in active response units
                         lock (_syncLock)
                         {
                             if (_activeUnits.Any(u => u.Cruiser == veh)) continue;
                         }
 
-                        // Ensure not currently in active pursuit
+                        // Ensure not currently in active pursuit or busy with LSPDFR task
                         bool inPursuit = false;
                         try { inPursuit = Functions.IsPedInPursuit(drv); } catch { }
                         if (inPursuit) continue;
+
+                        bool isBusy = false;
+                        try { isBusy = Functions.IsCopBusy(drv, false); } catch { }
+                        if (isBusy) continue;
 
                         return veh;
                     }
@@ -762,8 +996,13 @@ namespace Cadence.Features
 
             for (int attempt = 0; attempt < 16; attempt++)
             {
-                float distance = (float)_rand.Next((int)minDistance, (int)maxDistance);
-                double angle = _rand.NextDouble() * Math.PI * 2.0;
+                float distance;
+                double angle;
+                lock (_rand)
+                {
+                    distance = (float)_rand.Next((int)minDistance, (int)maxDistance);
+                    angle = _rand.NextDouble() * Math.PI * 2.0;
+                }
 
                 Vector3 probe = new Vector3(
                     center.X + (float)Math.Cos(angle) * distance,
@@ -791,8 +1030,13 @@ namespace Cadence.Features
 
             for (int attempt = 0; attempt < 16; attempt++)
             {
-                float distance = (float)_rand.Next(160, 320);
-                double angle = _rand.NextDouble() * Math.PI * 2.0;
+                float distance;
+                double angle;
+                lock (_rand)
+                {
+                    distance = (float)_rand.Next(160, 320);
+                    angle = _rand.NextDouble() * Math.PI * 2.0;
+                }
 
                 Vector3 probe = new Vector3(
                     playerPos.X + (float)Math.Cos(angle) * distance,
@@ -817,22 +1061,36 @@ namespace Cadence.Features
 
         private static string GenerateCallsign()
         {
-            string div = Divisions[_rand.Next(Divisions.Length)];
-            int num = _callsignCounter++;
-            if (_callsignCounter > 99) _callsignCounter = 70;
+            string div;
+            lock (_rand)
+            {
+                div = Divisions[_rand.Next(Divisions.Length)];
+            }
+            int num = Interlocked.Increment(ref _callsignCounter);
+            if (num > 99)
+            {
+                Interlocked.Exchange(ref _callsignCounter, 70);
+                num = 70;
+            }
             return $"{div}-{num:D2}";
         }
 
-        private static void PurgeAllInternal()
+        private static void PurgeAllInternal(bool immediateDelete = true)
         {
-            foreach (var unit in _activeUnits)
+            List<ResponseUnitInstance> snapshot;
+            lock (_syncLock)
+            {
+                snapshot = new List<ResponseUnitInstance>(_activeUnits);
+                _activeUnits.Clear();
+            }
+
+            foreach (var unit in snapshot)
             {
                 if (unit != null)
                 {
-                    unit.Dispose(immediateDelete: true);
+                    unit.Dispose(immediateDelete);
                 }
             }
-            _activeUnits.Clear();
             _lastAutonomousRunTime = Game.GameTime + 45000;
         }
 
@@ -968,6 +1226,7 @@ namespace Cadence.Features
                     {
                         NativeFunction.Natives.STOP_BRINGING_VEHICLE_TO_HALT(Cruiser);
                         NativeFunction.Natives.SET_VEHICLE_HANDBRAKE(Cruiser, false);
+                        UnitRegistry.Release(Cruiser, UnitRegistry.OwnerResponse);
                     }
                 }
                 catch { }
@@ -976,13 +1235,31 @@ namespace Cadence.Features
                 {
                     if (Driver != null && Driver.Exists())
                     {
+                        try
+                        {
+                            if (Functions.IsPedInPursuit(Driver))
+                            {
+                                Functions.RemovePedFromPursuit(Driver);
+                            }
+                        }
+                        catch { }
                         Driver.Tasks.Clear();
                         Driver.BlockPermanentEvents = false;
+                        UnitRegistry.Release(Driver, UnitRegistry.OwnerResponse);
                     }
                     if (Passenger != null && Passenger.Exists())
                     {
+                        try
+                        {
+                            if (Functions.IsPedInPursuit(Passenger))
+                            {
+                                Functions.RemovePedFromPursuit(Passenger);
+                            }
+                        }
+                        catch { }
                         Passenger.Tasks.Clear();
                         Passenger.BlockPermanentEvents = false;
+                        UnitRegistry.Release(Passenger, UnitRegistry.OwnerResponse);
                     }
                 }
                 catch { }
@@ -1011,34 +1288,32 @@ namespace Cadence.Features
 
                     if (Passenger != null && Passenger.Exists())
                     {
-                        Passenger.BlockPermanentEvents = false;
-                        if (immediateDelete) Passenger.Delete();
-                        else Passenger.Dismiss();
+                        TeardownHelper.SafeDismissPed(Passenger, immediateDelete);
                     }
 
                     if (Driver != null && Driver.Exists())
                     {
-                        Driver.BlockPermanentEvents = false;
-                        if (immediateDelete) Driver.Delete();
-                        else
+                        if (!immediateDelete && Cruiser != null && Cruiser.Exists())
                         {
-                            if (Cruiser != null && Cruiser.Exists())
-                            {
-                                Driver.Tasks.CruiseWithVehicle(Cruiser, 16.0f, NativeTasks.CruisingFlags);
-                            }
-                            Driver.Dismiss();
+                            NativeTasks.ConfigurePatrolDriver(Driver, Cruiser);
+                            NativeTasks.ShutOffSirenAndLights(Cruiser);
+                            Driver.Tasks.CruiseWithVehicle(Cruiser, 16.0f, NativeTasks.CruisingFlags);
                         }
+                        TeardownHelper.SafeDismissPed(Driver, immediateDelete);
                     }
 
                     if (Cruiser != null && Cruiser.Exists())
                     {
-                        if (immediateDelete) Cruiser.Delete();
-                        else Cruiser.Dismiss();
+                        TeardownHelper.SafeDismissVehicle(Cruiser, immediateDelete);
                     }
                 }
                 catch (Exception ex)
                 {
                     Logger.Debug($"[ResponseFeature] Error disposing unit {Callsign}: {ex.Message}");
+                }
+                finally
+                {
+                    State = ResponseState.Finished;
                 }
             }
         }

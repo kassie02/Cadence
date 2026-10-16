@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using Rage;
 using Rage.Native;
 using LSPD_First_Response.Mod.API;
@@ -19,14 +20,23 @@ namespace Cadence.Features
     /// and resume normal patrol.
     /// Strictly self-contained under the Ponytail architecture.
     /// </summary>
-    public static class AssistFeature
+    public sealed class AssistFeature : IFeature
     {
+        public static AssistFeature Instance { get; } = new AssistFeature();
+        public string Name => "Assist";
+        public bool IsRunning => _isRunning;
+
+        void IFeature.Start() => Start();
+        void IFeature.Stop() => Stop();
+        void IFeature.PurgeAll(bool immediateDelete) => PurgeAll(immediateDelete);
+        int IFeature.GetActiveCount() => GetActiveCount();
+
         private const uint WeaponCombatPistol = 0x5EF9FEC4;
-        private const uint WeaponPistol = 0x1B06D571;
         private const uint WeaponUnarmed = 0xA2719263; // Verified JOAAT for WEAPON_UNARMED
 
         private static readonly object _syncLock = new object();
         private static readonly List<CombatDefenseSession> _activeSessions = new List<CombatDefenseSession>();
+        private static readonly List<GameFiber> _trackedFibers = new List<GameFiber>();
         private static readonly Random _rand = new Random();
 
         private static GameFiber _assistFiber;
@@ -37,6 +47,32 @@ namespace Cadence.Features
         {
             "3-MARY", "4-GEORGE", "5-EDWARD", "6-FRANK", "7-DAVID", "8-OCEAN", "1-ADAM", "2-LINCOLN"
         };
+
+        private static GameFiber StartTrackedFiber(Action action, string name)
+        {
+            GameFiber fiber = null;
+            fiber = GameFiber.StartNew(() =>
+            {
+                try
+                {
+                    action();
+                }
+                finally
+                {
+                    lock (_syncLock)
+                    {
+                        _trackedFibers.Remove(fiber);
+                    }
+                }
+            }, name);
+
+            lock (_syncLock)
+            {
+                _trackedFibers.RemoveAll(f => f == null || !f.IsAlive);
+                if (fiber != null) _trackedFibers.Add(fiber);
+            }
+            return fiber;
+        }
 
         // ====================================================================
         // Public API Contract
@@ -56,6 +92,7 @@ namespace Cadence.Features
 
         public static void Stop()
         {
+            List<GameFiber> fibersToWait;
             lock (_syncLock)
             {
                 if (!_isRunning) return;
@@ -64,28 +101,67 @@ namespace Cadence.Features
                 Logger.Info("[AssistFeature] Stopping threat reaction feature and clearing active combat sessions.");
                 PurgeAllInternal(immediateDelete: false);
 
+                fibersToWait = new List<GameFiber>(_trackedFibers);
+                if (_assistFiber != null) fibersToWait.Add(_assistFiber);
+            }
+
+            uint waitStart = Game.GameTime;
+            while (fibersToWait.Any(f => f != null && f.IsAlive) && Game.GameTime - waitStart < 500)
+            {
+                GameFiber.Sleep(25);
+            }
+
+            foreach (var f in fibersToWait)
+            {
                 try
                 {
-                    if (_assistFiber != null && _assistFiber.IsAlive)
-                    {
-                        _assistFiber.Abort();
-                    }
+                    if (f != null && f.IsAlive) f.Abort();
                 }
                 catch { }
-                finally
-                {
-                    _assistFiber = null;
-                }
+            }
+
+            lock (_syncLock)
+            {
+                _trackedFibers.Clear();
+                _assistFiber = null;
             }
         }
 
-        public static void PurgeAll()
+        public static void PurgeAll(bool immediateDelete = true)
         {
             lock (_syncLock)
             {
-                Logger.Info("[AssistFeature] Purging all active threat reaction units.");
-                PurgeAllInternal(immediateDelete: true);
+                Logger.Info($"[AssistFeature] Purging all active threat reaction units (immediateDelete={immediateDelete}).");
+                PurgeAllInternal(immediateDelete);
             }
+        }
+
+        public static bool IsActiveCruiser(Vehicle cruiser)
+        {
+            if (cruiser == null || !cruiser.Exists()) return false;
+            lock (_syncLock)
+            {
+                return _activeSessions.Any(s => s != null && s.Cruiser == cruiser);
+            }
+        }
+
+        public static void RelinquishCruiser(Vehicle cruiser)
+        {
+            if (cruiser == null) return;
+            CombatDefenseSession sessionToDispose = null;
+            lock (_syncLock)
+            {
+                sessionToDispose = _activeSessions.FirstOrDefault(s => s != null && s.Cruiser == cruiser);
+                if (sessionToDispose != null)
+                {
+                    _activeSessions.Remove(sessionToDispose);
+                }
+            }
+            if (sessionToDispose != null)
+            {
+                sessionToDispose.Dispose(immediateDelete: false);
+            }
+            UnitRegistry.Release(cruiser);
         }
 
         public static int GetActiveCount()
@@ -179,11 +255,23 @@ namespace Cadence.Features
                         continue;
                     }
 
+                    // Never commandeer cruisers managed by other Cadence features
+                    if (BackupFeature.IsBackupCruiser(cruiser) || PursuitFeature.IsPursuitCruiser(cruiser) ||
+                        TrafficStopFeature.IsActiveCruiser(cruiser) || ResponseFeature.IsActiveCruiser(cruiser) ||
+                        StationaryFeature.IsActiveCruiser(cruiser))
+                    {
+                        continue;
+                    }
+
+                    // Screen central claims
+                    if (UnitRegistry.IsClaimed(cruiser)) continue;
+
                     Ped driver = cruiser.Driver;
                     if (driver == null || !driver.Exists() || !driver.IsAlive || driver.IsPlayer || driver == player)
                     {
                         continue;
                     }
+                    if (UnitRegistry.IsClaimed(driver)) continue;
 
                     // Check if driver is in active LSPDFR pursuit
                     bool inPursuit = false;
@@ -302,6 +390,14 @@ namespace Cadence.Features
                 try { StationaryFeature.RelinquishCruiser(cruiser); } catch { }
                 try { TrafficStopFeature.RelinquishCruiser(cruiser); } catch { }
                 try { ResponseFeature.RelinquishCruiser(cruiser); } catch { }
+                try { PursuitFeature.RelinquishCruiser(cruiser); } catch { }
+                try { BackupFeature.RelinquishCruiser(cruiser); } catch { }
+
+                if (!UnitRegistry.TryClaim(cruiser, UnitRegistry.OwnerAssist))
+                {
+                    Logger.Debug($"[AssistFeature] Cruiser 0x{cruiser.Handle:X} could not be claimed in UnitRegistry; skipping defense mobilization.");
+                    return;
+                }
 
                 string callsign = GenerateCallsign();
                 Logger.Info($"[AssistFeature] Active hostile threat detected ({threat.Handle}) near cruiser ({cruiser.Model.Name}). Mobilizing tactical defense!");
@@ -335,12 +431,13 @@ namespace Cadence.Features
 
                 foreach (Ped officer in officers)
                 {
+                    UnitRegistry.TryClaim(officer, UnitRegistry.OwnerAssist);
                     officer.BlockPermanentEvents = false;
 
                     // Dismount vehicle
                     officer.Tasks.LeaveVehicle(LeaveVehicleFlags.LeaveDoorOpen);
 
-                    // Unholster sidearm (WEAPON_COMBATPISTOL with WEAPON_PISTOL fallback)
+                    // Unholster sidearm (WEAPON_COMBATPISTOL)
                     NativeFunction.Natives.GIVE_WEAPON_TO_PED(officer, WeaponCombatPistol, 120, false, true);
                     NativeFunction.Natives.SET_CURRENT_PED_WEAPON(officer, WeaponCombatPistol, true);
 
@@ -377,21 +474,35 @@ namespace Cadence.Features
 
         private static void PurgeAllInternal(bool immediateDelete)
         {
-            foreach (var session in _activeSessions)
+            List<CombatDefenseSession> sessionsToDispose;
+            lock (_syncLock)
+            {
+                sessionsToDispose = new List<CombatDefenseSession>(_activeSessions);
+                _activeSessions.Clear();
+            }
+
+            foreach (var session in sessionsToDispose)
             {
                 if (session != null)
                 {
                     session.Dispose(immediateDelete);
                 }
             }
-            _activeSessions.Clear();
         }
 
         private static string GenerateCallsign()
         {
-            string div = Divisions[_rand.Next(Divisions.Length)];
-            int num = _callsignCounter++;
-            if (_callsignCounter > 99) _callsignCounter = 90;
+            string div;
+            lock (_rand)
+            {
+                div = Divisions[_rand.Next(Divisions.Length)];
+            }
+            int num = Interlocked.Increment(ref _callsignCounter);
+            if (num > 99)
+            {
+                Interlocked.Exchange(ref _callsignCounter, 90);
+                num = 90;
+            }
             return $"{div}-{num:D2}";
         }
 
@@ -525,13 +636,19 @@ namespace Cadence.Features
 
                     try
                     {
-                        // 1. Clear combat tasks
+                        // 1. LSPDFR pursuit disenrollment before clearing tasks
+                        if (Functions.IsPedInPursuit(officer))
+                        {
+                            Functions.RemovePedFromPursuit(officer);
+                        }
+
+                        // 2. Clear combat tasks
                         officer.Tasks.Clear();
 
-                        // 2. Holster sidearm (switch to unarmed)
+                        // 3. Holster sidearm (switch to unarmed)
                         NativeFunction.Natives.SET_CURRENT_PED_WEAPON(officer, WeaponUnarmed, true);
 
-                        // 3. Re-enter cruiser
+                        // 4. Re-enter cruiser
                         int seatIdx = (i == 0) ? -1 : (i - 1);
                         officer.Tasks.EnterVehicle(Cruiser, seatIdx);
                     }
@@ -550,10 +667,17 @@ namespace Cadence.Features
                     for (int i = 0; i < Officers.Count; i++)
                     {
                         Ped officer = Officers[i];
-                        if (officer != null && officer.Exists() && officer.IsAlive && !officer.IsInVehicle(Cruiser, false))
+                        if (officer != null && officer.Exists() && officer.IsAlive)
                         {
-                            int seatIdx = (i == 0) ? -1 : (i - 1);
-                            officer.WarpIntoVehicle(Cruiser, seatIdx);
+                            // Restore CanUseVehicles so officers can drive again
+                            NativeFunction.Natives.SET_PED_COMBAT_ATTRIBUTES(officer, 1, true);
+                            NativeFunction.Natives.SET_PED_COMBAT_ATTRIBUTES(officer, 5, false);
+
+                            if (!officer.IsInVehicle(Cruiser, false))
+                            {
+                                int seatIdx = (i == 0) ? -1 : (i - 1);
+                                officer.WarpIntoVehicle(Cruiser, seatIdx);
+                            }
                         }
                     }
 
@@ -592,8 +716,9 @@ namespace Cadence.Features
 
                 // 1. Zero-leak blip destructor (4-step protocol)
                 BlipService.SafeDeleteBlip(ref RadarBlip);
+                BlipService.SafeDeleteEntityBlip(Cruiser);
 
-                // 2. Entities clean up
+                // 2. Entities clean up safely using TeardownHelper
                 try
                 {
                     if (Cruiser != null && Cruiser.Exists())
@@ -603,20 +728,21 @@ namespace Cadence.Features
                         NativeTasks.SetSilentEmergencyLights(Cruiser, false);
                     }
 
-                    foreach (var ofc in Officers)
+                    if (Officers != null)
                     {
-                        if (ofc != null && ofc.Exists())
+                        foreach (var ofc in Officers)
                         {
-                            ofc.BlockPermanentEvents = false;
-                            if (immediateDelete) ofc.Delete();
-                            else ofc.Dismiss();
+                            if (ofc != null)
+                            {
+                                BlipService.SafeDeleteEntityBlip(ofc);
+                                TeardownHelper.SafeDismissPed(ofc, delete: immediateDelete);
+                            }
                         }
                     }
 
-                    if (Cruiser != null && Cruiser.Exists())
+                    if (Cruiser != null)
                     {
-                        if (immediateDelete) Cruiser.Delete();
-                        else Cruiser.Dismiss();
+                        TeardownHelper.SafeDismissVehicle(Cruiser, delete: immediateDelete);
                     }
                 }
                 catch (Exception ex)

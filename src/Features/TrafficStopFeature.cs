@@ -1,24 +1,35 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using Rage;
 using Rage.Native;
 using Cadence.Core;
 using Cadence.Common;
 using Cadence.Services;
 using Cadence.Data;
+using LSPD_First_Response.Mod.API;
 
 namespace Cadence.Features
 {
     /// <summary>
     /// Feature 2: 1803 Roadside Traffic Stops
     /// Native RPH port of the 1803 roadside pullover system.
-    /// Manages authentic highway and shoulder traffic stops across 3 scenarios:
-    /// Routine Citation, Driver Pat-Down, and K9 Vehicle Sniff.
+    /// Manages authentic highway and shoulder traffic stops across 4 scenarios:
+    /// In-Vehicle Observation, Routine Citation, Driver Pat-Down, and K9 Vehicle Sniff.
     /// Strictly self-contained under the Ponytail architecture.
     /// </summary>
-    public static class TrafficStopFeature
+    public sealed class TrafficStopFeature : IFeature
     {
+        public static TrafficStopFeature Instance { get; } = new TrafficStopFeature();
+        public string Name => "TrafficStop";
+        public bool IsRunning => _isRunning;
+
+        void IFeature.Start() => Start();
+        void IFeature.Stop() => Stop();
+        void IFeature.PurgeAll(bool immediateDelete) => PurgeAll(immediateDelete);
+        int IFeature.GetActiveCount() => GetActiveCount();
+
         private static readonly object _syncLock = new object();
         private static readonly List<TrafficStopInstance> _activeStops = new List<TrafficStopInstance>();
         private static readonly Random _rand = new Random();
@@ -52,26 +63,34 @@ namespace Cadence.Features
 
         public static void Stop()
         {
+            GameFiber fiberToJoin = null;
             lock (_syncLock)
             {
                 if (!_isRunning) return;
                 _isRunning = false;
 
                 Logger.Info("[TrafficStopFeature] Stopping roadside traffic stop feature and purging stops.");
-                PurgeAllInternal();
+                PurgeAllInternal(immediateDelete: false);
 
+                fiberToJoin = _trafficStopFiber;
+                _trafficStopFiber = null;
+            }
+
+            if (fiberToJoin != null && fiberToJoin.IsAlive)
+            {
+                uint waitStart = Game.GameTime;
+                while (fiberToJoin.IsAlive && (Game.GameTime - waitStart < 500))
+                {
+                    GameFiber.Sleep(25);
+                }
                 try
                 {
-                    if (_trafficStopFiber != null && _trafficStopFiber.IsAlive)
+                    if (fiberToJoin.IsAlive)
                     {
-                        _trafficStopFiber.Abort();
+                        fiberToJoin.Abort();
                     }
                 }
                 catch { }
-                finally
-                {
-                    _trafficStopFiber = null;
-                }
             }
         }
 
@@ -110,7 +129,11 @@ namespace Cadence.Features
 
                 if (candidateSpots.Count > 0)
                 {
-                    var chosen = candidateSpots[_rand.Next(candidateSpots.Count)];
+                    (Vector3 pos, float heading) chosen;
+                    lock (_rand)
+                    {
+                        chosen = candidateSpots[_rand.Next(candidateSpots.Count)];
+                    }
                     spotPos = chosen.pos;
                     spotHeading = chosen.heading;
                 }
@@ -123,11 +146,16 @@ namespace Cadence.Features
                     {
                         float rad = (player.Heading + angle) * (float)(Math.PI / 180.0);
                         Vector3 dir = new Vector3(-(float)Math.Sin(rad), (float)Math.Cos(rad), 0f);
-                        Vector3 probe = playerPos + dir * (50.0f + (float)(_rand.NextDouble() * 35.0));
+                        float testDist;
+                        lock (_rand)
+                        {
+                            testDist = 50.0f + (float)(_rand.NextDouble() * 35.0);
+                        }
+                        Vector3 probe = playerPos + dir * testDist;
 
                         if (WorldUtils.GetSafeOffroadPosition(probe, 25.0f, 120.0f, out Vector3 offPos, out float offHeading))
                         {
-                            if (!occupiedSpots.Any(occ => occ.DistanceTo(offPos) < 35.0f) && WorldUtils.IsAreaClear(offPos, 9.0f))
+                            if (!WorldUtils.IsRooftopOrElevatedStructure(offPos) && !occupiedSpots.Any(occ => occ.DistanceTo(offPos) < 35.0f) && WorldUtils.IsAreaClear(offPos, 9.0f) && !WorldUtils.IsHighway(offPos))
                             {
                                 spotPos = offPos;
                                 spotHeading = offHeading;
@@ -169,7 +197,7 @@ namespace Cadence.Features
                 foreach (var spot in zone)
                 {
                     float dist = spot.pos.DistanceTo(playerPos);
-                    if (dist >= minDistance && dist <= maxDistance && WorldUtils.IsAreaClear(spot.pos, 9.0f))
+                    if (dist >= minDistance && dist <= maxDistance && !WorldUtils.IsRooftopOrElevatedStructure(spot.pos) && WorldUtils.IsAreaClear(spot.pos, 9.0f))
                     {
                         if (!occupiedSpots.Any(occ => occ.DistanceTo(spot.pos) < 35.0f))
                         {
@@ -180,12 +208,12 @@ namespace Cadence.Features
             }
         }
 
-        public static void PurgeAll()
+        public static void PurgeAll(bool immediateDelete = true)
         {
             lock (_syncLock)
             {
-                Logger.Info("[TrafficStopFeature] Purging all active roadside traffic stops.");
-                PurgeAllInternal();
+                Logger.Info($"[TrafficStopFeature] Purging all active roadside traffic stops (immediateDelete={immediateDelete}).");
+                PurgeAllInternal(immediateDelete: immediateDelete);
             }
         }
 
@@ -196,20 +224,24 @@ namespace Cadence.Features
         {
             if (cruiser == null || !cruiser.Exists()) return false;
 
+            TrafficStopInstance stopToRelinquish = null;
             lock (_syncLock)
             {
-                for (int i = _activeStops.Count - 1; i >= 0; i--)
+                stopToRelinquish = _activeStops.FirstOrDefault(s => s != null && (s.Cruiser == cruiser || (s.Officer != null && s.Officer.Exists() && s.Officer.CurrentVehicle == cruiser)));
+                if (stopToRelinquish != null)
                 {
-                    var stop = _activeStops[i];
-                    if (stop != null && (stop.Cruiser == cruiser || (stop.Officer != null && stop.Officer.Exists() && stop.Officer.CurrentVehicle == cruiser)))
-                    {
-                        Logger.Info($"[TrafficStopFeature] Relinquishing cruiser 0x{cruiser.Handle:X} ({stop.Callsign}) to external feature.");
-                        stop.Relinquish();
-                        _activeStops.RemoveAt(i);
-                        return true;
-                    }
+                    _activeStops.Remove(stopToRelinquish);
                 }
             }
+
+            if (stopToRelinquish != null)
+            {
+                Logger.Info($"[TrafficStopFeature] Relinquishing cruiser 0x{cruiser.Handle:X} ({stopToRelinquish.Callsign}) to external feature.");
+                stopToRelinquish.Relinquish();
+                UnitRegistry.Release(cruiser);
+                return true;
+            }
+
             return false;
         }
 
@@ -317,10 +349,11 @@ namespace Cadence.Features
                 {
                     lock (_syncLock)
                     {
-                        Logger.Debug("TrafficStopFeature", $"Removing completed/invalid stop {stop.Callsign}. Active remaining: {_activeStops.Count - 1}/{Settings.MaxTrafficStops}");
-                        stop.Dispose(immediateDelete: false);
+                        if (!_activeStops.Contains(stop)) continue;
                         _activeStops.Remove(stop);
+                        Logger.Debug("TrafficStopFeature", $"Removing completed/invalid stop {stop.Callsign}. Active remaining: {_activeStops.Count}/{Settings.MaxTrafficStops}");
                     }
+                    stop.Dispose(immediateDelete: false);
                     continue;
                 }
 
@@ -329,12 +362,31 @@ namespace Cadence.Features
                 uint age = Game.GameTime - stop.CreatedTime;
                 if (dist > Settings.DespawnDistance && age > 45000)
                 {
+                    bool isBusy = false;
+                    bool inPursuit = false;
+                    try
+                    {
+                        if (stop.Officer != null && stop.Officer.Exists())
+                        {
+                            isBusy = Functions.IsCopBusy(stop.Officer, false);
+                            inPursuit = Functions.IsPedInPursuit(stop.Officer);
+                        }
+                    }
+                    catch { }
+
+                    if (isBusy || inPursuit)
+                    {
+                        // Officer drafted by LSPDFR into backup or pursuit: preserve unit, do not despawn
+                        continue;
+                    }
+
                     lock (_syncLock)
                     {
-                        Logger.Debug("TrafficStopFeature", $"Stop {stop.Callsign} out of range ({dist:F0}m > {Settings.DespawnDistance:F0}m, age: {age / 1000}s). Cleaning up. Active remaining: {_activeStops.Count - 1}/{Settings.MaxTrafficStops}");
-                        stop.Dispose(immediateDelete: false);
+                        if (!_activeStops.Contains(stop)) continue;
                         _activeStops.Remove(stop);
+                        Logger.Debug("TrafficStopFeature", $"Stop {stop.Callsign} out of range ({dist:F0}m > {Settings.DespawnDistance:F0}m, age: {age / 1000}s). Cleaning up. Active remaining: {_activeStops.Count}/{Settings.MaxTrafficStops}");
                     }
+                    stop.Dispose(immediateDelete: false);
                     continue;
                 }
 
@@ -345,9 +397,10 @@ namespace Cadence.Features
                 {
                     lock (_syncLock)
                     {
-                        stop.Dispose(immediateDelete: false);
+                        if (!_activeStops.Contains(stop)) continue;
                         _activeStops.Remove(stop);
                     }
+                    stop.Dispose(immediateDelete: false);
                 }
             }
         }
@@ -367,7 +420,11 @@ namespace Cadence.Features
 
             // Spawn attempt pacing: check every 30-45 seconds (15s in Chaos mode)
             uint now = Game.GameTime;
-            uint cooldown = Settings.ChaosMode ? 15000u : (uint)_rand.Next(30000, 45001);
+            uint cooldown;
+            lock (_rand)
+            {
+                cooldown = Settings.ChaosMode ? 15000u : (uint)_rand.Next(30000, 45001);
+            }
             if (now < _lastSpawnAttemptTime || now - _lastSpawnAttemptTime < cooldown)
             {
                 return;
@@ -389,12 +446,14 @@ namespace Cadence.Features
                     TrafficStopInstance stop = CreateTrafficStopAt(candidatePos, candidateHeading);
                     if (stop != null && stop.IsValid())
                     {
+                        int stopCount;
                         lock (_syncLock)
                         {
                             _activeStops.Add(stop);
+                            stopCount = _activeStops.Count;
                         }
                         SessionMetrics.IncrementTrafficStop();
-                        Logger.Info($"[TrafficStopFeature] Ambient traffic stop {stop.Callsign} (Scenario {stop.Scenario}) spawned at {candidatePos} (Total: {_activeStops.Count}/{Settings.MaxTrafficStops}).");
+                        Logger.Info($"[TrafficStopFeature] Ambient traffic stop {stop.Callsign} (Scenario {stop.Scenario}) spawned at {candidatePos} (Total: {stopCount}/{Settings.MaxTrafficStops}).");
                     }
                 }
             }
@@ -408,7 +467,7 @@ namespace Cadence.Features
             // Priority 1: Check curated pullover spots from ZoneSpawnData (including urban/suburban lots)
             if (ZoneSpawnData.FindBestPulloverSpot(playerPos, 120.0f, 380.0f, out Vector3 curatedPos, out float curatedHeading))
             {
-                if (!WorldUtils.IsSubterraneanOrVoid(curatedPos) && WorldUtils.IsAreaClear(curatedPos, 10.0f))
+                if (!WorldUtils.IsSubterraneanOrVoid(curatedPos) && !WorldUtils.IsRooftopOrElevatedStructure(curatedPos) && WorldUtils.IsAreaClear(curatedPos, 10.0f))
                 {
                     spotPos = curatedPos;
                     spotHeading = curatedHeading;
@@ -419,8 +478,13 @@ namespace Cadence.Features
             // Priority 2: Safe dynamic off-road shoulder generation (strictly prohibited on freeways/highways)
             for (int attempt = 0; attempt < 20; attempt++)
             {
-                float dist = (float)_rand.Next(100, 260);
-                double angle = _rand.NextDouble() * Math.PI * 2.0;
+                float dist;
+                double angle;
+                lock (_rand)
+                {
+                    dist = (float)_rand.Next(100, 260);
+                    angle = _rand.NextDouble() * Math.PI * 2.0;
+                }
 
                 Vector3 probeCenter = new Vector3(
                     playerPos.X + (float)Math.Cos(angle) * dist,
@@ -430,7 +494,7 @@ namespace Cadence.Features
 
                 if (WorldUtils.GetSafeOffroadPosition(probeCenter, 30.0f, 150.0f, out Vector3 offroadPos, out float offroadH))
                 {
-                    if (!WorldUtils.IsSubterraneanOrVoid(offroadPos) && !WorldUtils.IsOnActiveRoadOrLane(offroadPos) && WorldUtils.IsAreaClear(offroadPos, 9.0f))
+                    if (!WorldUtils.IsHighway(offroadPos) && !WorldUtils.IsSubterraneanOrVoid(offroadPos) && !WorldUtils.IsRooftopOrElevatedStructure(offroadPos) && !WorldUtils.IsOnActiveRoadOrLane(offroadPos) && WorldUtils.IsAreaClear(offroadPos, 9.0f))
                     {
                         spotPos = offroadPos;
                         spotHeading = offroadH;
@@ -452,15 +516,42 @@ namespace Cadence.Features
             Ped k9Dog = null;
             Blip blip = null;
 
-            int scenario = _rand.Next(1, 4); // 1 = Citation, 2 = Pat-Down, 3 = K9 Search
+            int scenario;
+            if (WorldUtils.IsOnActiveRoadOrLane(shoulderPos, 6.5f))
+            {
+                // Scenario 0: In-Vehicle Observation (shoulder is within 6.5m of hazardous active traffic lane)
+                scenario = 0;
+            }
+            else
+            {
+                lock (_rand)
+                {
+                    scenario = _rand.Next(1, 4); // 1 = Citation, 2 = Pat-Down, 3 = K9 Search
+                }
+            }
 
             try
             {
+                if (WorldUtils.IsRooftopOrElevatedStructure(shoulderPos))
+                {
+                    Logger.Debug("TrafficStopFeature", $"Aborting traffic stop at {shoulderPos}: candidate position is on rooftop/elevated structure.");
+                    return null;
+                }
+
                 // Validate ground elevation
                 Vector3 cruiserPos = shoulderPos;
                 if (WorldUtils.GetAccurateGroundZ(cruiserPos, out float groundZ))
                 {
-                    cruiserPos.Z = groundZ + 0.35f;
+                    if (Math.Abs(cruiserPos.Z - groundZ) <= 3.0f)
+                    {
+                        cruiserPos.Z = groundZ + 0.35f;
+                    }
+                }
+
+                if (WorldUtils.IsRooftopOrElevatedStructure(cruiserPos))
+                {
+                    Logger.Debug("TrafficStopFeature", $"Aborting traffic stop at {cruiserPos}: adjusted position is on rooftop/elevated structure.");
+                    return null;
                 }
 
                 // 1. Spawn Police Cruiser & Officer (UB Tier 1 or Native Fallback Tier 2)
@@ -482,7 +573,9 @@ namespace Cadence.Features
                 {
                     if (Settings.UseUltimateBackup && !Settings.AllowFallback)
                     {
-                        Logger.Debug("TrafficStopFeature", $"Ultimate Backup did not return a cruiser for traffic stop at {cruiserPos}. Fallback is strictly disabled (Fallback=false). Aborting spawn.");
+                        if (cruiser != null && cruiser.Exists()) TeardownHelper.SafeDismissVehicle(cruiser, delete: true);
+                        if (officer != null && officer.Exists()) TeardownHelper.SafeDismissPed(officer, delete: true);
+                        Logger.Debug("TrafficStopFeature", $"Ultimate Backup did not return a complete unit for traffic stop at {cruiserPos}. Fallback is strictly disabled (Fallback=false). Aborting spawn.");
                         return null;
                     }
 
@@ -503,7 +596,23 @@ namespace Cadence.Features
 
                 if (cruiser == null || !cruiser.Exists() || officer == null || !officer.Exists())
                 {
+                    if (cruiser != null && cruiser.Exists()) TeardownHelper.SafeDismissVehicle(cruiser, delete: true);
+                    if (officer != null && officer.Exists()) TeardownHelper.SafeDismissPed(officer, delete: true);
                     Logger.Warn($"[TrafficStopFeature] Failed to spawn police cruiser or officer at {cruiserPos}.");
+                    return null;
+                }
+
+                if (!UnitRegistry.TryClaim(cruiser, UnitRegistry.OwnerTrafficStop))
+                {
+                    TeardownHelper.SafeDismissPed(officer, delete: true);
+                    TeardownHelper.SafeDismissVehicle(cruiser, delete: true);
+                    return null;
+                }
+
+                if (!UnitRegistry.TryClaim(officer, UnitRegistry.OwnerTrafficStop))
+                {
+                    TeardownHelper.SafeDismissPed(officer, delete: true);
+                    TeardownHelper.SafeDismissVehicle(cruiser, delete: true);
                     return null;
                 }
 
@@ -534,15 +643,25 @@ namespace Cadence.Features
                 Vector3 civPos = cruiser.GetOffsetPosition(new Vector3(0f, 8.0f, 0f));
                 if (WorldUtils.GetAccurateGroundZ(civPos, out float civGroundZ))
                 {
-                    civPos.Z = civGroundZ + 0.35f;
+                    if (Math.Abs(civPos.Z - civGroundZ) <= 3.0f)
+                    {
+                        civPos.Z = civGroundZ + 0.35f;
+                    }
+                }
+
+                if (WorldUtils.IsRooftopOrElevatedStructure(civPos))
+                {
+                    TeardownHelper.SafeDismissPed(officer, delete: true);
+                    TeardownHelper.SafeDismissVehicle(cruiser, delete: true);
+                    return null;
                 }
 
                 string civVehName = ZoneSpawnData.GetRandomCivilianVehicle();
                 Model civVehModel = new Model(civVehName);
                 if (!civVehModel.SafeLoad(4000))
                 {
-                    officer.Delete();
-                    cruiser.Delete();
+                    TeardownHelper.SafeDismissPed(officer, delete: true);
+                    TeardownHelper.SafeDismissVehicle(cruiser, delete: true);
                     return null;
                 }
 
@@ -551,8 +670,8 @@ namespace Cadence.Features
 
                 if (civilianVehicle == null || !civilianVehicle.Exists())
                 {
-                    officer.Delete();
-                    cruiser.Delete();
+                    TeardownHelper.SafeDismissPed(officer, delete: true);
+                    TeardownHelper.SafeDismissVehicle(cruiser, delete: true);
                     return null;
                 }
 
@@ -581,9 +700,9 @@ namespace Cadence.Features
 
                 if (civilianDriver == null || !civilianDriver.Exists())
                 {
-                    civilianVehicle.Delete();
-                    officer.Delete();
-                    cruiser.Delete();
+                    TeardownHelper.SafeDismissVehicle(civilianVehicle, delete: true);
+                    TeardownHelper.SafeDismissPed(officer, delete: true);
+                    TeardownHelper.SafeDismissVehicle(cruiser, delete: true);
                     return null;
                 }
 
@@ -628,7 +747,7 @@ namespace Cadence.Features
                 // 4. Attach Yellow Traffic Stop Radar Blip
                 blip = BlipService.AttachTrafficStopBlip(cruiser, callsign);
 
-                string scName = scenario == 1 ? "Citation" : scenario == 2 ? "PatDown" : "K9Sniff";
+                string scName = scenario == 0 ? "Observation" : scenario == 1 ? "Citation" : scenario == 2 ? "PatDown" : "K9Sniff";
                 Logger.Debug("TrafficStopFeature", $"Configured traffic stop {callsign} [{scName}]: Cruiser={cruiser.Model.Name} (0x{cruiser.Handle:X}), Officer={officer.Model.Name} (0x{officer.Handle:X}), CivVeh={civilianVehicle.Model.Name} (0x{civilianVehicle.Handle:X}), CivDriver={civilianDriver.Model.Name} (0x{civilianDriver.Handle:X}), K9={(k9Dog != null ? "Active" : "None")}");
 
                 return new TrafficStopInstance(cruiser, officer, civilianVehicle, civilianDriver, k9Dog, blip, callsign, scenario, cruiserPos);
@@ -638,11 +757,11 @@ namespace Cadence.Features
                 Logger.Error($"[TrafficStopFeature] Exception creating traffic stop at {shoulderPos}", ex);
 
                 if (blip != null) BlipService.SafeDeleteBlip(ref blip);
-                if (k9Dog != null && k9Dog.Exists()) k9Dog.Delete();
-                if (civilianDriver != null && civilianDriver.Exists()) civilianDriver.Delete();
-                if (civilianVehicle != null && civilianVehicle.Exists()) civilianVehicle.Delete();
-                if (officer != null && officer.Exists()) officer.Delete();
-                if (cruiser != null && cruiser.Exists()) cruiser.Delete();
+                if (k9Dog != null && k9Dog.Exists()) TeardownHelper.SafeDismissPed(k9Dog, delete: true);
+                if (civilianDriver != null && civilianDriver.Exists()) TeardownHelper.SafeDismissPed(civilianDriver, delete: true);
+                if (civilianVehicle != null && civilianVehicle.Exists()) TeardownHelper.SafeDismissVehicle(civilianVehicle, delete: true);
+                if (officer != null && officer.Exists()) TeardownHelper.SafeDismissPed(officer, delete: true);
+                if (cruiser != null && cruiser.Exists()) TeardownHelper.SafeDismissVehicle(cruiser, delete: true);
 
                 return null;
             }
@@ -650,23 +769,37 @@ namespace Cadence.Features
 
         private static string GenerateCallsign()
         {
-            string div = Divisions[_rand.Next(Divisions.Length)];
-            int num = _callsignCounter++;
-            if (_callsignCounter > 99) _callsignCounter = 30;
+            string div;
+            lock (_rand)
+            {
+                div = Divisions[_rand.Next(Divisions.Length)];
+            }
+            int num = Interlocked.Increment(ref _callsignCounter);
+            if (num > 99)
+            {
+                Interlocked.Exchange(ref _callsignCounter, 30);
+                num = 30;
+            }
             return $"{div}-{num:D2}";
         }
 
-        private static void PurgeAllInternal()
+        private static void PurgeAllInternal(bool immediateDelete = true)
         {
-            foreach (var stop in _activeStops)
+            TrafficStopInstance[] snapshot;
+            lock (_syncLock)
+            {
+                snapshot = _activeStops.ToArray();
+                _activeStops.Clear();
+                _lastSpawnAttemptTime = Game.GameTime + 35000;
+            }
+
+            foreach (var stop in snapshot)
             {
                 if (stop != null)
                 {
-                    stop.Dispose(immediateDelete: true);
+                    stop.Dispose(immediateDelete);
                 }
             }
-            _activeStops.Clear();
-            _lastSpawnAttemptTime = Game.GameTime + 35000;
         }
 
         // ====================================================================
@@ -699,6 +832,7 @@ namespace Cadence.Features
             public Ped CivDriver { get; }
             public Ped K9Dog { get; }
             public Blip RadarBlip;
+            public Blip OfficerFootBlip;
             public string Callsign { get; }
             public int Scenario { get; }
             public Vector3 OriginPosition { get; }
@@ -755,8 +889,15 @@ namespace Cadence.Features
             {
                 if (!IsValid()) return;
 
-                // Reinforce silent lightbars to prevent audio siren chirps
                 uint now = Game.GameTime;
+                if (now - CreatedTime > 300000)
+                {
+                    IsCompleted = true;
+                    _state = StopState.Completed;
+                    return;
+                }
+
+                // Reinforce silent lightbars to prevent audio siren chirps
                 if (now - _lastSirenReinforceTime >= 500 && _state != StopState.ReleasingVehicles)
                 {
                     _lastSirenReinforceTime = now;
@@ -768,9 +909,19 @@ namespace Cadence.Features
                 switch (_state)
                 {
                     case StopState.InitialExiting:
-                        Officer.Tasks.LeaveVehicle(Cruiser, LeaveVehicleFlags.None);
-                        _state = StopState.ApproachPassengerWindow;
-                        _stateStartTime = now;
+                        if (Scenario == 0)
+                        {
+                            // In-vehicle observation scenario: officer remains seated in cruiser for safety
+                            _state = StopState.WindowContact;
+                            _stateStartTime = now;
+                        }
+                        else
+                        {
+                            Officer.Tasks.LeaveVehicle(Cruiser, LeaveVehicleFlags.None);
+                            OfficerFootBlip = BlipService.AttachOfficerFootBlip(Officer, Callsign);
+                            _state = StopState.ApproachPassengerWindow;
+                            _stateStartTime = now;
+                        }
                         break;
 
                     case StopState.ApproachPassengerWindow:
@@ -805,7 +956,18 @@ namespace Cadence.Features
                     // Scenario 1: Routine Citation
                     // ========================================================
                     case StopState.WindowContact:
-                        if (elapsed > 1500)
+                        if (Scenario == 0)
+                        {
+                            // Officer runs MDT check for 20s while seated inside cruiser
+                            if (elapsed > 20000)
+                            {
+                                NativeTasks.SetSilentSiren(Cruiser, false);
+                                CivVehicle.IndicatorLightsStatus = VehicleIndicatorLightsStatus.Off;
+                                _state = StopState.ReleasingVehicles;
+                                _stateStartTime = now;
+                            }
+                        }
+                        else if (elapsed > 1500)
                         {
                             EquipNotepadProp();
                             if (NativeTasks.RequestAnimDict("amb@world_human_clipboard@male@base"))
@@ -955,6 +1117,8 @@ namespace Cadence.Features
                     case StopState.OfficerEnteringCruiser:
                         if (Officer.IsInVehicle(Cruiser, false) || elapsed > 8000)
                         {
+                            BlipService.SafeDeleteBlip(ref OfficerFootBlip);
+
                             // Pack K9 into cruiser if present
                             if (K9Dog != null && K9Dog.Exists())
                             {
@@ -972,6 +1136,14 @@ namespace Cadence.Features
                         break;
 
                     case StopState.ReleasingVehicles:
+                        // Cap max duration in ReleasingVehicles to 35s
+                        if (elapsed >= 35000)
+                        {
+                            IsCompleted = true;
+                            _state = StopState.Completed;
+                            break;
+                        }
+
                         // Civilian merges into traffic first
                         if (!_civDeparted && elapsed >= 1500)
                         {
@@ -996,6 +1168,7 @@ namespace Cadence.Features
                             }
                             NativeFunction.Natives.SET_VEHICLE_FORWARD_SPEED(Cruiser, 6.0f);
                             Officer.Tasks.CruiseWithVehicle(Cruiser, 18.0f, NativeTasks.CruisingFlags);
+                            BlipService.TransitionToPatrol(RadarBlip, Callsign);
                         }
 
                         // Complete stop only after units have cleanly driven away down the street
@@ -1139,47 +1312,47 @@ namespace Cadence.Features
             {
                 // 1. Zero-leak 4-step destructor protocol for blip
                 BlipService.SafeDeleteBlip(ref RadarBlip);
+                BlipService.SafeDeleteBlip(ref OfficerFootBlip);
+                if (Cruiser != null && Cruiser.Exists())
+                {
+                    BlipService.SafeDeleteEntityBlip(Cruiser);
+                }
+                if (Officer != null && Officer.Exists())
+                {
+                    BlipService.SafeDeleteEntityBlip(Officer);
+                }
 
                 // 2. Clean up props
                 CleanupProp();
 
-                // 3. Dismiss or delete entities
+                // 3. Dismiss or delete entities via TeardownHelper (neutralizes sirens, disenrolls pursuits, releases UnitRegistry)
                 try
                 {
                     if (K9Dog != null && K9Dog.Exists())
                     {
-                        K9Dog.BlockPermanentEvents = false;
-                        if (immediateDelete) K9Dog.Delete();
-                        else K9Dog.Dismiss();
+                        TeardownHelper.SafeDismissPed(K9Dog, delete: immediateDelete);
                     }
 
                     if (CivDriver != null && CivDriver.Exists())
                     {
-                        CivDriver.BlockPermanentEvents = false;
-                        if (immediateDelete) CivDriver.Delete();
-                        else CivDriver.Dismiss();
+                        TeardownHelper.SafeDismissPed(CivDriver, delete: immediateDelete);
                     }
 
                     if (CivVehicle != null && CivVehicle.Exists())
                     {
-                        CivVehicle.IndicatorLightsStatus = VehicleIndicatorLightsStatus.Off;
-                        if (immediateDelete) CivVehicle.Delete();
-                        else CivVehicle.Dismiss();
+                        try { CivVehicle.IndicatorLightsStatus = VehicleIndicatorLightsStatus.Off; } catch { }
+                        TeardownHelper.SafeDismissVehicle(CivVehicle, delete: immediateDelete);
                     }
 
                     if (Officer != null && Officer.Exists())
                     {
-                        Officer.Tasks.Clear();
-                        Officer.BlockPermanentEvents = false;
-                        if (immediateDelete) Officer.Delete();
-                        else Officer.Dismiss();
+                        TeardownHelper.SafeDismissPed(Officer, delete: immediateDelete);
                     }
 
                     if (Cruiser != null && Cruiser.Exists())
                     {
-                        NativeTasks.SetSilentSiren(Cruiser, false);
-                        if (immediateDelete) Cruiser.Delete();
-                        else Cruiser.Dismiss();
+                        try { NativeTasks.SetSilentSiren(Cruiser, false); } catch { }
+                        TeardownHelper.SafeDismissVehicle(Cruiser, delete: immediateDelete);
                     }
                 }
                 catch (Exception ex)
@@ -1197,6 +1370,7 @@ namespace Cadence.Features
             {
                 CleanupProp();
                 BlipService.SafeDeleteBlip(ref RadarBlip);
+                BlipService.SafeDeleteBlip(ref OfficerFootBlip);
                 if (Cruiser != null && Cruiser.Exists())
                 {
                     BlipService.SafeDeleteEntityBlip(Cruiser);
@@ -1206,12 +1380,21 @@ namespace Cadence.Features
                     BlipService.SafeDeleteEntityBlip(Officer);
                 }
 
+                // Release ownership claims in UnitRegistry so caller feature can claim them
+                if (Cruiser != null && Cruiser.Exists())
+                {
+                    UnitRegistry.Release(Cruiser);
+                }
+                if (Officer != null && Officer.Exists())
+                {
+                    UnitRegistry.Release(Officer);
+                }
+
                 try
                 {
                     if (K9Dog != null && K9Dog.Exists())
                     {
-                        K9Dog.BlockPermanentEvents = false;
-                        K9Dog.Dismiss();
+                        TeardownHelper.SafeDismissPed(K9Dog, delete: false);
                     }
 
                     if (CivDriver != null && CivDriver.Exists())
@@ -1225,13 +1408,21 @@ namespace Cadence.Features
                                 CivDriver.WarpIntoVehicle(CivVehicle, -1);
                             }
                             CivDriver.Tasks.CruiseWithVehicle(CivVehicle, 15.0f, NativeTasks.CruisingFlags);
-                            CivVehicle.Dismiss();
+                            TeardownHelper.SafeDismissVehicle(CivVehicle, delete: false);
                         }
-                        CivDriver.Dismiss();
+                        TeardownHelper.SafeDismissPed(CivDriver, delete: false);
                     }
 
                     if (Officer != null && Officer.Exists())
                     {
+                        try
+                        {
+                            if (Functions.IsPedInPursuit(Officer))
+                            {
+                                Functions.RemovePedFromPursuit(Officer);
+                            }
+                        }
+                        catch { }
                         Officer.Tasks.Clear();
                         Officer.BlockPermanentEvents = false;
                     }

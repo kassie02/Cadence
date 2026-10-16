@@ -1,12 +1,14 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using Rage;
 using Rage.Native;
 using Cadence.Core;
 using Cadence.Common;
 using Cadence.Services;
 using Cadence.Data;
+using LSPD_First_Response.Mod.API;
 
 namespace Cadence.Features
 {
@@ -15,8 +17,17 @@ namespace Cadence.Features
     /// Spawns and manages autonomous police cruisers patrolling the roads of San Andreas.
     /// Strictly self-contained under the Ponytail architecture.
     /// </summary>
-    public static class PatrolFeature
+    public sealed class PatrolFeature : IFeature
     {
+        public static PatrolFeature Instance { get; } = new PatrolFeature();
+        public string Name => "Patrol";
+        public bool IsRunning => _isRunning;
+
+        void IFeature.Start() => Start();
+        void IFeature.Stop() => Stop();
+        void IFeature.PurgeAll(bool immediateDelete) => PurgeAll(immediateDelete);
+        int IFeature.GetActiveCount() => GetActiveCount();
+
         private static readonly object _syncLock = new object();
         private static readonly List<PatrolUnitInstance> _activeUnits = new List<PatrolUnitInstance>();
         private static readonly Random _rand = new Random();
@@ -50,26 +61,34 @@ namespace Cadence.Features
 
         public static void Stop()
         {
+            GameFiber fiberToJoin = null;
             lock (_syncLock)
             {
                 if (!_isRunning) return;
                 _isRunning = false;
 
                 Logger.Info("[PatrolFeature] Stopping ambient patrol feature and purging units.");
-                PurgeAllInternal();
+                PurgeAllInternal(immediateDelete: false);
 
+                fiberToJoin = _patrolFiber;
+                _patrolFiber = null;
+            }
+
+            if (fiberToJoin != null && fiberToJoin.IsAlive)
+            {
+                uint waitStart = Game.GameTime;
+                while (fiberToJoin.IsAlive && (Game.GameTime - waitStart < 500))
+                {
+                    GameFiber.Sleep(25);
+                }
                 try
                 {
-                    if (_patrolFiber != null && _patrolFiber.IsAlive)
+                    if (fiberToJoin.IsAlive)
                     {
-                        _patrolFiber.Abort();
+                        fiberToJoin.Abort();
                     }
                 }
                 catch { }
-                finally
-                {
-                    _patrolFiber = null;
-                }
             }
         }
 
@@ -100,7 +119,11 @@ namespace Cadence.Features
                 {
                     float rad = (player.Heading + angle) * (float)(Math.PI / 180.0);
                     Vector3 dir = new Vector3(-(float)Math.Sin(rad), (float)Math.Cos(rad), 0f);
-                    float testDist = 55.0f + (float)(_rand.NextDouble() * 30.0);
+                    float testDist;
+                    lock (_rand)
+                    {
+                        testDist = 55.0f + (float)(_rand.NextDouble() * 30.0);
+                    }
                     Vector3 probe = playerPos + dir * testDist;
 
                     if (WorldUtils.GetSafeStreetPosition(probe, 1, out Vector3 stPos, out float stH))
@@ -148,12 +171,12 @@ namespace Cadence.Features
             return false;
         }
 
-        public static void PurgeAll()
+        public static void PurgeAll(bool immediateDelete = true)
         {
             lock (_syncLock)
             {
-                Logger.Info("[PatrolFeature] Purging all active patrol units.");
-                PurgeAllInternal();
+                Logger.Info($"[PatrolFeature] Purging all active patrol units (immediateDelete={immediateDelete}).");
+                PurgeAllInternal(immediateDelete: immediateDelete);
             }
         }
 
@@ -168,25 +191,28 @@ namespace Cadence.Features
 
         /// <summary>
         /// Relinquishes control of a patrol cruiser to an external system (e.g. BackupFeature).
-        /// Safely deletes radar blip, releases tasks, and drops from internal tracking.
+        /// Safely deletes radar blip, releases tasks, releases claims, and drops from internal tracking.
         /// </summary>
         public static bool RelinquishCruiser(Vehicle cruiser)
         {
             if (cruiser == null || !cruiser.Exists()) return false;
 
+            PatrolUnitInstance unitToRelinquish = null;
             lock (_syncLock)
             {
-                for (int i = _activeUnits.Count - 1; i >= 0; i--)
+                unitToRelinquish = _activeUnits.FirstOrDefault(u => u != null && u.Cruiser == cruiser);
+                if (unitToRelinquish != null)
                 {
-                    PatrolUnitInstance unit = _activeUnits[i];
-                    if (unit != null && unit.Cruiser == cruiser)
-                    {
-                        Logger.Info($"[PatrolFeature] Relinquishing cruiser 0x{cruiser.Handle:X} ({unit.Callsign}) to external feature.");
-                        unit.Relinquish();
-                        _activeUnits.RemoveAt(i);
-                        return true;
-                    }
+                    _activeUnits.Remove(unitToRelinquish);
                 }
+            }
+
+            if (unitToRelinquish != null)
+            {
+                Logger.Info($"[PatrolFeature] Relinquishing cruiser 0x{cruiser.Handle:X} ({unitToRelinquish.Callsign}) to external feature.");
+                unitToRelinquish.Relinquish();
+                UnitRegistry.Release(cruiser);
+                return true;
             }
 
             return false;
@@ -255,46 +281,87 @@ namespace Cadence.Features
 
         private static void RunWatchdog(Vector3 playerPos)
         {
+            PatrolUnitInstance[] snapshot;
             lock (_syncLock)
             {
-                for (int i = _activeUnits.Count - 1; i >= 0; i--)
+                snapshot = _activeUnits.ToArray();
+            }
+
+            var toRemove = new List<PatrolUnitInstance>();
+
+            foreach (var unit in snapshot)
+            {
+                if (unit == null)
                 {
-                    PatrolUnitInstance unit = _activeUnits[i];
-                    if (unit == null)
+                    continue;
+                }
+
+                if (!unit.IsValid())
+                {
+                    Logger.Debug("PatrolFeature", $"Removing invalid/dead unit {unit.Callsign}.");
+                    unit.Dispose(immediateDelete: false);
+                    toRemove.Add(unit);
+                    continue;
+                }
+
+                // Subterranean watchdog
+                if (WorldUtils.IsSubterraneanOrVoid(unit.Cruiser.Position))
+                {
+                    Logger.Warn("PatrolFeature", $"Unit {unit.Callsign} fell into subterranean void (Z={unit.Cruiser.Position.Z:F1}). Removing.");
+                    unit.Dispose(immediateDelete: true);
+                    toRemove.Add(unit);
+                    continue;
+                }
+
+                // Distance watchdog: clean removal if beyond despawn threshold (> 450m)
+                float dist = unit.Cruiser.Position.DistanceTo(playerPos);
+                if (dist > Settings.DespawnDistance)
+                {
+                    bool isBusy = false;
+                    bool inPursuit = false;
+                    try
                     {
-                        _activeUnits.RemoveAt(i);
+                        if (unit.Driver != null && unit.Driver.Exists())
+                        {
+                            isBusy = Functions.IsCopBusy(unit.Driver, false);
+                            inPursuit = Functions.IsPedInPursuit(unit.Driver);
+                        }
+                    }
+                    catch { }
+
+                    if (isBusy || inPursuit)
+                    {
+                        // Officer drafted by LSPDFR: preserve unit, do not despawn
                         continue;
                     }
 
-                    if (!unit.IsValid())
-                    {
-                        Logger.Debug("PatrolFeature", $"Removing invalid/dead unit {unit.Callsign}. Active remaining: {_activeUnits.Count - 1}/{Settings.MaxPatrolUnits}");
-                        unit.Dispose(immediateDelete: false);
-                        _activeUnits.RemoveAt(i);
-                        continue;
-                    }
+                    Logger.Debug("PatrolFeature", $"Unit {unit.Callsign} exceeded despawn distance ({dist:F0}m > {Settings.DespawnDistance:F0}m). Cleaning up.");
+                    unit.Dispose(immediateDelete: false);
+                    toRemove.Add(unit);
+                    continue;
+                }
 
-                    // Subterranean watchdog
-                    if (WorldUtils.IsSubterraneanOrVoid(unit.Cruiser.Position))
-                    {
-                        Logger.Warn("PatrolFeature", $"Unit {unit.Callsign} fell into subterranean void (Z={unit.Cruiser.Position.Z:F1}). Removing. Active remaining: {_activeUnits.Count - 1}");
-                        unit.Dispose(immediateDelete: true);
-                        _activeUnits.RemoveAt(i);
-                        continue;
-                    }
+                // Reassert cruising task if driver lost objectives
+                unit.EnsurePatrolDriving();
 
-                    // Distance watchdog: clean removal if beyond despawn threshold (> 450m)
-                    float dist = unit.Cruiser.Position.DistanceTo(playerPos);
-                    if (dist > Settings.DespawnDistance)
-                    {
-                        Logger.Debug("PatrolFeature", $"Unit {unit.Callsign} exceeded despawn distance ({dist:F0}m > {Settings.DespawnDistance:F0}m). Cleaning up. Active remaining: {_activeUnits.Count - 1}");
-                        unit.Dispose(immediateDelete: false);
-                        _activeUnits.RemoveAt(i);
-                        continue;
-                    }
+                // Synchronize radar blips (empty white car vs badge foot blips)
+                unit.UpdateBlipStates();
 
-                    // Reassert cruising task if driver lost objectives
-                    unit.EnsurePatrolDriving();
+                // Enforce siren and lightbar policy to guarantee zero audible siren leakage
+                if (unit.Cruiser != null && unit.Cruiser.Exists())
+                {
+                    NativeTasks.EnforceSirenLightbarPolicy(unit.Cruiser);
+                }
+            }
+
+            if (toRemove.Count > 0)
+            {
+                lock (_syncLock)
+                {
+                    foreach (var unit in toRemove)
+                    {
+                        _activeUnits.Remove(unit);
+                    }
                 }
             }
         }
@@ -314,7 +381,11 @@ namespace Cadence.Features
 
             // Spawn pacing cooldown: 25-35 seconds between ambient spawns (12s in Chaos mode)
             uint now = Game.GameTime;
-            uint cooldown = Settings.ChaosMode ? 12000u : (uint)_rand.Next(25000, 35001);
+            uint cooldown;
+            lock (_rand)
+            {
+                cooldown = Settings.ChaosMode ? 12000u : (uint)_rand.Next(25000, 35001);
+            }
             if (now < _lastSpawnTime || now - _lastSpawnTime < cooldown)
             {
                 return;
@@ -327,13 +398,15 @@ namespace Cadence.Features
                 PatrolUnitInstance unit = CreatePatrolUnitAt(spawnPos, spawnHeading);
                 if (unit != null && unit.IsValid())
                 {
+                    int unitCount;
                     lock (_syncLock)
                     {
                         _activeUnits.Add(unit);
                         _lastSpawnTime = Game.GameTime;
+                        unitCount = _activeUnits.Count;
                     }
                     SessionMetrics.IncrementPatrol();
-                    Logger.Info($"[PatrolFeature] Ambient patrol unit {unit.Callsign} spawned successfully at {spawnPos} (Total: {_activeUnits.Count}/{Settings.MaxPatrolUnits}).");
+                    Logger.Info($"[PatrolFeature] Ambient patrol unit {unit.Callsign} spawned successfully at {spawnPos} (Total: {unitCount}/{Settings.MaxPatrolUnits}).");
                 }
             }
         }
@@ -352,9 +425,14 @@ namespace Cadence.Features
             for (int attempt = 0; attempt < 25; attempt++)
             {
                 // Bias spawning behind and flanking the player to avoid direct line-of-sight pop-in
-                float angleOffset = (float)((_rand.NextDouble() * 220.0) - 110.0); // Flanking / rear arc
+                float angleOffset;
+                float distance;
+                lock (_rand)
+                {
+                    angleOffset = (float)((_rand.NextDouble() * 220.0) - 110.0); // Flanking / rear arc
+                    distance = minDist + (float)(_rand.NextDouble() * (maxDist - minDist));
+                }
                 float targetAngle = (playerHeading + 180f + angleOffset) * (float)(Math.PI / 180.0);
-                float distance = minDist + (float)(_rand.NextDouble() * (maxDist - minDist));
 
                 Vector3 probeCenter = new Vector3(
                     playerPos.X - (float)Math.Sin(targetAngle) * distance,
@@ -403,13 +481,21 @@ namespace Cadence.Features
                         ? UltimateBackupService.SpawnStatePatrol(position, 1)
                         : UltimateBackupService.SpawnLocalPatrol(position, 1);
 
-                    if (ubResult != null && ubResult.Item1 != null && ubResult.Item1.Exists() && ubResult.Item2 != null && ubResult.Item2.Count > 0)
+                    if (ubResult != null)
                     {
-                        cruiser = ubResult.Item1;
-                        driver = ubResult.Item2.FirstOrDefault(p => p != null && p.Exists());
-                        if (ubResult.Item2.Count > 1)
+                        if (ubResult.Item1 != null && ubResult.Item1.Exists() && ubResult.Item2 != null && ubResult.Item2.Count > 0)
                         {
-                            passenger = ubResult.Item2[1];
+                            cruiser = ubResult.Item1;
+                            NativeTasks.ShutOffSirenAndLights(cruiser);
+                            driver = ubResult.Item2.FirstOrDefault(p => p != null && p.Exists());
+                            if (ubResult.Item2.Count > 1)
+                            {
+                                passenger = ubResult.Item2[1];
+                            }
+                        }
+                        else if (ubResult.Item1 != null && ubResult.Item1.Exists())
+                        {
+                            TeardownHelper.SafeDismissVehicle(ubResult.Item1, delete: true);
                         }
                     }
                 }
@@ -420,6 +506,7 @@ namespace Cadence.Features
                     if (Settings.UseUltimateBackup && !Settings.AllowFallback)
                     {
                         Logger.Debug("PatrolFeature", $"Ultimate Backup did not return a unit at {position}. Fallback is strictly disabled (Fallback=false). Aborting spawn.");
+                        if (cruiser != null && cruiser.Exists()) TeardownHelper.SafeDismissVehicle(cruiser, delete: true);
                         return null;
                     }
 
@@ -427,14 +514,21 @@ namespace Cadence.Features
                     string copModel = ZoneSpawnData.GetDefaultCopPedModelForPosition(position);
                     var nativeResult = UltimateBackupService.SpawnNativePatrolUnit(position, heading, vehicleModel, copModel);
 
-                    if (nativeResult != null && nativeResult.Item1 != null && nativeResult.Item1.Exists() && nativeResult.Item2 != null && nativeResult.Item2.Count > 0)
+                    if (nativeResult != null)
                     {
-                        cruiser = nativeResult.Item1;
-                        driver = nativeResult.Item2[0];
-
-                        if (Settings.EnableEupOutfits)
+                        if (nativeResult.Item1 != null && nativeResult.Item1.Exists() && nativeResult.Item2 != null && nativeResult.Item2.Count > 0)
                         {
-                            EupService.ApplyBodyArmor(driver);
+                            cruiser = nativeResult.Item1;
+                            driver = nativeResult.Item2[0];
+
+                            if (Settings.EnableEupOutfits)
+                            {
+                                EupService.ApplyBodyArmor(driver);
+                            }
+                        }
+                        else if (nativeResult.Item1 != null && nativeResult.Item1.Exists())
+                        {
+                            TeardownHelper.SafeDismissVehicle(nativeResult.Item1, delete: true);
                         }
                     }
                 }
@@ -442,7 +536,23 @@ namespace Cadence.Features
                 if (cruiser == null || !cruiser.Exists() || driver == null || !driver.Exists())
                 {
                     Logger.Warn($"[PatrolFeature] Failed to create patrol unit entities at {position}.");
+                    if (cruiser != null && cruiser.Exists()) TeardownHelper.SafeDismissVehicle(cruiser, delete: true);
                     return null;
+                }
+
+                // Register claim in UnitRegistry
+                if (!UnitRegistry.TryClaim(cruiser, UnitRegistry.OwnerPatrol))
+                {
+                    Logger.Debug($"[PatrolFeature] Cruiser 0x{cruiser.Handle:X} could not be claimed in UnitRegistry. Aborting spawn.");
+                    TeardownHelper.SafeDismissVehicle(cruiser, delete: true);
+                    if (driver != null) TeardownHelper.SafeDismissPed(driver, delete: true);
+                    if (passenger != null) TeardownHelper.SafeDismissPed(passenger, delete: true);
+                    return null;
+                }
+                UnitRegistry.TryClaim(driver, UnitRegistry.OwnerPatrol);
+                if (passenger != null && passenger.Exists())
+                {
+                    UnitRegistry.TryClaim(passenger, UnitRegistry.OwnerPatrol);
                 }
 
                 // Ground stabilization & configuration
@@ -462,9 +572,13 @@ namespace Cadence.Features
                 // Initial motion & authentic patrol cruising AI
                 NativeFunction.Natives.SET_VEHICLE_FORWARD_SPEED(cruiser, 7.0f);
                 bool isHwy = WorldUtils.IsHighway(cruiser.Position);
-                float cruisingSpeed = isHwy
-                    ? (18.0f + (float)(_rand.NextDouble() * 3.0))   // Highway: ~40 - 47 mph
-                    : (12.0f + (float)(_rand.NextDouble() * 3.0));  // City: ~27 - 33 mph
+                float cruisingSpeed;
+                lock (_rand)
+                {
+                    cruisingSpeed = isHwy
+                        ? (18.0f + (float)(_rand.NextDouble() * 3.0))   // Highway: ~40 - 47 mph
+                        : (12.0f + (float)(_rand.NextDouble() * 3.0));  // City: ~27 - 33 mph
+                }
                 driver.Tasks.CruiseWithVehicle(cruiser, cruisingSpeed, NativeTasks.CruisingFlags);
 
                 // Attach Navy Blue radar blip
@@ -479,9 +593,9 @@ namespace Cadence.Features
                 Logger.Error($"[PatrolFeature] Exception creating patrol unit at {position}", ex);
 
                 if (blip != null) BlipService.SafeDeleteBlip(ref blip);
-                if (driver != null && driver.Exists()) driver.Delete();
-                if (passenger != null && passenger.Exists()) passenger.Delete();
-                if (cruiser != null && cruiser.Exists()) cruiser.Delete();
+                if (driver != null && driver.Exists()) TeardownHelper.SafeDismissPed(driver, delete: true);
+                if (passenger != null && passenger.Exists()) TeardownHelper.SafeDismissPed(passenger, delete: true);
+                if (cruiser != null && cruiser.Exists()) TeardownHelper.SafeDismissVehicle(cruiser, delete: true);
 
                 return null;
             }
@@ -489,23 +603,37 @@ namespace Cadence.Features
 
         private static string GenerateCallsign()
         {
-            string div = Divisions[_rand.Next(Divisions.Length)];
-            int num = _callsignCounter++;
-            if (_callsignCounter > 99) _callsignCounter = 10;
+            string div;
+            lock (_rand)
+            {
+                div = Divisions[_rand.Next(Divisions.Length)];
+            }
+            int num = Interlocked.Increment(ref _callsignCounter);
+            if (num > 99)
+            {
+                Interlocked.Exchange(ref _callsignCounter, 10);
+                num = 10;
+            }
             return $"{div}-{num:D2}";
         }
 
-        private static void PurgeAllInternal()
+        private static void PurgeAllInternal(bool immediateDelete = true)
         {
-            foreach (var unit in _activeUnits)
+            List<PatrolUnitInstance> unitsToDispose;
+            lock (_syncLock)
+            {
+                unitsToDispose = new List<PatrolUnitInstance>(_activeUnits);
+                _activeUnits.Clear();
+                _lastSpawnTime = Game.GameTime + 35000;
+            }
+
+            foreach (var unit in unitsToDispose)
             {
                 if (unit != null)
                 {
-                    unit.Dispose(immediateDelete: true);
+                    unit.Dispose(immediateDelete: immediateDelete);
                 }
             }
-            _activeUnits.Clear();
-            _lastSpawnTime = Game.GameTime + 35000;
         }
 
         // ====================================================================
@@ -518,10 +646,13 @@ namespace Cadence.Features
             public Ped Driver { get; }
             public Ped Passenger { get; }
             public Blip RadarBlip;
+            public Blip DriverBadgeBlip;
+            public Blip PassengerBadgeBlip;
             public string Callsign { get; }
             public uint SpawnTime { get; }
 
             private uint _lastTaskVerifyTime;
+            private bool _isParkedBlip;
 
             public PatrolUnitInstance(Vehicle cruiser, Ped driver, Ped passenger, Blip blip, string callsign)
             {
@@ -540,9 +671,83 @@ namespace Cadence.Features
                        Driver != null && Driver.Exists() && Driver.IsAlive;
             }
 
+            public void UpdateBlipStates()
+            {
+                if (!Settings.ShowRadarBlips || Cruiser == null || !Cruiser.Exists()) return;
+
+                bool driverOutside = Driver != null && Driver.Exists() && Driver.IsAlive && !Driver.IsInVehicle(Cruiser, false);
+                bool passengerOutside = Passenger != null && Passenger.Exists() && Passenger.IsAlive && !Passenger.IsInVehicle(Cruiser, false);
+                bool anyOutside = driverOutside || passengerOutside;
+
+                bool allLivingOutside = true;
+                if (Driver != null && Driver.Exists() && Driver.IsAlive && Driver.IsInVehicle(Cruiser, false)) allLivingOutside = false;
+                if (Passenger != null && Passenger.Exists() && Passenger.IsAlive && Passenger.IsInVehicle(Cruiser, false)) allLivingOutside = false;
+
+                // 1. Driver foot blip
+                if (driverOutside)
+                {
+                    if (DriverBadgeBlip == null || !DriverBadgeBlip.Exists())
+                    {
+                        DriverBadgeBlip = BlipService.AttachOfficerFootBlip(Driver, Callsign);
+                    }
+                }
+                else
+                {
+                    BlipService.SafeDeleteBlip(ref DriverBadgeBlip);
+                }
+
+                // 2. Passenger foot blip
+                if (passengerOutside)
+                {
+                    if (PassengerBadgeBlip == null || !PassengerBadgeBlip.Exists())
+                    {
+                        PassengerBadgeBlip = BlipService.AttachOfficerFootBlip(Passenger, Callsign);
+                    }
+                }
+                else
+                {
+                    BlipService.SafeDeleteBlip(ref PassengerBadgeBlip);
+                }
+
+                // 3. Cruiser blip: turns White [PARKED] when empty / all living officers are outside
+                if (allLivingOutside && anyOutside)
+                {
+                    if (!_isParkedBlip)
+                    {
+                        _isParkedBlip = true;
+                        BlipService.SafeDeleteBlip(ref RadarBlip);
+                        RadarBlip = BlipService.AttachParkedCruiserBlip(Cruiser, Callsign);
+                    }
+                }
+                else
+                {
+                    if (_isParkedBlip)
+                    {
+                        _isParkedBlip = false;
+                        BlipService.SafeDeleteBlip(ref RadarBlip);
+                        RadarBlip = BlipService.AttachPatrolBlip(Cruiser, Callsign);
+                    }
+                }
+            }
+
             public void EnsurePatrolDriving()
             {
                 if (!IsValid()) return;
+
+                bool isBusy = false;
+                bool inPursuit = false;
+                try
+                {
+                    isBusy = Functions.IsCopBusy(Driver, false);
+                    inPursuit = Functions.IsPedInPursuit(Driver);
+                }
+                catch { }
+
+                if (isBusy || inPursuit)
+                {
+                    // Officer drafted by LSPDFR into backup or pursuit: do not override tasks
+                    return;
+                }
 
                 uint now = Game.GameTime;
                 if (now - _lastTaskVerifyTime > 15000)
@@ -564,6 +769,8 @@ namespace Cadence.Features
             public void Relinquish()
             {
                 BlipService.SafeDeleteBlip(ref RadarBlip);
+                BlipService.SafeDeleteBlip(ref DriverBadgeBlip);
+                BlipService.SafeDeleteBlip(ref PassengerBadgeBlip);
                 if (Cruiser != null && Cruiser.Exists())
                 {
                     BlipService.SafeDeleteEntityBlip(Cruiser);
@@ -580,13 +787,21 @@ namespace Cadence.Features
                 {
                     if (Driver != null && Driver.Exists())
                     {
+                        try { if (Functions.IsPedInPursuit(Driver)) Functions.RemovePedFromPursuit(Driver); } catch { }
                         Driver.Tasks.Clear();
                         Driver.BlockPermanentEvents = false;
+                        UnitRegistry.Release(Driver);
                     }
                     if (Passenger != null && Passenger.Exists())
                     {
+                        try { if (Functions.IsPedInPursuit(Passenger)) Functions.RemovePedFromPursuit(Passenger); } catch { }
                         Passenger.Tasks.Clear();
                         Passenger.BlockPermanentEvents = false;
+                        UnitRegistry.Release(Passenger);
+                    }
+                    if (Cruiser != null)
+                    {
+                        UnitRegistry.Release(Cruiser);
                     }
                 }
                 catch { }
@@ -594,38 +809,30 @@ namespace Cadence.Features
 
             public void Dispose(bool immediateDelete)
             {
-                // 1. Zero-leak 4-step destructor protocol for blip
+                // 1. Zero-leak 4-step destructor protocol for blips
                 BlipService.SafeDeleteBlip(ref RadarBlip);
+                BlipService.SafeDeleteBlip(ref DriverBadgeBlip);
+                BlipService.SafeDeleteBlip(ref PassengerBadgeBlip);
+                BlipService.SafeDeleteEntityBlip(Cruiser);
+                BlipService.SafeDeleteEntityBlip(Driver);
+                BlipService.SafeDeleteEntityBlip(Passenger);
 
-                // 2. Entities clean up
+                // 2. Safe entity dismissals via TeardownHelper
                 try
                 {
-                    if (Passenger != null && Passenger.Exists())
+                    if (Passenger != null)
                     {
-                        Passenger.BlockPermanentEvents = false;
-                        if (immediateDelete) Passenger.Delete();
-                        else Passenger.Dismiss();
+                        TeardownHelper.SafeDismissPed(Passenger, delete: immediateDelete);
                     }
 
-                    if (Driver != null && Driver.Exists())
+                    if (Driver != null)
                     {
-                        Driver.BlockPermanentEvents = false;
-                        if (immediateDelete) Driver.Delete();
-                        else Driver.Dismiss();
+                        TeardownHelper.SafeDismissPed(Driver, delete: immediateDelete);
                     }
 
-                    if (Cruiser != null && Cruiser.Exists())
+                    if (Cruiser != null)
                     {
-                        try
-                        {
-                            Cruiser.IsSirenOn = false;
-                            Cruiser.IsSirenSilent = true;
-                            NativeFunction.Natives.SET_VEHICLE_SIREN(Cruiser, false);
-                        }
-                        catch { }
-
-                        if (immediateDelete) Cruiser.Delete();
-                        else Cruiser.Dismiss();
+                        TeardownHelper.SafeDismissVehicle(Cruiser, delete: immediateDelete);
                     }
                 }
                 catch (Exception ex)

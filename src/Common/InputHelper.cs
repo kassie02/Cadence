@@ -17,6 +17,28 @@ namespace Cadence.Common
         /// </summary>
         public const int INPUT_COVER = 44;
 
+        // Conflicting HUD & Vehicle Controls suppressed during menu navigation
+        public const int INPUT_CHARACTER_WHEEL = 19;
+        public const int INPUT_MULTIPLAYER_INFO = 20;
+        public const int INPUT_PHONE = 27;
+        public const int INPUT_VEH_DUCK = 73;
+        public const int INPUT_VEH_HEADLIGHT = 74;
+        public const int INPUT_VEH_CIN_CAM = 80;
+        public const int INPUT_RADIO_WHEEL_UD = 81;
+        public const int INPUT_RADIO_WHEEL_LR = 82;
+        public const int INPUT_VEH_RADIO_WHEEL = 85;
+        public const int INPUT_VEH_HORN = 86;
+        public const int INPUT_VEH_SELECT_NEXT_WEAPON = 99;
+        public const int INPUT_VEH_SELECT_PREV_WEAPON = 100;
+        public const int INPUT_CELLPHONE_UP = 172;
+        public const int INPUT_CELLPHONE_DOWN = 173;
+        public const int INPUT_CELLPHONE_LEFT = 174;
+        public const int INPUT_CELLPHONE_RIGHT = 175;
+        public const int INPUT_CELLPHONE_SELECT = 176;
+        public const int INPUT_CELLPHONE_CANCEL = 177;
+        public const int INPUT_CELLPHONE_OPTION = 178;
+        public const int INPUT_CELLPHONE_EXTRA_OPTION = 179;
+
         /// <summary>
         /// Checks whether the specified modifier key is currently depressed.
         /// Reliably handles Control, Shift, and Alt modifier variations across RPH and Win32 virtual key tables.
@@ -144,6 +166,46 @@ namespace Cadence.Common
             {
                 SuppressCover();
             }
+        }
+
+        /// <summary>
+        /// Suppresses INPUT_VEH_DUCK if the specified key or modifier is X and is currently held down.
+        /// Prevents the player from ducking in their cruiser when using X + PageDown for the backup menu.
+        /// </summary>
+        public static void SuppressVehicleDuckIfXHeld(Keys key, Keys modifier)
+        {
+            if ((key == Keys.X || modifier == Keys.X) && Game.IsKeyDownRightNow(Keys.X))
+            {
+                SuppressControl(INPUT_VEH_DUCK);
+            }
+        }
+
+        /// <summary>
+        /// Suppresses GTA V native HUD, phone, radio wheel, cinematic camera, and multiplayer info controls
+        /// while a Cadence menu or backup menu is actively open and being navigated.
+        /// Specifically prevents Down Arrow (INPUT_MULTIPLAYER_INFO = 20) from toggling the expanded minimap / HUD glitching in pursuits.
+        /// </summary>
+        public static void SuppressMenuNavigationControls()
+        {
+            SuppressControl(INPUT_MULTIPLAYER_INFO);
+            SuppressControl(INPUT_CHARACTER_WHEEL);
+            SuppressControl(INPUT_VEH_RADIO_WHEEL);
+            SuppressControl(INPUT_RADIO_WHEEL_UD);
+            SuppressControl(INPUT_RADIO_WHEEL_LR);
+            SuppressControl(INPUT_VEH_SELECT_NEXT_WEAPON);
+            SuppressControl(INPUT_VEH_SELECT_PREV_WEAPON);
+            SuppressControl(INPUT_PHONE);
+            SuppressControl(INPUT_CELLPHONE_UP);
+            SuppressControl(INPUT_CELLPHONE_DOWN);
+            SuppressControl(INPUT_CELLPHONE_LEFT);
+            SuppressControl(INPUT_CELLPHONE_RIGHT);
+            SuppressControl(INPUT_CELLPHONE_SELECT);
+            SuppressControl(INPUT_CELLPHONE_CANCEL);
+            SuppressControl(INPUT_CELLPHONE_OPTION);
+            SuppressControl(INPUT_CELLPHONE_EXTRA_OPTION);
+            SuppressControl(INPUT_VEH_CIN_CAM);
+            SuppressControl(INPUT_VEH_HEADLIGHT);
+            SuppressControl(INPUT_VEH_DUCK);
         }
     }
 }

@@ -36,6 +36,7 @@ namespace Cadence.Services
 
         private static void ApplyComponents(Ped ped, string componentString)
         {
+            if (ped == null || !ped.Exists()) return;
             string[] items = componentString.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries);
             foreach (string rawItem in items)
             {
@@ -47,10 +48,14 @@ namespace Cadence.Services
                 {
                     if (int.TryParse(parts[0].Trim(), out int compId) && int.TryParse(parts[1].Trim(), out int drawableId))
                     {
+                        if (compId < 0 || drawableId < 0) continue;
                         int textureId = 0;
                         if (parts.Length >= 3)
                         {
-                            int.TryParse(parts[2].Trim(), out textureId);
+                            if (!int.TryParse(parts[2].Trim(), out textureId) || textureId < 0)
+                            {
+                                textureId = 0;
+                            }
                         }
 
                         try
@@ -68,6 +73,7 @@ namespace Cadence.Services
 
         private static void ApplyProps(Ped ped, string propString)
         {
+            if (ped == null || !ped.Exists()) return;
             string[] items = propString.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries);
             foreach (string rawItem in items)
             {
@@ -79,10 +85,14 @@ namespace Cadence.Services
                 {
                     if (int.TryParse(parts[0].Trim(), out int propId) && int.TryParse(parts[1].Trim(), out int drawableId))
                     {
+                        if (propId < 0) continue;
                         int textureId = 0;
                         if (parts.Length >= 3)
                         {
-                            int.TryParse(parts[2].Trim(), out textureId);
+                            if (!int.TryParse(parts[2].Trim(), out textureId) || textureId < 0)
+                            {
+                                textureId = 0;
+                            }
                         }
 
                         try
@@ -111,10 +121,12 @@ namespace Cadence.Services
 
         /// <summary>
         /// Applies body armor vest variation (Component 9) to an officer ped.
+        /// Gated on Settings.EnableEupOutfits [E26].
         /// </summary>
         public static void ApplyBodyArmor(Ped ped, int armorDrawable = 1)
         {
-            if (ped == null || !ped.Exists()) return;
+            if (!Settings.EnableEupOutfits || ped == null || !ped.Exists()) return;
+            if (armorDrawable < 0) return;
             try
             {
                 NativeFunction.Natives.SET_PED_COMPONENT_VARIATION(ped, 9, armorDrawable, 0, 0);
@@ -124,10 +136,11 @@ namespace Cadence.Services
 
         /// <summary>
         /// Equips a high-visibility traffic vest or safety gear if present on model.
+        /// Gated on Settings.EnableEupOutfits [E26].
         /// </summary>
         public static void ApplyTrafficVest(Ped ped)
         {
-            if (ped == null || !ped.Exists()) return;
+            if (!Settings.EnableEupOutfits || ped == null || !ped.Exists()) return;
             try
             {
                 // Component 8 / 9 traffic vest textures on standard cop models

@@ -1,7 +1,7 @@
-# Cadence (v1.1.0)
+# Cadence (v1.2.0)
 
 > **A Discreet, Living Ambient Policing & Response System for LSPDFR**  
-> *Built for RagePluginHook (.NET Framework 4.8 / C# 10 / x64)*
+> *Built for RagePluginHook (.NET Framework 4.8 / C# 10+ / x64)*
 
 ---
 
@@ -11,21 +11,19 @@
 
 With Cadence, you will encounter fellow officers actively patrolling city avenues and country highways, conducting authentic roadside traffic stops, monitoring traffic from speed traps and turnouts, responding Code 2 or Code 3 to distant 911 calls, taking over rejected callouts without fanfare, assisting in active pursuits, and defending against nearby armed hostiles.
 
-In v1.1.0, Cadence introduces the **Ambient Backup & Response Systems**, delivering 1:1 Ultimate Backup compatibility (Panic Button, Group Backup, Lean Backup Menu) powered by an **Ambient-First Commandeering Architecture**: instead of magically spawning new cars out of thin air, Cadence commands nearby ambient cruisers already driving or parked on the beat to respond to your distress call!
+In v1.2.0, Cadence delivers the production-ready **Ambient Backup & Response Systems**, providing 1:1 Ultimate Backup compatibility (Panic Button, Group Backup, Lean Backup Menu) powered by an **Ambient-First Commandeering Architecture**: instead of magically spawning new cars out of thin air, Cadence commands nearby ambient cruisers already driving or parked on the beat to respond to your distress call!
 
-Cadence was built from the ground up using the **"Ponytail" Delete-Friendly Architecture**: every feature is 100% self-contained in its own module. The plugin delivers uncompromising stability, absolute zero entity/blip leakage, and seamless compatibility with the entire LSPDFR ecosystem.
-
-> **Roadmap & Architecture Blueprint**: For detailed technical designs on upcoming post-v1.1.0 features (Spikestrips, K9 units, Station Sally Ports, Air Support, Voice Integration, Coroner/Tow, and Escalation Matrix), see [`future-features.md`](future-features.md) (or root [`../future-features.md`](../future-features.md)). Active focus remains 100% on v1.1.0 production calibration and zero leakage.
+Cadence was built from the ground up using the **"Ponytail" Delete-Friendly Architecture**: every feature is 100% self-contained in its own module. The plugin delivers uncompromising stability, absolute zero entity/blip leakage, centralized atomic unit ownership via `UnitRegistry`, and seamless compatibility with the entire LSPDFR ecosystem.
 
 ---
 
 ## 2. Features
 
 ### Feature 1: Ambient Cruising Patrol (`PatrolFeature.cs`)
-- **Autonomous Roadway Patrols**: Ambient cruisers patrol naturally across San Andreas streets and highways using authentic driving flags (`CruisingFlags = 786603`), respecting traffic signals and maintaining realistic cruising speeds (16–20 m/s).
-- **Safe Road Node Generation**: New units spawn on validated road nodes 180m–350m from the player, preventing visual pop-in or mid-air/subterranean anomalies.
+- **Autonomous Roadway Patrols**: Ambient cruisers patrol naturally across San Andreas streets and highways using enhanced obstacle avoidance driving flags (`CruisingFlags = 786603`), respecting traffic signals, steering around parked cars and pedestrians, and maintaining realistic cruising speeds (12–21 m/s).
+- **Safe Road Node Generation**: New units spawn on validated road nodes 80m–250m from the player, preventing visual pop-in or mid-air/subterranean anomalies.
 - **Dynamic Liveries & Uniforms**: Integrated with Ultimate Backup and native EUP uniform presets to ensure officers match local jurisdictions (LSPD, BCSO, SAHP, Park Rangers).
-- **Radar Minimap Identity**: Color-coded Navy Blue blip (`Sprite 56`, `Color 38`).
+- **Radar Minimap Identity**: Color-coded Navy Blue blip (`Sprite 56`, `Color 38`). When officers dismount, their cruiser blip turns White (`Color 0`, `[PARKED]`) and officers receive a Badge blip (`Sprite 58`, `Color 38`, `[ON FOOT]`).
 - **Despawn Watchdog**: Safely dismisses cruisers when beyond 450m or off-screen, maintaining minimal memory footprint.
 
 ### Feature 2: 1803 Roadside Traffic Stops (`TrafficStopFeature.cs`)
@@ -40,7 +38,7 @@ Cadence was built from the ground up using the **"Ponytail" Delete-Friendly Arch
 - **Radar Minimap Identity**: Color-coded Yellow blip (`Sprite 56`, `Color 4`).
 
 ### Feature 3: Stationary Units & Radar Speed Traps (`StationaryFeature.cs`)
-- **Strategic Standby Locations**: Spawns parked cruisers in highway medians, turnouts, side streets, and commercial parking lots 120m–300m from the player.
+- **Strategic Standby Locations**: Spawns parked cruisers in highway medians, turnouts, side streets, and commercial parking lots 80m–250m from the player.
 - **Five Immersive Idle Behaviors**:
   1. *In-Car Radar Watch*: Officers seated inside their cruiser monitoring traffic.
   2. *Hood Lean*: Officer leaning casually against the cruiser fender (`WORLD_HUMAN_COP_IDLES`).
@@ -63,71 +61,51 @@ Cadence was built from the ground up using the **"Ponytail" Delete-Friendly Arch
 
 ### Feature 5: Ambient Pursuit Drafting (`PursuitFeature.cs`)
 - Continuously monitors active LSPDFR pursuits via `Functions.GetActivePursuit()`.
-- If an active chase has fewer cruisers than `MaxPursuitUnits`, Cadence drafts nearby cruising officers into the chase, clearing ambient tasks and registering both driver and passenger into LSPDFR's pursuit engine (`Functions.AddCopToPursuit`).
-- Drafted cruisers activate high-performance pursuit driving AI (aggressiveness 0.6, ability 100.0, chase behavior flag 8 for U-turns and overtaking), sirens, and tactical maneuvers.
-- **Scene Standby & Dismissal Protocol**: When the pursuit terminates, units transition to `OnSceneStandby`. Sirens mute while emergency lightbars stay active. Seated officers hold position (`VehicleManeuver.Wait`) and dismounted officers secure the perimeter without interrupting LSPDFR's suspect arrest routines.
-- **Standby Dismissal (`Enter` held >= 1.1s)**: Holding the dismissal key prompts and releases scene officers back to their cruisers, turning off lights, cruising away, and safely rejoining ambient traffic. Automatic distance (>250m) and 5-minute timeout watchdogs prevent entity leaks.
-- **Radar Minimap Identity**: Color-coded Flashing Orange blip (`Sprite 56`, `Color 17`, 400ms pulse).
+- If an active chase has fewer cruisers than `MaxPursuitUnits`, Cadence drafts nearby cruising officers into the chase (within 220m, strictly excluding cruisers engaged in traffic stops or emergency calls), registering both driver and passenger into LSPDFR's pursuit engine (`Functions.AddCopToPursuit`).
+- Drafted cruisers activate pursuit driving AI (`SET_DRIVER_ABILITY` clamped to engine maximum `1.0f`, `SET_DRIVER_AGGRESSIVENESS` calibrated to `0.6f`), sirens, and emergency maneuvers.
+- **Code 4 Stand-Down & Scene Resolution**: When the pursuit terminates or a suspect surrenders/kneels, all sirens within 60m are muted, all officers dismount, draw combat pistols, and establish a tactical perimeter. Empty cruisers turn White (`[PARKED]`) and officers receive Badge blips (`[ON FOOT]`).
+- **Radar Minimap Identity**: Color-coded Solid Orange blip (`Sprite 56`, `Color 38`).
 
 ### Feature 6: Nearby Threat Reaction & Combat Defense (`AssistFeature.cs`)
 - Cruisers monitor a 60m–90m radius for active hostile gunfire and armed suspects attacking officers or civilians.
 - When a threat is detected, the cruiser halts, applies the emergency handbrake, and illuminates flashing emergency lights.
-- Officers dismount, unholster sidearms (`WEAPON_COMBATPISTOL` / `WEAPON_PISTOL`), take tactical cover behind cruiser doors/pillars, and engage the hostile suspect.
+- Officers dismount, unholster sidearms (`WEAPON_COMBATPISTOL` / `WEAPON_PISTOL` / unarmed fallback using verified JOAAT `0xA2719263`), take tactical cover behind cruiser doors/pillars, and engage the hostile suspect.
 - Once the threat is neutralized, officers holster weapons, remount their cruiser, release the handbrake, and resume routine patrol.
 - **Radar Minimap Identity**: Color-coded Flashing Dark Orange blip (`Sprite 56`, `Color 49`, 300ms pulse).
 
 ### Feature 7: Ambient Backup & Response Systems (`BackupFeature.cs`)
 - **1:1 Ultimate Backup Audio & Notification Parity**:
-  - **Panic Button (`LControlKey + Z`)**: Plays authentic `PANIC_BUTTON.wav` tone, scanner audio (`ASSISTANCE_REQUIRED IN_OR_ON_POSITION`), player radio animation, red dispatch banner, subtitle prompt, and multi-unit tactical Code 3 emergency response.
+  - **Panic Button (`LControlKey + Z`)**: Plays authentic `PANIC_BUTTON.wav` tone, scanner audio (`ASSISTANCE_REQUIRED IN_OR_ON_POSITION`), player radio animation, red dispatch banner, subtitle prompt, and confirmation audio (`UNIT_RESPONDING_DISPATCH`).
   - **Group Backup (`LControlKey + C`)**: Multi-unit tactical reinforcement request with synchronized dispatch and scanner audio.
-  - **Redesigned Backup Menu (`X + PageDown`)**: Ultimate Backup `Class74.cs` parity featuring a top **Response Mode** selector:
-    - *Code 3 [Emergency]*: Local Police, State Patrol / Highway, EMS Ambulance, Fire Department, Group Backup, Panic Button, and Dismiss All.
-    - *Code 2 [Urgent]*: Urgent responses with sirens off and warning lights.
-    - *Pursuit Backup*: Local Pursuit Backup, Highway Pursuit Backup, Pursuit Interceptor, Group Pursuit Backup (2 Units), and Dismiss All Pursuit Units.
+  - **Lean Backup Menu (`X + PageDown`)**: Clean, bloat-free RAGENativeUI menu with dynamic mode switcher:
+    - *Response Modes*: Dynamic context-aware list (`Code 3 [Emergency]`, `Code 2 [Urgent]`, `Callout Response`, and `Pursuit Backup`).
+    - *Smart Contextual Display*: Similar to `Pursuit Backup`, `Callout Response` only appears when an LSPDFR callout is active or a map waypoint is placed. When active, it automatically surfaces as the **first option** (default index 0) with a live destination subtitle (e.g. `Responding: Assault in Progress`), allowing immediate scene dispatch.
+    - *Callout Response Actions*: Dispatches units (Local Police Code 3/2, State Patrol Code 3/2, Tactical Group Code 3, EMS Ambulance Code 3/2, Fire Rescue Code 3/2) responding directly to your active GPS map waypoint or running LSPDFR callout scene instead of your current location.
+      - **Ambient-First Commandeering**: Commandeers existing ambient cruisers within 350m and routes them directly to the callout/waypoint.
+      - **Dynamic Course Updates**: Responders recalculate pathing en route if the player moves their GPS map waypoint.
+      - **Scene Perimeter Holding**: Responders hold a defensive tactical perimeter around their cruiser (`WORLD_HUMAN_COP_IDLES`) if the player is still en route (>35m away), engaging any threats within 40m.
+      - **Seamless Hand-Off**: As soon as the player arrives on scene (within 35m), units transition automatically to close buddy-following support.
+    - *Standard Backup Actions*: Local Patrol, State Patrol, Ambulance / EMS, Fire Department, Group Backup, Panic Button, and Dismiss All Backup Units.
 - **Ambient-First Commandeering Architecture**:
   - Scans a 320m radius for existing ambient cruisers, stationary speed traps, ambulances, or fire engines.
-  - Commandeers active road units immediately, clearing cruising tasks, setting emergency sirens, and routing them to roadside curb positions near the player.
+  - Commandeers active road units atomically through `UnitRegistry`, clearing cruising tasks, setting emergency sirens (Code 3: 32 m/s, Code 2: 20 m/s), and routing them to the player.
   - Seamless fallback spawner fulfills requested unit quotas via Ultimate Backup or native fallback if ambient units are unavailable.
 - **Responding Unit Lifecycle & State Machine**:
-  - **En Route & Roadside Arrival**: High-speed emergency driving with road/curb node target snapping (`GetRoadsideCurbPosition`) and a 12m stopping radius, preventing cruiser circling loops.
-  - **Scene Arrival (within 14m/16m)**: Mutes audible sirens immediately while keeping lightbars flashing, followed by staggered vehicle egress (driver exits first, passenger follows after 350ms).
+  - **En Route**: High-speed emergency driving with Backspace fast-spawn support.
+  - **Scene Arrival (within 25m)**: Mutes audible sirens immediately while keeping lightbars flashing, followed by staggered vehicle egress (driver exits first, passenger follows after 350ms).
   - **Threat Engagement**: Scans for active gunfire, suspects attacking player/police, or active pursuits. Officers unholster sidearms, take tactical cover, and neutralize hostiles.
-  - **Follow / Buddy Support**: Throttled 1300ms navigation mesh updates eliminate 60 Hz ped stutter/freezing; officers stand naturally when within 3.5m.
-  - **Clean Dismissal (`Enter` held ~1.1s or menu option)**: Deletes blips atomically, extinguishes sirens, remounts cruiser, and cruises away before seamlessly merging back into ambient traffic.
+  - **Follow / Buddy Support**: If no threat is present, officers follow the player with close support and an interior watchdog that teleports officers if distance > 25m into buildings.
+  - **Clean Dismissal (`Enter` held ~1.2s or menu option)**: Deletes blips atomically, extinguishes sirens, remounts cruiser, and cruises away before seamlessly merging back into ambient traffic.
 
 ---
 
-## 3. Universal Radar Blips & Zero-Leak Destructor
+## 3. Architecture & Reliability Standards
 
-Cadence assigns distinct, color-coded minimap blips to all active units so you can instantly recognize ambient police activity at a glance.
-
-### Radar Blip Color Matrix
-
-| Unit State | Sprite | Color ID | Color Name | Flashing | Display Name Format |
-| :--- | :---: | :---: | :--- | :---: | :--- |
-| **Cruising Patrol** | 56 | 38 | Navy Blue | No | `{Callsign} [PATROL]` |
-| **Roadside Traffic Stop** | 56 | 4 | Yellow | No | `{Callsign} [TRAFFIC STOP]` |
-| **Stationary / Radar Trap** | 56 | 2 | Mint Green | No | `{Callsign} [STANDBY]` |
-| **Emergency Run / Takeover** | 56 | 1 | Red | Yes (600ms) | `{Callsign} [CODE 3]` |
-| **Pursuit Assist** | 56 | 17 | Orange | Yes (400ms) | `{Callsign} [PURSUIT]` |
-| **Threat Reaction / Combat** | 56 | 49 | Dark Orange | Yes (300ms) | `{Callsign} [ENGAGING]` |
-| **Dismounted Officer Foot** | 58 | 38 | Navy Blue | No | `{Callsign} [ON FOOT]` |
-
-### Zero-Leak Destructor Protocol
-To prevent the notorious "blip ghosting" and minimap clutter issues common in legacy mods, Cadence enforces an atomic 4-step teardown protocol whenever any blip is dismissed or transitioned:
-```csharp
-// 1. Native flag flash suppression
-NativeFunction.Natives.SET_BLIP_FLASHES(blip, false);
-
-// 2. RPH managed flash termination
-blip.StopFlashing();
-
-// 3. Engine entity deletion
-blip.Delete();
-
-// 4. Reference cleanup
-blip = null;
-```
+Cadence adheres strictly to the [`CODING_STANDARDS.md`](../CODING_STANDARDS.md) contract:
+- **Centralized Atomic Unit Registry (`UnitRegistry.cs`)**: Prevents cross-feature dual ownership and race conditions when commandeering or drafting units.
+- **LSPDFR Pursuit Disenrollment Safety (`TeardownHelper.cs`)**: Enforces `Functions.RemovePedFromPursuit(ofc)` before tasks are cleared or entities are deleted to eliminate LSPDFR NullReferenceExceptions (`TaskCopChasePedAdv.cs:1515`).
+- **Cooperative Fiber Lifecycle**: Cancellation flags and clean joins prevent abrupt thread abortion under locks.
+- **Strict Native Standards**: All native calls strictly use canonical uppercase names (`NativeFunction.Natives.<UPPERCASE>`). Banned pointer natives (e.g. `REMOVE_BLIP`) and corrupted hashes (`0xA2719248`) are permanently prohibited and enforced by static analysis.
 
 ---
 
@@ -149,13 +127,13 @@ Cadence includes an in-game dashboard powered by RAGENativeUI.
 | :--- | :--- | :--- | :--- |
 | **Master Activation Toggle** | `N/A` (Config Only) | `[General]` `EnablePlugin = true` / `PluginActive = true` | Yes (`false` turns off plugin) |
 | **Cadence Dashboard** | `Q + PageDown` | `[Keybinds]` `MenuKey = PageDown`, `MenuModifierKey = Q` | Yes (`None` / `0` / `Disabled` / `false` to disable) |
-| **Lean Backup Menu** | `X + PageDown` | `[Backup]` `BackupMenuKey = PageDown`, `BackupMenuModifierKey = X` | Yes (`None` / `0` / `Disabled` / `false` to disable) |
-| **Panic Button (Code Red)** | `LControlKey + Z` | `[Backup]` `PanicButtonKey = Z`, `PanicButtonModifierKey = LControlKey` | Yes (`None` / `0` / `Disabled` / `false` to disable) |
-| **Group Backup (Code 3)** | `LControlKey + C` | `[Backup]` `GroupBackupKey = C`, `GroupBackupModifierKey = LControlKey` | Yes (`None` / `0` / `Disabled` / `false` to disable) |
-| **Dismiss Backup** | `Enter` (hold ~1.2s) | `[Backup]` `DismissBackupKey = Enter` | Yes (`None` / `0` / `Disabled` / `false` to disable) |
+| **Lean Backup Menu** | `X + PageDown` | `[Keybinds]` `BackupMenuKey = PageDown`, `BackupMenuModifierKey = X` | Yes (`None` / `0` / `Disabled` / `false` to disable) |
+| **Panic Button (Code Red)** | `LControlKey + Z` | `[Keybinds]` `PanicButtonKey = Z`, `PanicButtonModifierKey = LControlKey` | Yes (`None` / `0` / `Disabled` / `false` to disable) |
+| **Group Backup (Code 3)** | `LControlKey + C` | `[Keybinds]` `GroupBackupKey = C`, `GroupBackupModifierKey = LControlKey` | Yes (`None` / `0` / `Disabled` / `false` to disable) |
+| **Dismiss Backup** | `Enter` (hold ~1.2s) | `[Keybinds]` `DismissBackupKey = Enter` | Yes (`None` / `0` / `Disabled` / `false` to disable) |
 | **Fast-Spawn En Route Unit** | `Backspace` (tap) | Context-sensitive safety hint | Active while backup unit is en route |
 
-> **Note on Dynamic Keybind Disabling**: Setting any key or modifier to `None`, `0`, `Disabled`, or `false` in `Cadence.ini` turns it off completely, disabling key registration and bypassing key detection.
+> **Note on Keybind Configuration**: All keybinds live under the `[Keybinds]` section in `Cadence.ini`. Setting any key or modifier to `None`, `0`, `Disabled`, or `false` turns it off completely.
 
 ### Menu Navigation & Features
 1. **Live Telemetry & Dashboard**:
@@ -171,7 +149,7 @@ Cadence includes an in-game dashboard powered by RAGENativeUI.
      - Ambient Backup System
 3. **Settings & Customization Submenu**:
    - On-the-fly customization of density, limits, and service varieties:
-     - **Preset Profile**: Toggle between `Realistic (Default)` (balanced, authentic density) and `Chaos (Living City)` (high density, faster pacing, living city feel).
+     - **Preset Profile**: Toggle between `Realistic (Default)` (balanced, authentic density: 4 patrol, 2 stops, 2 standby, 2 emergency runs, 4 pursuit) and `Chaos` (high density, living city feel: 8 patrol, 4 stops, 4 standby, 4 emergency runs, 6 pursuit).
      - **Max Patrol Cruisers**: Dynamic slider (1 to 16 cruisers; default: 4).
      - **Max Traffic Stops**: Dynamic slider (0 to 8 stops; default: 2).
      - **Max Speed Traps**: Dynamic slider (0 to 8 standby units; default: 2).
@@ -189,10 +167,12 @@ Cadence includes an in-game dashboard powered by RAGENativeUI.
      - `[Trigger Group Backup]`
 5. **Purge All Cadence Units**:
    - Safely wipes all active Cadence vehicles, officers, canines, accessory props, and radar blips in a single tick.
+   - Disenrolls officers from LSPDFR pursuits before cleanup to avoid crashes.
    - Cleans up and silences all lingering emergency vehicle sirens within 350m to prevent GTA V audio engine ghost loops.
    - Enforces an active 35–45 second spawner grace period so replacement cruisers do not immediately respawn.
-6. **Reload Cadence.ini**:
-   - Re-reads `Cadence.ini` settings from disk and updates all running parameters, limits, and menu toggles immediately.
+6. **Save / Reload Cadence.ini**:
+   - `Settings.Save()` safely persists all in-game menu customizations back to `Cadence.ini`.
+   - `Settings.Load()` re-reads settings from disk and immediately synchronizes running parameters.
 
 ---
 
@@ -202,20 +182,22 @@ Cadence includes an enterprise-grade asynchronous logging subsystem:
 - **Log Path**: `Grand Theft Auto V\plugins\LSPDFR\Cadence\Logs\Cadence.log`
 - **Zero Disk Stutters**: Operates on a dedicated low-priority background worker thread (`ThreadPriority.BelowNormal`) with a thread-safe queue. Disk writes never block RagePluginHook game fibers (0ms fiber overhead).
 - **Session Archiving**: Each new game session automatically archives the previous session log to `Cadence_Archive_yyyyMMdd_HHmmss.log`, maintaining a clean 10-session rolling retention.
-- **Configurable Verbosity**: Set `Debug = true` in `Cadence.ini` for detailed telemetry (spawns, road nodes, UB queries, state transitions, despawns) or `Debug = false` for standard silent gameplay.
+- **Configurable Verbosity**: Shipped with production default `Debug = false` for silent gameplay. Set `Debug = true` in `Cadence.ini` for detailed diagnostic telemetry.
 
 ---
 
 ## 6. Installation Instructions
 
 ### Requirements
-- Grand Theft Auto V (latest retail/Steam/Epic release)
+- Grand Theft Auto V (v1.0.3095.0 or later recommended)
 - RagePluginHook (v1.08+ or latest packaged with LSPDFR)
 - LSPD First Response (0.4.9+)
 - RAGENativeUI (1.9.2+ - standard in modern LSPDFR setups)
+- Microsoft .NET Framework 4.8 Runtime
+- [Recommended] Ultimate Backup (v1.8.7.0+; if not installed, set `Fallback = true` under `[Integration]` in `Cadence.ini`)
 
 ### Standard Installation
-1. Download the release archive (`Cadence_v1.1.0.zip`).
+1. Download the release archive (`Cadence_v1.2.0.zip`).
 2. Open the archive and extract the `plugins` folder directly into your **Grand Theft Auto V root directory**:
    ```
    Grand Theft Auto V/
@@ -239,7 +221,7 @@ Cadence includes an enterprise-grade asynchronous logging subsystem:
 
 Cadence was engineered from the start to be a peaceful, unobtrusive neighbor in your mod directory:
 - **Ultimate Backup (UB)**: 100% compatible. Cadence provides 1:1 Panic Button audio/notifications and seamlessly uses UB's XML fleet spawner.
-  - **Strict Fleet Protection**: Fallback to vanilla GTA vehicles (`police`, `s_m_y_cop_01`) is **disabled by default** (`Fallback = false`). If UB is not ready or returns null, Cadence aborts the spawn cleanly to preserve your customized vehicle fleet.
+  - **Strict Fleet Protection**: Fallback to vanilla GTA vehicles (`police`, `s_m_y_cop_01`) is **disabled by default** (`Fallback = false`). If UB is not ready or returns null, Cadence aborts the spawn cleanly to preserve your customized vehicle fleet. Set `Fallback = true` if you do not use Ultimate Backup.
   - **Startup Grace Period**: Cadence observes a 5–8 second grace period on boot to allow UB's XML configuration files to complete loading before initiating ambient spawns.
 - **StopThePed (STP)**: 100% compatible. Cadence respects STP ped states and does not conflict with STP traffic stop or ped interrogation routines.
 - **External Callout Packs**: Seamless coexistence. Ambient Cadence units will never steal an accepted player callout or interfere with callout objectives. Rejected callout takeovers only trigger on callouts you actively decline or ignore.
@@ -247,12 +229,9 @@ Cadence was engineered from the start to be a peaceful, unobtrusive neighbor in 
 
 ---
 
-## 8. Future Roadmap & Architecture Blueprints
+## 8. Planned Future Features
 
-Comprehensive architectural blueprints and multi-stage state machines for planned post-v1.1.0 modules are documented in:
-- [`future-features.md`](future-features.md) (or root [`../future-features.md`](../future-features.md))
-
-### Planned Future Features ("Ponytail" Delete-Friendly Model):
+Planned post-v1.2.0 enhancements following the "Ponytail" delete-friendly model:
 1. **Tactical Pursuit Spikestrips** (`SpikeFeature.cs`): Ambient intercept vector positioning and dynamic stinger deployment.
 2. **Ambient K9 Unit Deployments** (`K9Feature.cs`): Dedicated handler & canine patrols with bite-and-hold apprehension.
 3. **Station Sally Ports & Shift Rotations** (`StationFeature.cs`): Realistic station roll-outs and end-of-watch bay parking.
@@ -261,11 +240,10 @@ Comprehensive architectural blueprints and multi-stage state machines for planne
 6. **Coroner & Tow Ambient Services** (`ServiceFeature.cs`): Living physical service units replacing instant-teleport removals.
 7. **Traffic Stop Escalation Matrix**: Seamless ambient backup transitions during hostile traffic stop shootouts/pursuits.
 
-> *Note: Active development is 100% frozen on new features until v1.1.0 achieves complete golden master sign-off (zero entity/blip leakage, deterministic memory footprint, and 60fps stable performance).*
-
 ---
 
 ## 9. License & Credits
 
+- Released under the [MIT License](../LICENSE).
 - Developed for the LSPDFR community by the Cadence Development Team.
 - Built on top of the RagePluginHook API and LSPDFR SDK.
