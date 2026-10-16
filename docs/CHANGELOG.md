@@ -4,6 +4,180 @@ All notable changes to the Cadence project are documented in this file.
 
 ---
 
+## [1.2.0] - 2026-10-16
+
+### Production Readiness & Tier 0 Architectural Hardening
+- **Shared Ownership Registry (`UnitRegistry.cs`)**:
+  - Centralized atomic entity claim and release mechanism preventing cross-feature dual ownership conflicts (§3.1).
+  - Eradicated multi-feature race conditions where `PatrolFeature`, `TrafficStopFeature`, `PursuitFeature`, and `BackupFeature` could simultaneously commandeer the same vehicle or ped.
+  - Implemented lock-synchronized claim validation (`TryClaim`, `Release`, `IsClaimed`, `IsClaimedBy`, `IsClaimedByOthers`, `ReleaseAll`) tracking entity handles across all active plugins.
+  - Exposed decoupled `uint` internal handle management to allow standalone test execution outside the GTA 5 engine without loading unmanaged native libraries.
+- **Pursuit Disenrollment Teardown Safety (`TeardownHelper.cs`)**:
+  - Eradicated critical crash vector during LSPDFR pursuit teardown (§3.2).
+  - Safely disenrolls active Cadence units from LSPDFR pursuits via `Functions.RemoveCopFromPursuit` before entity cleanup, preventing null reference exceptions and native engine faults when pursuits conclude or features are disposed.
+- **Cooperative Fiber Cancellation & Teardown Step Isolation**:
+  - Hardened lifecycle management (§3.3) by decoupling background fibers and ensuring cooperative cancellation tokens and safe abort intervals are observed.
+  - Each feature's teardown sequence executes in isolated `try`/`catch` blocks, guaranteeing that a failure in one feature cannot interrupt the orderly teardown of subsequent subsystems.
+- **Settings Persistence, Invariants & NaN Rejection (`Settings.cs`)**:
+  - Implemented robust `Settings.Save()` configuration persistence with comment-preserving INI serialization (§3.6).
+  - Enforced distance relationship invariant `DespawnDistance >= SpawnDistanceMax + 50.0m` across all presets and custom configurations (`ValidateDistances`).
+  - Added rigorous NaN and Infinity sanitization, automatically restoring safe fallback defaults upon invalid float values.
+  - Updated production default values (`Debug = false`, `Preset = Realistic`, `MaxPatrolUnits = 4`, `MaxTrafficStops = 2`, `MaxStationaryUnits = 2`, `MaxEmergencyRuns = 2`, `MaxPursuitUnits = 4`).
+- **Automated Test Suite (`tests/Cadence.Tests`)**:
+  - Standalone MSBuild test suite targeting .NET Framework 4.8 / x64 with zero external mock dependencies.
+  - Validates `Settings` parsing, baseline preservation, save roundtrips, distance invariants, and NaN protection (`SettingsTests.cs`).
+  - Validates `UnitRegistry` atomic claims, multi-threading contention with 20 parallel threads, owner checks, and release idempotency (`UnitRegistryTests.cs`).
+  - Validates release package asset availability and zip table of contents integrity (`PackagingTests.cs`).
+- **Native Validator & Packaging Pipeline Hardening (`scripts/validate_natives.py`, `dist/build.bat`)**:
+  - Upgraded native validator to exclude build artifacts (`bin/`, `obj/`), enforce canonical uppercase `NativeFunction.Natives.*` and `CallByName` syntax, ban blacklisted `0xA2719248`, verify mandatory unarmed weapon hash `0xA2719263`, and check driving ability/aggressiveness float clamps `[0.0, 1.0]`.
+  - Hardened `dist/build.bat` with single-sourced `v1.2.0` versioning, hard-fail missing DLL checks, integrated validator and test suite gates, and archive integrity assertion.
+
+### Forensic Architectural Fixes: Cruiser Thrashing, Scene Retention, Siren Neutralization & Concurrency Hardening
+- **Cruiser In/Out Thrashing Eradication During Pursuits (`BackupFeature.cs`)**:
+  - **LHandle Heap Object Reference Inequality Fix**: Uncovered root cause of infinite loop (`Cadence.log` lines 945–980) where responding backup officers joined pursuits, stopped, stepped out, re-entered, and repeated every second. `Functions.GetActivePursuit()` instantiates a new heap `LHandle` reference on each invocation, causing `_enrolledPursuitHandle != activePursuit` to evaluate `true` on every 1000ms tick, repeatedly clearing `_enrolledPursuitOfficers`.
+  - **Eliminated `ofc.Tasks.Clear()` on Pursuit Enrollment**: In `TransitionToSceneArrival()` and `UpdateOnScene()`, eliminated destructive `ofc.Tasks.Clear()` calls prior to `Functions.AddCopToPursuit()`. Clearing tasks aborted LSPDFR's native `TaskCopChasePedAdv` vehicle pursuit AI.
+  - **Stable Pursuit Tracking Invariant**: Replaced handle comparison with `_enrolledPursuitHandle == null || !Functions.IsPursuitStillRunning(_enrolledPursuitHandle)`, ensuring officer enrollment state persists stably throughout the duration of a chase.
+  - **Pursuit Guard on Re-engagement**: In `Reengage()`, gated officer dismount egress fibers behind `!isPursuitActive`. Vehicle-mounted responders in active vehicle chases remain in their cruisers to engage fleeing subjects.
+- **Scene Retention & Standby Holding After Pursuit Conclusion (`BackupFeature.cs`, `PursuitFeature.cs`)**:
+  - **Event-Driven Pursuit Lifecycle Hook**: Subscribed `Events.OnPursuitEnded += OnLspdfrPursuitEnded` across both `BackupFeature` and `PursuitFeature` (with symmetric unhooks on shutdown), eradicating reliance on 750ms polling loops and intercepting LSPDFR native teardown instantaneously.
+  - **`HoldOnSceneAfterPursuit` Implementation**: Implemented tactical post-pursuit scene holding on `BackupUnitSession`: activates silent emergency strobe lightbars (`IsSirenSilent = true`), locks cruisers with handbrakes, orders defensive staggered dismount, assigns `WORLD_HUMAN_COP_IDLES` scenario animations, and enforces `BlockPermanentEvents = true` until explicit player dismissal (`Settings.DismissBackupKey`).
+  - **En Route Timeout Protection**: In `BackupFeature.cs`, prevented 75s en route despawn timeouts while a vehicular pursuit is actively running (`!isPursuitRunning`), preserving units during long-distance or high-speed freeway chases.
+  - **Distance Clamping Parity**: In `PursuitFeature.PruneAndWatchSessions`, replaced the hardcoded 350m cutoff with `Settings.DespawnDistance` (450m), preventing trailing units from being prematurely pruned after high-speed chases.
+- **Siren Wailing & Emergency Driving Flag Neutralization (`NativeTasks.cs`, `ResponseFeature.cs`, `PatrolFeature.cs`)**:
+  - **Audio Engine Desynchronization Eradication**: Re-architected `ShutOffSirenAndLights` in `NativeTasks.cs`. Completely eliminated the inverted `SET_VEHICLE_HAS_MUTED_SIRENS(vehicle, true)` call during siren deactivation that corrupted GTA V's internal `CAEVehicleAudioEntity`. Fully neutralizes audio and yield flags (`vehicle.IsSirenOn = false`, `vehicle.IsSirenSilent = false`, `SET_VEHICLE_SIREN(false)`, `SET_VEHICLE_HAS_MUTED_SIRENS(false)`, `SET_SIREN_WITH_NO_DRIVER(false)`, `ShouldVehiclesYieldToThisVehicle = false`).
+  - **Patrol Driver Demobilization**: In `ConfigurePatrolDriver`, cleared `SET_TASK_VEHICLE_CHASE_BEHAVIOR_FLAG 8`, zeroed `SET_DRIVER_RACING_MODIFIER 0.0f`, disabled vehicle yield, and invoked `ShutOffSirenAndLights(cruiser)`. Ambient cruisers will no longer blast warning horns or siren bursts at civilian traffic.
+  - **Response Disposal Sanitization**: In `ResponseFeature.Dispose(immediateDelete: false)`, properly invoked `ConfigurePatrolDriver` and `ShutOffSirenAndLights` prior to handing cruisers over to ambient traffic.
+  - **Ultimate Backup Spawn Sanitization & Watchdog Enforcement**: In `PatrolFeature.cs`, sanitized newly spawned Ultimate Backup cruisers with `ShutOffSirenAndLights` before cruising AI starts, and added `NativeTasks.EnforceSirenLightbarPolicy(unit.Cruiser)` to the background watchdog.
+- **Coding Standards, Concurrency & AI Attribute Restorations (`BlipService.cs`, `TrafficStopFeature.cs`, `PatrolFeature.cs`, `StationaryFeature.cs`, `PursuitFeature.cs`, `AssistFeature.cs`)**:
+  - **Section 7.3 Compliance**: Changed `alternateFlash: true` to `alternateFlash: false` on police pursuit blips in `BlipService.cs` (lines 197 & 368), removing confusing red/blue alternating flashes that made friendly cruisers appear as suspect markers.
+  - **Thread-Safe Logging Reads**: Across `TrafficStopFeature.cs`, `PatrolFeature.cs`, `StationaryFeature.cs`, and `PursuitFeature.cs`, captured collection counts (`_active*.Count`) safely inside `lock (_syncLock)` before logging.
+  - **Combat Attribute Leak Fix**: In `AssistFeature.FinishStandDown()`, restored `SET_PED_COMBAT_ATTRIBUTES(officer, 1, true)` (`CanUseVehicles = true`) and cleared attribute 5 (`AlwaysFight = false`), ensuring assisted officers can operate vehicles in future encounters.
+
+---
+
+## [1.1.9] - 2026-10-15
+
+### Foot Blip Deletion on Remount, Blip Pool Exhaustion & Crash Eradication
+- **Blip Pool Exhaustion Crash Resolution (`BackupFeature.cs`, `BlipService.cs`)**:
+  - **Root Cause of Crash**: Identified from `RagePluginHook.log` and `Cadence.log` where LSPDFR crashed with `System.Exception: Could not create blip` inside `TrafficStop.cs:230`. Cadence had flooded the native GTA V blip pool with over 1,200 blips in seconds (`AttachOfficerFootBlip error: Could not create blip`).
+  - **Root Cause of Badge Blip Not Disappearing on Remount**: In `BackupUnitSession.UpdateBlipStates()`, foot blips were stored in an unmapped `List<Blip> FootBlips` and queried via `SafeGetAttachedBlip(ofc)`. Because `ofc.GetAttachedBlip()` frequently returned null in RPH, `UpdateBlipStates` attached a new blip for each dismounted officer *every tick*. When officers remounted, `FootBlips.RemoveAll(...)` was called, which only dropped the C# references from the list without ever calling `blip.Delete()`, leaving all native badge blips permanently stuck on the radar.
+  - **Fix**: Replaced `List<Blip>` with a strict `Dictionary<PoolHandle, Blip> _officerFootBlips`. Each officer ped is guaranteed to have at most one attached foot blip. When an officer remounts their cruiser, their badge blip is immediately looked up by handle and deleted via the 4-step `BlipService.SafeDeleteBlip(ref fb)` protocol.
+  - **`CreateOrUpdateBlip` Guard**: Updated `BlipService.CreateOrUpdateBlip` to query `IS_BLIP_FLASHING` before destroying and recreating solid blips, eliminating churn and preserving engine blip slots.
+
+---
+
+## [1.1.8] - 2026-10-15
+
+### Unaccepted Callout Response Prevention, Panic Button Responders Vanishing Fix & Zero-Lock Concurrency Hardening
+- **Unaccepted/Pending Callout Response Prevention (`BackupFeature.cs`, `ResponseFeature.cs`)**:
+  - Resolved issue where LSPDFR callouts offered over the radio (pending acceptance with the `Y` key) caused the Lean Backup menu (`X + PageDown`) to display "Callout Response" as active, erroneously dispatching backup units to unaccepted calls.
+  - Integrated `CalloutAcceptanceState.Running` validation via `Functions.GetCalloutAcceptanceState(currentCallout)`. Pending callouts (`CalloutAcceptanceState.Pending`) are now strictly ignored by waypoint/callout resolvers, backup menu defaults, and autonomous response logic until explicitly accepted by the player.
+- **Panic Button & Group Backup Responders Vanishing Fix (`BackupFeature.cs`, `ResponseFeature.cs`, `AssistFeature.cs`)**:
+  - **Fatal Re-engagement Defect Elimination**: In `BackupUnitSession`, `CanReengage()` was erroneously returning `true` for `State == UnitState.ArrivedOnScene`. During multi-unit dispatches (`DispatchUnitsSequence`), once the first responder arrived within 35m and dismounted, subsequent loop iterations selected the already-arrived unit via `TryReengageDismissingUnit` instead of spawning the remaining backup units. Restricting `CanReengage()` strictly to `State == UnitState.Dismissing` ensures all requested units (4–7 for panic, 2–3 for group) spawn and deploy properly.
+  - **Panic & Group Quota Clamping Resolution**: Fixed quota calculation in `RequestBackup(BackupType.PanicButton)` and `GroupBackup` which clamped non-pursuit requests to `Settings.MaxPursuitUnits - totalEngaged`, throttling emergency panic requests to 1 single car. Non-pursuit requests now reliably dispatch the full configured quota (`PanicButtonUnits` and `GroupBackupUnits`).
+  - **Cross-Feature Cruiser Commandeering Guard**: Added `BackupFeature.IsBackupCruiser` checks to `ResponseFeature.FindIdleAmbientPoliceVehicle` and `AssistFeature.ScanForNearbyThreats`. Responding and on-scene backup cruisers can no longer be hijacked or have their routes canceled by ambient threat scans or emergency runs.
+  - **Radar Blip Self-Healing & Foot Blip Optimization**: In `UpdateBlipStates()`, proactively re-attaches `RadarBlip` if dropped or invalidated by external engine operations (`RadarBlip == null || !RadarBlip.Exists()`), preventing blips from vanishing off the radar. Gated foot blip cleanup behind `FootBlips.Count > 0` to eliminate redundant native calls on seated officers.
+  - **Sticky Flash Protocol Reset**: Added zero-interval and zero-timer resets (`SET_BLIP_FLASH_INTERVAL(blip, 0)`, `SET_BLIP_FLASH_TIMER(blip, 0)`) in `BlipService.ApplyBlipState` for solid blips.
+- **Zero-Lock Concurrency Hardening Across Yields (`BackupFeature.cs`, `ResponseFeature.cs`, `PatrolFeature.cs`, `StationaryFeature.cs`)**:
+  - Refactored `UpdateActiveUnits`, `DismissAll`, `PurgeAllInternal`, and `RunResponseWatchdog` to snapshot collections (`_activeUnits.ToArray()`) under lock and execute state machine ticks, entity tasks, and disposal routines outside the lock.
+  - Cleanly disposed invalid/completed units during list cleanups in `GetActiveCount` and `GetActivePoliceResponderCount`.
+
+---
+
+## [1.1.7] - 2026-10-15
+
+### Forward Emergency Response Driving, Sticky Blip Flash Eradication & Player Cruiser Radar Customization
+- **Emergency Driving Direction Fix (`NativeTasks.cs`)**:
+  - Restored `LongRangeEmergencyDrivingFlag` to `787004L` (0xC023C), completely eradicating bit 1024 (`DriveInReverse`).
+  - Emergency and backup units responding to Panic Button calls (`LControl + Z`) and 911 dispatch now navigate forward toward the player and waypoints with full obstacle avoidance (`SwerveAroundAllVehicles`, `SteerAroundStationaryVehicles`, `SteerAroundPeds`, `SteerAroundObjects`, `DriveIntoOncomingTraffic`, `UseShortCutLinks`, `ChangeLanesAroundObstructions`).
+- **Sticky Radar Blip Flashing Fix on Remount & Dismissal (`BlipService.cs`, `BackupFeature.cs`, `PatrolFeature.cs`, `PursuitFeature.cs`)**:
+  - Identified and resolved the GTA V engine quirk where `SET_BLIP_FLASHES(blip, false)` fails to terminate flash animation loops on an existing blip handle.
+  - When officers remount their cruiser (or re-enter upon dismissal), Cadence now cleanly deletes the old blip reference via the 4-step destructor protocol (`SafeDeleteBlip`) and recreates a fresh, pristine `[PATROL]` blip (`Sprite 56`, `Color 38` Navy Blue, solid).
+  - Dismissed cruisers returning to routine patrol now display a calm, steady blue icon rather than flashing continuously.
+  - Enhanced `CreateOrUpdateBlip` in `BlipService.cs` so any transition to a solid state (`flashIntervalMs == 0`) automatically destroys any existing blip that was previously flashing, guaranteeing zero sticky flash artifacts across all features.
+- **Personal Vehicle Radar Icon Customization (`BlipService.cs`, `Settings.cs`, `Main.cs`, `Cadence.ini`)**:
+  - Added dedicated player vehicle blip monitoring fiber (`UpdatePlayerVehicleBlip`).
+  - Intercepts LSPDFR's default oversized White Circle marker on the player's personal cruiser when dismounted on foot, transforming it into a compact, sleek Purple Police Car blip:
+    - **Sprite**: `56` (`PoliceCar`) instead of the generic circle (`Sprite 1`).
+    - **Color**: `27` (Purple) to distinguish the player's personal car from AI units (Navy Blue, Orange, Red, Mint Green).
+    - **Scale**: `0.38f` (compact, sleek, matching Cadence's minimalist radar styling and eliminating the giant vanilla circle).
+    - **Auto-Cleanup**: Automatically destroys or yields the icon when the player re-enters the cruiser or changes vehicles.
+    - **Configurable**: Configured via `Cadence.ini` under `[Radar]` (`EnablePlayerVehicleBlip`, `PlayerVehicleBlipColor`, `PlayerVehicleBlipScale`, `PlayerVehicleBlipSprite`).
+
+---
+
+## [1.1.6] - 2026-10-15
+
+### Radar Blip Overhaul, Obstacle Avoidance AI, Pursuit Resolution & Smart Backup Re-engagement
+- **Cruiser Obstacle Avoidance Driving AI (`NativeTasks.cs`)**:
+  - Upgraded ambient and emergency driving AI flags:
+    - Set `CruisingFlags` and `NormalDrivingFlag` to `786603` (`StopForVehicles`, `StopForPeds`, `SteerAroundStationaryVehicles`, `SteerAroundPeds`, `SteerAroundObjects`, `StopAtTrafficLights`, `UseShortCutLinks`, `ChangeLanesAroundObstructions`). Cruisers now steer smoothly around pedestrians, stopped civilians, and parked vehicles instead of freezing or blocking roads.
+    - Set `LongRangeEmergencyDrivingFlag` to `788284L` (adds `GoOffRoadWhenAvoiding` [256] and `DriveInReverse` [1024]), allowing emergency cruisers to reverse if boxed in and navigate off-road around major obstructions.
+- **Traffic Stop Drafting Bug & Range Calibration (`PursuitFeature.cs`)**:
+  - Excluded cruisers actively engaged in traffic stops (`TrafficStopFeature.IsActiveCruiser(v)`) and emergency runs (`ResponseFeature.IsActiveCruiser(v)`) from ambient pursuit candidate selection. Cruisers conducting roadside stops will never be erroneously drafted or blare sirens while parked behind civilian vehicles.
+  - Reduced ambient pursuit drafting radius from 380m down to 220m to keep pursuit backup locally relevant and prevent pulling distant units across town.
+- **Pursuit Conclusion Scene Resolution & Siren Muting (`PursuitFeature.cs`, `BackupFeature.cs`)**:
+  - When an active pursuit terminates or suspects surrender/kneel:
+    - Automatically mutes audible sirens across all participating and nearby police cruisers within 60m (`cruiser.IsSirenSilent = true`), keeping flashing emergency lightbars illuminated.
+    - Commands all pursuit officers (drivers and passengers) to dismount their cruisers, arm themselves with combat sidearms (`WeaponCombatPistol`), and establish tactical scene perimeters rather than idling inside vehicles with sirens blaring.
+- **Dismissal Help Text Notification Polish (`PursuitFeature.cs`)**:
+  - Eliminated the repetitive 750ms notification loop in `ProcessStandbyDismissal`. Displays a single clean 4-second notification when the player first approaches the standby scene.
+- **Universal Radar Blip Palette & Dismount/Remount Synchronization (`BlipService.cs`, `PursuitFeature.cs`, `BackupFeature.cs`, `PatrolFeature.cs`, `ResponseFeature.cs`)**:
+  - **Pursuit Units**: Solid Orange (`Color 17`), `Sprite 56` (`PoliceCar`), `{Callsign} [PURSUIT]`.
+  - **Callout Responders**: Flashing Purple (`Color 27`, 600ms), `Sprite 56` (`PoliceCar`), `{Callsign} [CALLOUT]`.
+  - **Dismounted Officer Synchronization**: When all officers exit a cruiser, the cruiser blip turns White (`Color 0`, `[PARKED]`) and each dismounted officer receives a Badge blip (`Sprite 58`, `Color 38`, `{Callsign} [ON FOOT]`). When remounted, badge blips are destroyed and the cruiser blip restores to its active operational role.
+- **Smart Unit Re-engagement & Duplicate Wave Elimination (`BackupFeature.cs`)**:
+  - Corrected `TryReengageDismissingUnit` proximity check to measure distance against both player position and target callout destination (`Math.Min(distToTarget, distToPlayer) <= 300f`), allowing dismissed or departing units near the player to be immediately commandeered for new calls.
+  - For Panic Button and Group Backup requests, Cadence now checks for and re-engages on-scene or dismissing units within 120m first, only dispatching remaining units needed to fulfill the quota, preventing duplicate waves of 6 cars from piling onto an already-active scene.
+  - Idle ambient police vehicles can be drafted regardless of Ultimate Backup tagging.
+
+---
+
+## [1.1.5] - 2026-10-15
+
+### Callout Response Mode, Waypoint Navigation & Tactical Scene Holding
+- **Callout Response Mode in Lean Backup Menu (`BackupFeature.cs`)**:
+  - Integrated dedicated `"Callout Response"` section in the `X + PageDown` Lean Backup Menu with **dynamic contextual visibility**:
+    - When no callout or waypoint is active, `"Callout Response"` is cleanly hidden from the `Response Mode` selector list.
+    - When an LSPDFR callout is active or a map waypoint is placed, `"Callout Response"` automatically surfaces as the **first option** (default index 0) with a live contextual subtitle (e.g. `Responding: Assault in Progress` or `Responding: Map Waypoint`).
+  - Dynamically displays response actions: Local Police (Code 3 / Code 2), State Patrol (Code 3 / Code 2), Multi-Unit Tactical Group (Code 3), EMS Ambulance (Code 3 / Code 2), Fire Rescue (Code 3 / Code 2), and Dismiss All.
+- **Ambient-First Waypoint & Active Callout Resolution (`BackupFeature.cs`)**:
+  - Implemented `TryGetCalloutOrWaypointPosition`:
+    - Priority 1: Reads player's active GPS waypoint via GTA V natives `HUD::IS_WAYPOINT_ACTIVE`, `HUD::GET_FIRST_BLIP_INFO_ID(8)`, and `HUD::GET_BLIP_INFO_ID_COORD`, snapped to a valid road curb node via `GetRoadsideCurbPosition`.
+    - Priority 2: Safely inspects active LSPDFR callout via `Functions.IsCalloutRunning()`, `Functions.GetCurrentCallout()`, and non-inlined reflection on `LHandle.Object` to obtain `Callout.CalloutPosition`.
+  - Maintains 1:1 ambient-first commandeering: searches within 350m for existing ambient patrol, stationary, or traffic stop cruisers, rerouting them directly to the target callout position.
+  - Graceful fallback spawning via Ultimate Backup (`SpawnLocalPatrol`, `SpawnStatePatrol`, `SpawnAmbulanceUnit`, `SpawnFireTruckUnit`) or native police vehicles if no ambient candidate is available.
+- **En Route Dynamics & Despawn Guard (`BackupFeature.cs`)**:
+  - Recalculates course dynamically en route if the player moves their GPS waypoint.
+  - Extended en route despawn timeout to 180 seconds and 600 meters for callout units, preventing premature despawn while responding across the map.
+  - Smooth deceleration and arrival detection upon reaching within 22 meters of the target curb node or coming to a stop near scene.
+- **On-Scene Perimeter Holding & Tactical Transition (`BackupFeature.cs`)**:
+  - While player is >35m away, responders hold a defensive perimeter within 12m of their cruiser using `WORLD_HUMAN_COP_IDLES` instead of running across the map to buddy-follow.
+  - Responders center threat scans around their cruiser (40m radius) and engage hostile peds immediately.
+  - Responders automatically transition to close buddy-following support as soon as the player arrives on scene (within 35m).
+  - Automatically hooks `Events.OnCalloutFinished` to cleanly dismiss callout units when the callout concludes.
+- **Dashboard Menu Integration (`CadenceMenu.cs`)**:
+  - Added `Trigger Callout Response` to the "Testing & Spawns" submenu, wired via reflection (`InvokeFeatureSpawn`) to preserve the Ponytail delete-friendly architecture.
+
+---
+
+## [1.1.4] - 2026-10-14
+
+### Code Audit, Native Verification & Vehicle Physics Deadlock Resolution
+- **Vehicle Physics & Engine Stall Deadlock Fix (`AssistFeature.cs`, `ResponseFeature.cs`)**:
+  - Resolved `BRING_VEHICLE_TO_HALT` parameter defect where `duration`/`killEngine` parameter was passed as `1`, causing GTA V's physics engine to permanently stall vehicle engines upon arrival or threat reaction.
+  - Set halt duration to `0` and implemented canonical native `STOP_BRINGING_VEHICLE_TO_HALT(Cruiser)` across `FinishStandDown`, `Relinquish`, and `Dispose` routines before issuing cruising tasks, ensuring cruisers smoothly resume patrol and merge into traffic without freezing in place.
+- **Blip Destructor Protocol & Standard Alignment (`CODING_STANDARDS.md`)**:
+  - Corrected Step 4 in `CODING_STANDARDS.md` to remove references to the banned native `HUD::REMOVE_BLIP` (which accepts an internal engine `Blip*` pointer, causing `AccessViolationException` in RPH).
+  - Aligned documentation with the battle-tested 4-step `BlipService.SafeDeleteBlip(ref Blip blip)` protocol: null check, visual flash cessation (`SET_BLIP_FLASHES` & `StopFlashing()`), managed deletion (`blip.Delete()`), and reference nullification (`blip = null`) in a `finally` block.
+- **Assembly Version Alignment (`AssemblyInfo.cs`)**:
+  - Synchronized `AssemblyVersion` and `AssemblyFileVersion` to `1.1.0.0` matching `build.bat` release packaging and plugin documentation.
+- **Native Verification & Static Analysis**:
+  - Confirmed 100% compliance across all 121 native call sites in 20 C# source files against alloc8or's GTA V native database via `gta5-dev` MCP server.
+  - Zero RDR2 natives, zero raw hex hacks, and zero-warning MSBuild compilation under `/p:TreatWarningsAsErrors=true`.
+
+---
+
 ## [1.1.3] - 2026-10-13
 
 ### Cadence Overhaul Phase 2 - Pursuit AI, Standby Scene Holding, Backup Navigation & UB Parity Menu
@@ -272,5 +446,5 @@ All notable changes to the Cadence project are documented in this file.
   - Thread-safe animation and model streaming handlers.
 - **Build & CI Pipeline**:
   - Classic MSBuild targeting .NET Framework 4.8 / C# 10 / x64.
-  - Automated build scripts (`dist\build.bat`, `scripts\build.bat`, `scripts\push_dev.bat`, `scripts\promote_to_main.bat`).
+  - Automated build scripts (`dist\build.bat`, `scripts\push_dev.bat`, `scripts\promote_to_main.bat`).
   - Zero warnings, zero errors under `/p:TreatWarningsAsErrors=true`.

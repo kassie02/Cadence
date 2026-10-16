@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using Rage;
 using Rage.Native;
 using LSPD_First_Response.Mod.API;
@@ -18,11 +19,23 @@ namespace Cadence.Features
     /// transitions drafted units back to routine patrol upon Code 4.
     /// Strictly self-contained under the Ponytail architecture.
     /// </summary>
-    public static class PursuitFeature
+    public sealed class PursuitFeature : IFeature
     {
+        public static PursuitFeature Instance { get; } = new PursuitFeature();
+        public string Name => "Pursuit";
+        public bool IsRunning => _isRunning;
+
+        void IFeature.Start() => Start();
+        void IFeature.Stop() => Stop();
+        void IFeature.PurgeAll(bool immediateDelete) => PurgeAll(immediateDelete);
+        int IFeature.GetActiveCount() => GetActiveCount();
+
         private static readonly object _syncLock = new object();
         private static readonly List<PursuitUnitSession> _activeSessions = new List<PursuitUnitSession>();
+        private static readonly Dictionary<PoolHandle, Blip> _trackedSuspectBlips = new Dictionary<PoolHandle, Blip>();
+        private static readonly List<GameFiber> _trackedFibers = new List<GameFiber>();
         private static readonly Random _rand = new Random();
+        private const uint WeaponCombatPistol = 0x5EF9FEC4;
 
         private static GameFiber _pursuitFiber;
         private static bool _isRunning;
@@ -33,6 +46,32 @@ namespace Cadence.Features
         {
             "2-LINCOLN", "3-MARY", "4-GEORGE", "5-EDWARD", "6-FRANK", "7-DAVID", "8-OCEAN", "1-ADAM"
         };
+
+        private static GameFiber StartTrackedFiber(Action action, string name)
+        {
+            GameFiber fiber = null;
+            fiber = GameFiber.StartNew(() =>
+            {
+                try
+                {
+                    action();
+                }
+                finally
+                {
+                    lock (_syncLock)
+                    {
+                        _trackedFibers.Remove(fiber);
+                    }
+                }
+            }, name);
+
+            lock (_syncLock)
+            {
+                _trackedFibers.RemoveAll(f => f == null || !f.IsAlive);
+                if (fiber != null) _trackedFibers.Add(fiber);
+            }
+            return fiber;
+        }
 
         // ====================================================================
         // Public API Contract
@@ -47,42 +86,90 @@ namespace Cadence.Features
                 _lastJoinTime = 0;
 
                 Logger.Info("[PursuitFeature] Starting ambient pursuit watchdog background fiber.");
+
+                try
+                {
+                    Events.OnPursuitEnded += OnLspdfrPursuitEnded;
+                }
+                catch (Exception ex)
+                {
+                    Logger.Debug($"[PursuitFeature] Could not hook Events.OnPursuitEnded: {ex.Message}");
+                }
+
                 _pursuitFiber = GameFiber.StartNew(PursuitProcessLoop, "Cadence - Pursuit Feature Fiber");
             }
         }
 
         public static void Stop()
         {
+            List<GameFiber> fibersToWait;
             lock (_syncLock)
             {
                 if (!_isRunning) return;
                 _isRunning = false;
 
                 Logger.Info("[PursuitFeature] Stopping pursuit feature and releasing drafted units.");
-                ReleaseAllPursuitUnits(immediateDelete: false);
 
                 try
                 {
-                    if (_pursuitFiber != null && _pursuitFiber.IsAlive)
-                    {
-                        _pursuitFiber.Abort();
-                    }
+                    Events.OnPursuitEnded -= OnLspdfrPursuitEnded;
                 }
                 catch { }
-                finally
+
+                ReleaseAllPursuitUnits(immediateDelete: false);
+
+                fibersToWait = new List<GameFiber>(_trackedFibers);
+                if (_pursuitFiber != null) fibersToWait.Add(_pursuitFiber);
+            }
+
+            uint waitStart = Game.GameTime;
+            while (fibersToWait.Any(f => f != null && f.IsAlive) && Game.GameTime - waitStart < 500)
+            {
+                GameFiber.Sleep(25);
+            }
+
+            foreach (var f in fibersToWait)
+            {
+                try
                 {
-                    _pursuitFiber = null;
+                    if (f != null && f.IsAlive) f.Abort();
                 }
+                catch { }
+            }
+
+            lock (_syncLock)
+            {
+                _trackedFibers.Clear();
+                _pursuitFiber = null;
             }
         }
 
-        public static void PurgeAll()
+        public static void PurgeAll(bool immediateDelete = true)
         {
             lock (_syncLock)
             {
-                Logger.Info("[PursuitFeature] Purging all active pursuit units.");
-                ReleaseAllPursuitUnits(immediateDelete: true);
+                Logger.Info($"[PursuitFeature] Purging all active pursuit units (immediateDelete={immediateDelete}).");
+                ReleaseAllPursuitUnits(immediateDelete: immediateDelete);
             }
+        }
+
+        public static void RelinquishCruiser(Vehicle cruiser)
+        {
+            if (cruiser == null) return;
+            PursuitUnitSession sessionToDispose = null;
+            lock (_syncLock)
+            {
+                sessionToDispose = _activeSessions.FirstOrDefault(s => s != null && s.Cruiser == cruiser);
+                if (sessionToDispose != null)
+                {
+                    _activeSessions.Remove(sessionToDispose);
+                }
+            }
+            if (sessionToDispose != null)
+            {
+                sessionToDispose.Dispose(immediateDelete: false);
+            }
+            UnitRegistry.Release(cruiser);
         }
 
         public static int GetActiveCount()
@@ -91,6 +178,152 @@ namespace Cadence.Features
             {
                 _activeSessions.RemoveAll(s => s == null || !s.IsValid() || s.State == PursuitUnitSession.SessionState.Completed);
                 return _activeSessions.Count(s => s.State == PursuitUnitSession.SessionState.InPursuit);
+            }
+        }
+
+        public static bool IsDraftedOfficer(Ped ped)
+        {
+            if (ped == null || !ped.Exists()) return false;
+            lock (_syncLock)
+            {
+                return _activeSessions.Any(s => s != null && (s.Driver == ped || s.Passenger == ped));
+            }
+        }
+
+        public static bool IsPursuitCruiser(Vehicle cruiser)
+        {
+            if (cruiser == null || !cruiser.Exists()) return false;
+            lock (_syncLock)
+            {
+                return _activeSessions.Any(s => s != null && s.Cruiser == cruiser);
+            }
+        }
+
+        public static bool IsActiveCruiser(Vehicle cruiser) => IsPursuitCruiser(cruiser);
+
+        /// <summary>
+        /// Retrieves genuine fleeing suspects enrolled in the active pursuit, filtering out officers,
+        /// players, emergency vehicles, and compliant/neutralized subjects.
+        /// </summary>
+        public static List<Ped> GetValidPursuitSuspects(LHandle activePursuit)
+        {
+            var list = new List<Ped>();
+            if (activePursuit == null) return list;
+
+            try
+            {
+                Ped[] peds = Functions.GetPursuitPeds(activePursuit);
+                if (peds == null || peds.Length == 0) return list;
+
+                Ped[] cops = null;
+                try { cops = Functions.GetPursuitCops(activePursuit); } catch { }
+
+                Ped player = Game.LocalPlayer?.Character;
+
+                foreach (var p in peds)
+                {
+                    if (p == null || !p.Exists() || p.IsDead) continue;
+                    if (p.IsPlayer || (player != null && p == player)) continue;
+
+                    // Exclude any law enforcement ped or emergency relationship group
+                    try
+                    {
+                        if (Functions.IsPedACop(p)) continue;
+                    }
+                    catch { }
+
+                    try
+                    {
+                        if (p.RelationshipGroup == "COP" || p.RelationshipGroup == "POLICE") continue;
+                    }
+                    catch { }
+
+                    // Exclude any ped inside a police or emergency service vehicle
+                    try
+                    {
+                        if (p.CurrentVehicle != null && p.CurrentVehicle.Exists())
+                        {
+                            if (p.CurrentVehicle.IsPoliceVehicle || p.CurrentVehicle.Model.IsLawEnforcementVehicle ||
+                                IsPursuitCruiser(p.CurrentVehicle) || BackupFeature.IsBackupCruiser(p.CurrentVehicle))
+                                continue;
+                        }
+                    }
+                    catch { }
+
+                    // Exclude peds enrolled as cops in this pursuit
+                    if (cops != null && cops.Contains(p)) continue;
+
+                    // Exclude Cadence registered backup or drafted officers
+                    if (BackupFeature.IsBackupOfficer(p) || IsDraftedOfficer(p)) continue;
+
+                    list.Add(p);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug($"[PursuitFeature] GetValidPursuitSuspects error: {ex.Message}");
+            }
+
+            return list;
+        }
+
+        /// <summary>
+        /// Evaluates whether any pursuit suspect is currently surrendering, kneeling, getting arrested,
+        /// being handcuffed, or already cuffed/arrested. While true, no new units may be drafted or added
+        /// to the pursuit to ensure LSPDFR's designated primary arresting officer can complete the arrest
+        /// uninterrupted without CopBustPed task aborts.
+        /// </summary>
+        public static bool IsAnySuspectSurrenderingOrArrested(LHandle activePursuit)
+        {
+            if (activePursuit == null) return false;
+            try
+            {
+                if (!Functions.IsPursuitStillRunning(activePursuit)) return false;
+
+                var suspects = GetValidPursuitSuspects(activePursuit);
+                if (suspects == null || suspects.Count == 0) return false;
+
+                bool isAnyArresting = false;
+                bool areAllNeutralized = true;
+
+                foreach (var s in suspects)
+                {
+                    if (s == null || !s.Exists()) continue;
+
+                    bool gettingArrested = false;
+                    try
+                    {
+                        gettingArrested = Functions.IsPedGettingArrested(s) ||
+                                          Functions.IsPedBeingCuffed(s) ||
+                                          Functions.IsPedKneelingTaskActive(s) ||
+                                          Functions.IsPedCuffedTaskActive(s) ||
+                                          (Functions.GetPedArrestingOfficer(s) != null && Functions.GetPedArrestingOfficer(s).Exists());
+                    }
+                    catch { }
+
+                    bool arrested = false;
+                    try { arrested = Functions.IsPedArrested(s); } catch { }
+
+                    bool cuffed = false;
+                    try { cuffed = s.IsCuffed; } catch { }
+
+                    if (gettingArrested)
+                    {
+                        isAnyArresting = true;
+                    }
+
+                    if (!gettingArrested && !arrested && !cuffed && s.IsAlive)
+                    {
+                        areAllNeutralized = false;
+                    }
+                }
+
+                return isAnyArresting || areAllNeutralized;
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug($"[PursuitFeature] IsAnySuspectSurrenderingOrArrested error: {ex.Message}");
+                return false;
             }
         }
 
@@ -131,7 +364,8 @@ namespace Cadence.Features
 
                     if (!isPursuitRunning)
                     {
-                        // Pursuit has terminated or Code 4 was called: transition active units to OnSceneStandby
+                        // Pursuit has terminated or Code 4 was called: clean suspect markers and transition active units to OnSceneStandby
+                        ClearAllSuspectBlips();
                         TransitionToSceneStandby();
                     }
 
@@ -146,19 +380,39 @@ namespace Cadence.Features
                         continue;
                     }
 
-                    // Evaluate cruiser involvement count vs MaxPursuitUnits
+                    // Resolve target pursuit/suspect location
+                    Vector3 targetPos = GetPursuitTargetPosition(activePursuit, player);
+                    if (targetPos == Vector3.Zero)
+                    {
+                        continue;
+                    }
+
+                    // Update pursuit blips and dismount states for all active pursuit sessions
+                    lock (_syncLock)
+                    {
+                        foreach (var s in _activeSessions)
+                        {
+                            if (s != null && s.IsValid())
+                            {
+                                if (s.State == PursuitUnitSession.SessionState.InPursuit)
+                                {
+                                    s.UpdatePursuitBlip(targetPos);
+                                }
+                                s.UpdateBlipStates();
+                            }
+                        }
+                    }
+
+                    // Evaluate cruiser involvement count vs MaxPursuitUnits cap (strictly synchronized across Pursuit and Backup features)
+                    if (IsPursuitAtMaxCapacity(activePursuit))
+                    {
+                        continue;
+                    }
+
                     int draftedCount;
                     lock (_syncLock)
                     {
                         draftedCount = _activeSessions.Count(s => s != null && s.State == PursuitUnitSession.SessionState.InPursuit);
-                    }
-
-                    int distinctCruiserCount = GetActivePursuitCruiserCount(activePursuit);
-                    int totalInvolved = Math.Max(distinctCruiserCount, draftedCount);
-
-                    if (totalInvolved >= Settings.MaxPursuitUnits || draftedCount >= Settings.MaxPursuitUnits)
-                    {
-                        continue;
                     }
 
                     // Join interval pacing (minimum 6 seconds between drafting each unit)
@@ -168,10 +422,26 @@ namespace Cadence.Features
                         continue;
                     }
 
-                    // Resolve target pursuit/suspect location
-                    Vector3 targetPos = GetPursuitTargetPosition(activePursuit, player);
-                    if (targetPos == Vector3.Zero)
+                    // Check if any suspect is currently surrendering, kneeling, or being arrested:
+                    // If so, do not draft new pursuit cruisers into the chase to avoid exceeding
+                    // per-suspect pursuit slots and aborting LSPDFR's CopBustPed state machine.
+                    // Furthermore, immediately mute audible sirens and order pursuit officers to dismount.
+                    if (IsAnySuspectSurrenderingOrArrested(activePursuit))
                     {
+                        MuteNearbyPoliceSirens(targetPos, 60.0f);
+                        lock (_syncLock)
+                        {
+                            foreach (var s in _activeSessions)
+                            {
+                                if (s != null && s.IsValid() && s.Cruiser != null && s.Cruiser.Exists() && s.Cruiser.Position.DistanceTo(targetPos) <= 75.0f)
+                                {
+                                    if (s.State == PursuitUnitSession.SessionState.InPursuit)
+                                    {
+                                        s.BeginSceneStandby();
+                                    }
+                                }
+                            }
+                        }
                         continue;
                     }
 
@@ -197,11 +467,16 @@ namespace Cadence.Features
                 Ped[] pursuitCops = Functions.GetPursuitCops(activePursuit);
                 if (pursuitCops == null || pursuitCops.Length == 0) return 0;
 
-                return pursuitCops
+                int vehicleCruisers = pursuitCops
                     .Where(p => p != null && p.Exists() && p.CurrentVehicle != null && p.CurrentVehicle.Exists())
                     .Select(p => p.CurrentVehicle.Handle)
                     .Distinct()
                     .Count();
+
+                int footCops = pursuitCops
+                    .Count(p => p != null && p.Exists() && (p.CurrentVehicle == null || !p.CurrentVehicle.Exists()));
+
+                return vehicleCruisers + (footCops > 0 ? (footCops + 1) / 2 : 0);
             }
             catch
             {
@@ -209,11 +484,37 @@ namespace Cadence.Features
             }
         }
 
-        private static Vector3 GetPursuitTargetPosition(LHandle activePursuit, Ped player)
+        public static int GetActivePursuitUnitCount()
+        {
+            Ped[] pursuitCops = null;
+            try
+            {
+                LHandle activePursuit = Functions.GetActivePursuit();
+                if (activePursuit != null && Functions.IsPursuitStillRunning(activePursuit))
+                {
+                    pursuitCops = Functions.GetPursuitCops(activePursuit);
+                }
+            }
+            catch { }
+
+            int totalCopsInPursuit = pursuitCops?.Count(p => p != null && p.Exists() && p.IsAlive) ?? 0;
+
+            int draftedCount;
+            lock (_syncLock)
+            {
+                draftedCount = _activeSessions.Count(s => s != null && s.State == PursuitUnitSession.SessionState.InPursuit);
+            }
+
+            return Math.Max(totalCopsInPursuit, draftedCount);
+        }
+
+        public static int GetActiveInvolvedCount() => GetActivePursuitUnitCount();
+
+        public static Vector3 GetPursuitTargetPosition(LHandle activePursuit, Ped player)
         {
             try
             {
-                Ped[] suspects = Functions.GetPursuitPeds(activePursuit);
+                var suspects = GetValidPursuitSuspects(activePursuit);
                 Ped primarySuspect = suspects?.FirstOrDefault(p => p != null && p.Exists() && p.IsAlive);
 
                 if (primarySuspect != null && primarySuspect.Exists())
@@ -226,8 +527,140 @@ namespace Cadence.Features
             return player != null && player.Exists() ? player.Position : Vector3.Zero;
         }
 
+        private static void UpdateSuspectRadarMarkers(LHandle activePursuit)
+        {
+            try
+            {
+                var validSuspects = GetValidPursuitSuspects(activePursuit);
+
+                // Clean up blips for suspects no longer alive, cuffed, arrested, getting arrested, or no longer in pursuit
+                var toRemove = new List<PoolHandle>();
+                foreach (var kvp in _trackedSuspectBlips)
+                {
+                    PoolHandle handle = kvp.Key;
+                    Blip b = kvp.Value;
+                    bool shouldRemove = false;
+
+                    Ped p = validSuspects.FirstOrDefault(s => s != null && s.Exists() && s.Handle == handle);
+                    if (p == null || !p.Exists() || p.IsDead || p.IsCuffed)
+                    {
+                        shouldRemove = true;
+                    }
+                    else
+                    {
+                        try
+                        {
+                            if (Functions.IsPedArrested(p) || Functions.IsPedGettingArrested(p) ||
+                                Functions.IsPedBeingCuffed(p) || Functions.IsPedKneelingTaskActive(p) ||
+                                Functions.IsPedCuffedTaskActive(p))
+                            {
+                                shouldRemove = true;
+                            }
+                        }
+                        catch
+                        {
+                            shouldRemove = true;
+                        }
+                    }
+
+                    if (shouldRemove)
+                    {
+                        BlipService.SafeDeleteBlip(ref b);
+                        toRemove.Add(handle);
+                    }
+                }
+                foreach (var handle in toRemove)
+                {
+                    _trackedSuspectBlips.Remove(handle);
+                }
+
+                // Check active fleeing suspects: if they have no attached blip, attach one!
+                foreach (Ped suspect in validSuspects)
+                {
+                    if (suspect == null || !suspect.Exists() || suspect.IsDead || suspect.IsCuffed)
+                    {
+                        continue;
+                    }
+
+                    // Already tracked in watchdog dictionary - keep locked and DO NOT touch!
+                    if (_trackedSuspectBlips.ContainsKey(suspect.Handle))
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        if (Functions.IsPedArrested(suspect) || Functions.IsPedGettingArrested(suspect) ||
+                            Functions.IsPedBeingCuffed(suspect) || Functions.IsPedKneelingTaskActive(suspect) ||
+                            Functions.IsPedCuffedTaskActive(suspect) ||
+                            (Functions.GetPedArrestingOfficer(suspect) != null && Functions.GetPedArrestingOfficer(suspect).Exists()))
+                        {
+                            continue;
+                        }
+                    }
+                    catch { }
+
+                    // Check if suspect already has ANY active radar marker (from LSPDFR or vanilla GTA V)
+                    if (BlipService.HasAnyActiveRadarMarker(suspect))
+                    {
+                        continue;
+                    }
+
+                    // Suspect does not have any blip! Attach fallback watchdog suspect blip
+                    Blip newBlip;
+                    if (suspect.IsInAnyVehicle(false) && suspect.CurrentVehicle != null && suspect.CurrentVehicle.Exists())
+                    {
+                        newBlip = BlipService.AttachSuspectBlip(suspect.CurrentVehicle, "SUSPECT");
+                    }
+                    else
+                    {
+                        newBlip = BlipService.AttachSuspectBlip(suspect, "SUSPECT");
+                    }
+
+                    if (newBlip != null && newBlip.Exists())
+                    {
+                        _trackedSuspectBlips[suspect.Handle] = newBlip;
+                        Logger.Debug($"[PursuitFeature] Attached watchdog suspect blip to {suspect.Model.Name} (0x{suspect.Handle:X}).");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug($"[PursuitFeature] UpdateSuspectRadarMarkers error: {ex.Message}");
+            }
+        }
+
+        private static void ClearAllSuspectBlips()
+        {
+            try
+            {
+                foreach (var kvp in _trackedSuspectBlips)
+                {
+                    Blip b = kvp.Value;
+                    BlipService.SafeDeleteBlip(ref b);
+                }
+                _trackedSuspectBlips.Clear();
+            }
+            catch { }
+        }
+
+        private static void OnLspdfrPursuitEnded(LHandle pursuit)
+        {
+            try
+            {
+                Logger.Info("[PursuitFeature] LSPDFR OnPursuitEnded event intercepted. Immediate transition to scene standby.");
+                ClearAllSuspectBlips();
+                TransitionToSceneStandby();
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug($"[PursuitFeature] Error in OnLspdfrPursuitEnded: {ex.Message}");
+            }
+        }
+
         private static void TransitionToSceneStandby()
         {
+            ClearAllSuspectBlips();
             lock (_syncLock)
             {
                 for (int i = _activeSessions.Count - 1; i >= 0; i--)
@@ -268,9 +701,10 @@ namespace Cadence.Features
 
                     if (s.State == PursuitUnitSession.SessionState.OnSceneStandby)
                     {
+                        s.UpdateBlipStates();
                         float dist = s.Cruiser.Position.DistanceTo(playerPos);
-                        // Safety timeout & distance leak protection: auto-dismiss if player leaves (> 250m) or after 5 minutes (300,000ms)
-                        if (dist > 250.0f || (now - s.StandbyStartTime > 300000))
+                        // Hold officers on scene standby until player explicitly dismisses them (Enter/menu), or player leaves the area (> DespawnDistance)
+                        if (dist > Settings.DespawnDistance)
                         {
                             s.DismissFromScene();
                         }
@@ -293,7 +727,39 @@ namespace Cadence.Features
             }
         }
 
+        public static void MuteNearbyPoliceSirens(Vector3 center, float radius = 60.0f)
+        {
+            try
+            {
+                if (center == Vector3.Zero) return;
+                Entity[] nearbyVehs = World.GetEntities(center, radius, GetEntitiesFlags.ConsiderAllVehicles);
+                if (nearbyVehs == null || nearbyVehs.Length == 0) return;
+
+                foreach (var ent in nearbyVehs)
+                {
+                    if (ent is Vehicle v && v.Exists() && !v.IsDead && (v.IsPoliceVehicle || v.Model.IsLawEnforcementVehicle))
+                    {
+                        try
+                        {
+                            if (v.IsSirenOn)
+                            {
+                                NativeTasks.SetSilentEmergencyLights(v, true);
+                            }
+                            else
+                            {
+                                NativeTasks.ShutOffSirenAndLights(v);
+                            }
+                            NativeTasks.EnforceSirenLightbarPolicy(v);
+                        }
+                        catch { }
+                    }
+                }
+            }
+            catch { }
+        }
+
         private static uint _dismissKeyDownTime;
+        private static bool _hasShownDismissHelp;
 
         private static void ProcessStandbyDismissal(Ped player)
         {
@@ -309,6 +775,7 @@ namespace Cadence.Features
             if (standbyUnits.Count == 0)
             {
                 _dismissKeyDownTime = 0;
+                _hasShownDismissHelp = false;
                 return;
             }
 
@@ -317,8 +784,12 @@ namespace Cadence.Features
 
             if (playerNearScene)
             {
-                string keyName = Settings.DismissBackupKey == System.Windows.Forms.Keys.Enter ? "ENTER" : Settings.DismissBackupKey.ToString().ToUpperInvariant();
-                Game.DisplayHelp($"Hold ~b~[{keyName}]~s~ to dismiss pursuit scene officers", 1000);
+                if (!_hasShownDismissHelp)
+                {
+                    _hasShownDismissHelp = true;
+                    string keyName = Settings.DismissBackupKey == System.Windows.Forms.Keys.Enter ? "ENTER" : Settings.DismissBackupKey.ToString().ToUpperInvariant();
+                    Game.DisplayHelp($"Hold ~b~[{keyName}]~s~ to dismiss pursuit scene officers", 4000);
+                }
 
                 if (Settings.DismissBackupKey != System.Windows.Forms.Keys.None && Game.IsKeyDownRightNow(Settings.DismissBackupKey))
                 {
@@ -364,12 +835,42 @@ namespace Cadence.Features
             }
         }
 
+        public static bool IsPursuitAtMaxCapacity(LHandle activePursuit)
+        {
+            if (activePursuit == null) return false;
+            int draftedCount;
+            lock (_syncLock)
+            {
+                draftedCount = _activeSessions.Count(s => s != null && s.State == PursuitUnitSession.SessionState.InPursuit);
+            }
+
+            Ped[] pursuitCops = null;
+            try { pursuitCops = Functions.GetPursuitCops(activePursuit); } catch { }
+            int totalCopsInPursuit = pursuitCops?.Count(p => p != null && p.Exists() && p.IsAlive) ?? 0;
+            int distinctCruisers = GetActivePursuitCruiserCount(activePursuit);
+            int backupResponders = BackupFeature.GetActivePoliceResponderCount();
+            int totalInvolved = Math.Max(totalCopsInPursuit, Math.Max(distinctCruisers, draftedCount)) + backupResponders;
+
+            return totalInvolved >= Settings.MaxPursuitUnits || (draftedCount + backupResponders) >= Settings.MaxPursuitUnits;
+        }
+
         public static bool RequestPursuitInterceptor(bool isHighway = false)
         {
             LHandle activePursuit = null;
             try { activePursuit = Functions.GetActivePursuit(); } catch { }
             if (activePursuit == null || !Functions.IsPursuitStillRunning(activePursuit))
             {
+                return false;
+            }
+
+            if (IsAnySuspectSurrenderingOrArrested(activePursuit))
+            {
+                return false;
+            }
+
+            if (IsPursuitAtMaxCapacity(activePursuit))
+            {
+                Logger.Debug($"[PursuitFeature] RequestPursuitInterceptor denied: pursuit is at capacity ({Settings.MaxPursuitUnits} units).");
                 return false;
             }
 
@@ -405,11 +906,18 @@ namespace Cadence.Features
                         ? UltimateBackupService.SpawnStatePatrol(spawnPos, 1)
                         : UltimateBackupService.SpawnLocalPatrol(spawnPos, 1);
 
-                    if (ubResult != null && ubResult.Item1 != null && ubResult.Item1.Exists() && ubResult.Item2 != null && ubResult.Item2.Count > 0)
+                    if (ubResult != null)
                     {
-                        cruiser = ubResult.Item1;
-                        driver = ubResult.Item2[0];
-                        if (ubResult.Item2.Count > 1) passenger = ubResult.Item2[1];
+                        if (ubResult.Item1 != null && ubResult.Item1.Exists() && ubResult.Item2 != null && ubResult.Item2.Count > 0)
+                        {
+                            cruiser = ubResult.Item1;
+                            driver = ubResult.Item2[0];
+                            if (ubResult.Item2.Count > 1) passenger = ubResult.Item2[1];
+                        }
+                        else if (ubResult.Item1 != null && ubResult.Item1.Exists())
+                        {
+                            TeardownHelper.SafeDismissVehicle(ubResult.Item1, delete: true);
+                        }
                     }
                 }
 
@@ -418,19 +926,27 @@ namespace Cadence.Features
                     if (Settings.UseUltimateBackup && !Settings.AllowFallback)
                     {
                         Logger.Debug("PursuitFeature", $"Ultimate Backup did not return a cruiser for pursuit at {spawnPos}. Fallback is strictly disabled (Fallback=false). Aborting spawn.");
+                        if (cruiser != null && cruiser.Exists()) TeardownHelper.SafeDismissVehicle(cruiser, delete: true);
                         return false;
                     }
 
                     string vehicleModel = isHighway ? ZoneSpawnData.GetDefaultPoliceVehicleForPosition(spawnPos) : ZoneSpawnData.PoliceVehiclesCity[0];
                     string copModel = ZoneSpawnData.GetDefaultCopPedModelForPosition(spawnPos);
                     var nativeResult = UltimateBackupService.SpawnNativePatrolUnit(spawnPos, spawnHeading, vehicleModel, copModel);
-                    if (nativeResult != null && nativeResult.Item1 != null && nativeResult.Item1.Exists() && nativeResult.Item2 != null && nativeResult.Item2.Count > 0)
+                    if (nativeResult != null)
                     {
-                        cruiser = nativeResult.Item1;
-                        driver = nativeResult.Item2[0];
-                        if (Settings.EnableEupOutfits)
+                        if (nativeResult.Item1 != null && nativeResult.Item1.Exists() && nativeResult.Item2 != null && nativeResult.Item2.Count > 0)
                         {
-                            EupService.ApplyBodyArmor(driver);
+                            cruiser = nativeResult.Item1;
+                            driver = nativeResult.Item2[0];
+                            if (Settings.EnableEupOutfits)
+                            {
+                                EupService.ApplyBodyArmor(driver);
+                            }
+                        }
+                        else if (nativeResult.Item1 != null && nativeResult.Item1.Exists())
+                        {
+                            TeardownHelper.SafeDismissVehicle(nativeResult.Item1, delete: true);
                         }
                     }
                 }
@@ -442,6 +958,11 @@ namespace Cadence.Features
                     DraftCruiserIntoPursuit(activePursuit, cruiser, driver, passenger, wasSpawned: true);
                     return true;
                 }
+
+                if (cruiser != null && cruiser.Exists())
+                {
+                    TeardownHelper.SafeDismissVehicle(cruiser, delete: true);
+                }
             }
 
             return false;
@@ -449,7 +970,7 @@ namespace Cadence.Features
 
         public static void RequestGroupPursuit(int count)
         {
-            GameFiber.StartNew(() =>
+            StartTrackedFiber(() =>
             {
                 for (int i = 0; i < count; i++)
                 {
@@ -488,11 +1009,18 @@ namespace Cadence.Features
                         ? UltimateBackupService.SpawnStatePatrol(spawnPos, 1)
                         : UltimateBackupService.SpawnLocalPatrol(spawnPos, 1);
 
-                    if (ubResult != null && ubResult.Item1 != null && ubResult.Item1.Exists() && ubResult.Item2 != null && ubResult.Item2.Count > 0)
+                    if (ubResult != null)
                     {
-                        cruiser = ubResult.Item1;
-                        driver = ubResult.Item2[0];
-                        if (ubResult.Item2.Count > 1) passenger = ubResult.Item2[1];
+                        if (ubResult.Item1 != null && ubResult.Item1.Exists() && ubResult.Item2 != null && ubResult.Item2.Count > 0)
+                        {
+                            cruiser = ubResult.Item1;
+                            driver = ubResult.Item2[0];
+                            if (ubResult.Item2.Count > 1) passenger = ubResult.Item2[1];
+                        }
+                        else if (ubResult.Item1 != null && ubResult.Item1.Exists())
+                        {
+                            TeardownHelper.SafeDismissVehicle(ubResult.Item1, delete: true);
+                        }
                     }
                 }
 
@@ -501,19 +1029,27 @@ namespace Cadence.Features
                     if (Settings.UseUltimateBackup && !Settings.AllowFallback)
                     {
                         Logger.Debug("PursuitFeature", $"Ultimate Backup did not return a cruiser for pursuit at {spawnPos}. Fallback is strictly disabled (Fallback=false). Aborting spawn.");
+                        if (cruiser != null && cruiser.Exists()) TeardownHelper.SafeDismissVehicle(cruiser, delete: true);
                         return;
                     }
 
                     string vehicleModel = ZoneSpawnData.GetDefaultPoliceVehicleForPosition(spawnPos);
                     string copModel = ZoneSpawnData.GetDefaultCopPedModelForPosition(spawnPos);
                     var nativeResult = UltimateBackupService.SpawnNativePatrolUnit(spawnPos, spawnHeading, vehicleModel, copModel);
-                    if (nativeResult != null && nativeResult.Item1 != null && nativeResult.Item1.Exists() && nativeResult.Item2 != null && nativeResult.Item2.Count > 0)
+                    if (nativeResult != null)
                     {
-                        cruiser = nativeResult.Item1;
-                        driver = nativeResult.Item2[0];
-                        if (Settings.EnableEupOutfits)
+                        if (nativeResult.Item1 != null && nativeResult.Item1.Exists() && nativeResult.Item2 != null && nativeResult.Item2.Count > 0)
                         {
-                            EupService.ApplyBodyArmor(driver);
+                            cruiser = nativeResult.Item1;
+                            driver = nativeResult.Item2[0];
+                            if (Settings.EnableEupOutfits)
+                            {
+                                EupService.ApplyBodyArmor(driver);
+                            }
+                        }
+                        else if (nativeResult.Item1 != null && nativeResult.Item1.Exists())
+                        {
+                            TeardownHelper.SafeDismissVehicle(nativeResult.Item1, delete: true);
                         }
                     }
                 }
@@ -524,6 +1060,10 @@ namespace Cadence.Features
                     WorldUtils.SecureEntityGround(cruiser);
                     DraftCruiserIntoPursuit(activePursuit, cruiser, driver, passenger, wasSpawned: true);
                 }
+                else if (cruiser != null && cruiser.Exists())
+                {
+                    TeardownHelper.SafeDismissVehicle(cruiser, delete: true);
+                }
             }
         }
 
@@ -531,7 +1071,7 @@ namespace Cadence.Features
         {
             try
             {
-                Entity[] nearbyVehicles = World.GetEntities(targetPos, 380.0f, GetEntitiesFlags.ConsiderAllVehicles);
+                Entity[] nearbyVehicles = World.GetEntities(targetPos, 220.0f, GetEntitiesFlags.ConsiderAllVehicles);
                 if (nearbyVehicles == null || nearbyVehicles.Length == 0) return null;
 
                 return nearbyVehicles
@@ -540,9 +1080,20 @@ namespace Cadence.Features
                     .Where(v => v.Driver != null && v.Driver.Exists() && v.Driver.IsAlive && !v.Driver.IsPlayer && v.Driver != Game.LocalPlayer?.Character)
                     .Where(v =>
                     {
+                        // Under no circumstances draft cruisers actively conducting roadside traffic stops or emergency response runs
+                        if (TrafficStopFeature.IsActiveCruiser(v)) return false;
+                        if (ResponseFeature.IsActiveCruiser(v)) return false;
+                        if (AssistFeature.IsActiveCruiser(v)) return false;
+
+                        // Never draft cruisers managed by BackupFeature (responding, on scene, or dismissing)
+                        if (BackupFeature.IsBackupCruiser(v)) return false;
+
+                        // Central UnitRegistry claim screening
+                        if (UnitRegistry.IsClaimed(v)) return false;
+                        if (v.Driver != null && UnitRegistry.IsClaimed(v.Driver)) return false;
+
                         bool isPolice = v.IsPoliceVehicle || v.Model.IsLawEnforcementVehicle ||
                                         PatrolFeature.IsActiveCruiser(v) || StationaryFeature.IsActiveCruiser(v) ||
-                                        TrafficStopFeature.IsActiveCruiser(v) || ResponseFeature.IsActiveCruiser(v) ||
                                         Functions.IsPedACop(v.Driver) || v.Driver.RelationshipGroup == "COP";
                         if (!isPolice) return false;
 
@@ -552,7 +1103,13 @@ namespace Cadence.Features
                         }
                         bool inPursuit = false;
                         try { inPursuit = Functions.IsPedInPursuit(v.Driver); } catch { }
-                        return !inPursuit;
+                        if (inPursuit) return false;
+
+                        bool isBusy = false;
+                        try { isBusy = Functions.IsCopBusy(v.Driver, false); } catch { }
+                        if (isBusy) return false;
+
+                        return true;
                     })
                     .OrderBy(v => v.Position.DistanceTo(targetPos))
                     .FirstOrDefault();
@@ -573,6 +1130,28 @@ namespace Cadence.Features
                     StationaryFeature.RelinquishCruiser(cruiser);
                     TrafficStopFeature.RelinquishCruiser(cruiser);
                     ResponseFeature.RelinquishCruiser(cruiser);
+                    AssistFeature.RelinquishCruiser(cruiser);
+                    BackupFeature.RelinquishCruiser(cruiser);
+                }
+
+                if (!UnitRegistry.TryClaim(cruiser, UnitRegistry.OwnerPursuit))
+                {
+                    Logger.Debug($"[PursuitFeature] Cruiser 0x{cruiser.Handle:X} could not be claimed in UnitRegistry; skipping draft.");
+                    if (wasSpawned)
+                    {
+                        TeardownHelper.SafeDismissVehicle(cruiser, delete: true);
+                        if (driver != null) TeardownHelper.SafeDismissPed(driver, delete: true);
+                        if (passenger != null) TeardownHelper.SafeDismissPed(passenger, delete: true);
+                    }
+                    return;
+                }
+                if (driver != null && driver.Exists())
+                {
+                    UnitRegistry.TryClaim(driver, UnitRegistry.OwnerPursuit);
+                }
+                if (passenger != null && passenger.Exists())
+                {
+                    UnitRegistry.TryClaim(passenger, UnitRegistry.OwnerPursuit);
                 }
 
                 string callsign = GenerateCallsign();
@@ -588,46 +1167,60 @@ namespace Cadence.Features
                 // Add driver and passenger to pursuit AI (purging old ambient cruising tasks first)
                 driver.Tasks.Clear();
                 driver.BlockPermanentEvents = false;
+                Functions.SetPedAsCop(driver);
                 Functions.AddCopToPursuit(activePursuit, driver);
 
                 if (passenger != null && passenger.Exists() && passenger.IsAlive)
                 {
                     passenger.Tasks.Clear();
                     passenger.BlockPermanentEvents = false;
+                    Functions.SetPedAsCop(passenger);
                     Functions.AddCopToPursuit(activePursuit, passenger);
                 }
 
-                // Switch radar blip to Orange Flashing pursuit blip
+                // Native Red & Blue alternating flashing pursuit blip (Sprite 1, Color 38, alternating red/blue)
                 Blip blip = BlipService.AttachPursuitBlip(cruiser, callsign);
 
                 var session = new PursuitUnitSession(cruiser, driver, passenger, blip, callsign, wasSpawned);
 
+                int activeCount;
                 lock (_syncLock)
                 {
                     _activeSessions.Add(session);
                     _lastJoinTime = Game.GameTime;
+                    activeCount = _activeSessions.Count;
                 }
                 SessionMetrics.IncrementPursuit();
-                Logger.Info($"[PursuitFeature] Ambient cruiser {callsign} successfully drafted into pursuit (Total active: {_activeSessions.Count}/{Settings.MaxPursuitUnits}).");
+                Logger.Info($"[PursuitFeature] Ambient cruiser {callsign} successfully drafted into pursuit (Total active: {activeCount}/{Settings.MaxPursuitUnits}).");
             }
             catch (Exception ex)
             {
                 Logger.Error("[PursuitFeature] Error drafting cruiser into pursuit", ex);
+                if (wasSpawned)
+                {
+                    if (cruiser != null && cruiser.Exists()) TeardownHelper.SafeDismissVehicle(cruiser, delete: true);
+                    if (driver != null && driver.Exists()) TeardownHelper.SafeDismissPed(driver, delete: true);
+                    if (passenger != null && passenger.Exists()) TeardownHelper.SafeDismissPed(passenger, delete: true);
+                }
             }
         }
 
         private static void ReleaseAllPursuitUnits(bool immediateDelete)
         {
+            ClearAllSuspectBlips();
+            List<PursuitUnitSession> sessionsToDispose;
             lock (_syncLock)
             {
-                foreach (var session in _activeSessions)
-                {
-                    if (session != null)
-                    {
-                        session.Dispose(immediateDelete);
-                    }
-                }
+                sessionsToDispose = new List<PursuitUnitSession>(_activeSessions);
                 _activeSessions.Clear();
+            }
+
+            foreach (var session in sessionsToDispose)
+            {
+                if (session != null)
+                {
+                    session.Dispose(immediateDelete);
+                }
             }
         }
 
@@ -638,8 +1231,13 @@ namespace Cadence.Features
 
             for (int attempt = 0; attempt < 16; attempt++)
             {
-                float distance = (float)_rand.Next(180, 280);
-                double angle = _rand.NextDouble() * Math.PI * 2.0;
+                float distance;
+                double angle;
+                lock (_rand)
+                {
+                    distance = (float)_rand.Next(180, 280);
+                    angle = _rand.NextDouble() * Math.PI * 2.0;
+                }
 
                 Vector3 probe = new Vector3(
                     targetPos.X + (float)Math.Cos(angle) * distance,
@@ -664,9 +1262,17 @@ namespace Cadence.Features
 
         private static string GenerateCallsign()
         {
-            string div = Divisions[_rand.Next(Divisions.Length)];
-            int num = _callsignCounter++;
-            if (_callsignCounter > 99) _callsignCounter = 80;
+            string div;
+            lock (_rand)
+            {
+                div = Divisions[_rand.Next(Divisions.Length)];
+            }
+            int num = Interlocked.Increment(ref _callsignCounter);
+            if (num > 99)
+            {
+                Interlocked.Exchange(ref _callsignCounter, 80);
+                num = 80;
+            }
             return $"{div}-{num:D2}";
         }
 
@@ -682,12 +1288,16 @@ namespace Cadence.Features
             public Ped Driver { get; }
             public Ped Passenger { get; }
             public Blip RadarBlip;
+            public Blip DriverBadgeBlip;
+            public Blip PassengerBadgeBlip;
             public string Callsign { get; }
             public uint JoinTime { get; }
             public bool WasAmbientSpawned { get; }
             public SessionState State { get; private set; }
             public uint StandbyStartTime { get; private set; }
             public uint StandDownStartTime { get; private set; }
+
+            private bool _isParkedBlip;
 
             public PursuitUnitSession(Vehicle cruiser, Ped driver, Ped passenger, Blip blip, string callsign, bool wasSpawned)
             {
@@ -699,6 +1309,82 @@ namespace Cadence.Features
                 JoinTime = Game.GameTime;
                 WasAmbientSpawned = wasSpawned;
                 State = SessionState.InPursuit;
+            }
+
+            public void UpdatePursuitBlip(Vector3 targetPos)
+            {
+                if (Cruiser == null || !Cruiser.Exists() || State != SessionState.InPursuit) return;
+
+                if (RadarBlip == null || !RadarBlip.Exists())
+                {
+                    RadarBlip = BlipService.AttachPursuitBlip(Cruiser, Callsign);
+                }
+            }
+
+            public void UpdateBlipStates()
+            {
+                if (Cruiser != null && Cruiser.Exists())
+                {
+                    NativeTasks.EnforceSirenLightbarPolicy(Cruiser);
+                }
+
+                if (!Settings.ShowRadarBlips || Cruiser == null || !Cruiser.Exists()) return;
+
+                bool driverOutside = Driver != null && Driver.Exists() && Driver.IsAlive && !Driver.IsInVehicle(Cruiser, false);
+                bool passengerOutside = Passenger != null && Passenger.Exists() && Passenger.IsAlive && !Passenger.IsInVehicle(Cruiser, false);
+                bool anyOutside = driverOutside || passengerOutside;
+
+                bool allLivingOutside = true;
+                if (Driver != null && Driver.Exists() && Driver.IsAlive && Driver.IsInVehicle(Cruiser, false)) allLivingOutside = false;
+                if (Passenger != null && Passenger.Exists() && Passenger.IsAlive && Passenger.IsInVehicle(Cruiser, false)) allLivingOutside = false;
+
+                // 1. Driver foot blip
+                if (driverOutside && State != SessionState.StandingDown && State != SessionState.Completed)
+                {
+                    if (DriverBadgeBlip == null || !DriverBadgeBlip.Exists())
+                    {
+                        DriverBadgeBlip = BlipService.AttachOfficerFootBlip(Driver, Callsign);
+                    }
+                }
+                else
+                {
+                    BlipService.SafeDeleteBlip(ref DriverBadgeBlip);
+                }
+
+                // 2. Passenger foot blip
+                if (passengerOutside && State != SessionState.StandingDown && State != SessionState.Completed)
+                {
+                    if (PassengerBadgeBlip == null || !PassengerBadgeBlip.Exists())
+                    {
+                        PassengerBadgeBlip = BlipService.AttachOfficerFootBlip(Passenger, Callsign);
+                    }
+                }
+                else
+                {
+                    BlipService.SafeDeleteBlip(ref PassengerBadgeBlip);
+                }
+
+                // 3. Cruiser radar blip: turns White [PARKED] when empty / all living officers are outside
+                if (allLivingOutside && anyOutside && State != SessionState.StandingDown && State != SessionState.Completed)
+                {
+                    if (!_isParkedBlip)
+                    {
+                        _isParkedBlip = true;
+                        BlipService.SafeDeleteBlip(ref RadarBlip);
+                        RadarBlip = BlipService.AttachParkedCruiserBlip(Cruiser, Callsign);
+                    }
+                }
+                else
+                {
+                    if (_isParkedBlip)
+                    {
+                        _isParkedBlip = false;
+                        BlipService.SafeDeleteBlip(ref RadarBlip);
+                        RadarBlip = (State == SessionState.InPursuit)
+                            ? BlipService.AttachPursuitBlip(Cruiser, Callsign)
+                            : BlipService.AttachPatrolBlip(Cruiser, Callsign);
+                    }
+                }
             }
 
             public bool IsValid()
@@ -717,40 +1403,70 @@ namespace Cadence.Features
                     // Siren sound OFF, silent emergency lightbar stays active
                     if (Cruiser != null && Cruiser.Exists())
                     {
-                        Cruiser.IsSirenOn = true;
-                        Cruiser.IsSirenSilent = true;
                         NativeTasks.SetSilentEmergencyLights(Cruiser, true);
+                        NativeTasks.EnforceSirenLightbarPolicy(Cruiser);
                     }
 
-                    // Seated driver stays parked
+                    // Sweep nearby police vehicles within 60m of this cruiser to mute audible sirens
+                    MuteNearbyPoliceSirens(Cruiser.Position, 60.0f);
+
+                    // Order all seated officers to exit vehicle immediately and take defensive tactical perimeter
                     if (Driver != null && Driver.Exists() && Driver.IsAlive)
                     {
+                        Driver.BlockPermanentEvents = true; // Hold until player explicitly dismisses!
                         if (Driver.IsInVehicle(Cruiser, false))
                         {
-                            Driver.Tasks.PerformDrivingManeuver(VehicleManeuver.Wait);
+                            Driver.Tasks.LeaveVehicle(LeaveVehicleFlags.None);
                         }
-                        else
+                        else if (!Driver.IsInCombat && !Driver.IsCuffed)
                         {
-                            // Keep BlockPermanentEvents true so cops do not wander off or spasm before player dismisses them
-                            Driver.BlockPermanentEvents = true;
-                            if (!Driver.IsInCombat && !Driver.IsCuffed)
+                            try
                             {
-                                NativeFunction.Natives.TASK_STAND_STILL(Driver, -1);
+                                if (!NativeFunction.Natives.IS_PED_USING_ANY_SCENARIO<bool>(Driver))
+                                {
+                                    NativeFunction.Natives.TASK_START_SCENARIO_IN_PLACE(Driver, "WORLD_HUMAN_COP_IDLES", 0, true);
+                                }
                             }
+                            catch { }
                         }
+
+                        try
+                        {
+                            NativeFunction.Natives.GIVE_WEAPON_TO_PED(Driver, WeaponCombatPistol, 120, false, true);
+                            NativeFunction.Natives.SET_CURRENT_PED_WEAPON(Driver, WeaponCombatPistol, true);
+                        }
+                        catch { }
                     }
 
                     if (Passenger != null && Passenger.Exists() && Passenger.IsAlive)
                     {
-                        if (!Passenger.IsInVehicle(Cruiser, false))
+                        Passenger.BlockPermanentEvents = true; // Hold until player explicitly dismisses!
+                        if (Passenger.IsInVehicle(Cruiser, false))
                         {
-                            Passenger.BlockPermanentEvents = true;
-                            if (!Passenger.IsInCombat && !Passenger.IsCuffed)
-                            {
-                                NativeFunction.Natives.TASK_STAND_STILL(Passenger, -1);
-                            }
+                            Passenger.Tasks.LeaveVehicle(LeaveVehicleFlags.None);
                         }
+                        else if (!Passenger.IsInCombat && !Passenger.IsCuffed)
+                        {
+                            try
+                            {
+                                if (!NativeFunction.Natives.IS_PED_USING_ANY_SCENARIO<bool>(Passenger))
+                                {
+                                    NativeFunction.Natives.TASK_START_SCENARIO_IN_PLACE(Passenger, "WORLD_HUMAN_COP_IDLES", 0, true);
+                                }
+                            }
+                            catch { }
+                        }
+
+                        try
+                        {
+                            NativeFunction.Natives.GIVE_WEAPON_TO_PED(Passenger, WeaponCombatPistol, 120, false, true);
+                            NativeFunction.Natives.SET_CURRENT_PED_WEAPON(Passenger, WeaponCombatPistol, true);
+                        }
+                        catch { }
                     }
+
+                    // Synchronize radar blips immediately
+                    UpdateBlipStates();
                 }
                 catch (Exception ex)
                 {
@@ -765,10 +1481,36 @@ namespace Cadence.Features
                 State = SessionState.StandingDown;
                 StandDownStartTime = Game.GameTime;
 
-                GameFiber.StartNew(() =>
+                // Clean up officer foot blips upon dismissal
+                BlipService.SafeDeleteBlip(ref DriverBadgeBlip);
+                BlipService.SafeDeleteBlip(ref PassengerBadgeBlip);
+
+                StartTrackedFiber(() =>
                 {
                     try
                     {
+                        // Remove from active pursuit AI if still registered before clearing tasks
+                        LHandle activePursuit = null;
+                        try { activePursuit = Functions.GetActivePursuit(); } catch { }
+                        if (activePursuit != null)
+                        {
+                            try
+                            {
+                                if (Driver != null && Driver.Exists() && Functions.IsPedInPursuit(Driver))
+                                {
+                                    Functions.RemovePedFromPursuit(Driver);
+                                }
+                                if (Passenger != null && Passenger.Exists() && Functions.IsPedInPursuit(Passenger))
+                                {
+                                    Functions.RemovePedFromPursuit(Passenger);
+                                }
+                            }
+                            catch { }
+                        }
+
+                        if (Driver != null && Driver.Exists()) Driver.BlockPermanentEvents = false;
+                        if (Passenger != null && Passenger.Exists()) Passenger.BlockPermanentEvents = false;
+
                         // Officers outside cruiser enter their vehicles
                         if (Driver != null && Driver.Exists() && Driver.IsAlive && !Driver.IsInVehicle(Cruiser, false))
                         {
@@ -787,12 +1529,10 @@ namespace Cadence.Features
                             GameFiber.Sleep(250);
                         }
 
-                        // Turn off emergency lightbars
+                        // Completely shut off emergency sirens and lightbars
                         if (Cruiser != null && Cruiser.Exists())
                         {
-                            Cruiser.IsSirenOn = false;
-                            Cruiser.IsSirenSilent = false;
-                            NativeTasks.SetSilentEmergencyLights(Cruiser, false);
+                            NativeTasks.ShutOffSirenAndLights(Cruiser);
                         }
 
                         // Cruise away smoothly
@@ -811,8 +1551,15 @@ namespace Cadence.Features
                             Passenger.BlockPermanentEvents = false;
                         }
 
-                        // Restore Navy Blue routine patrol blip
-                        BlipService.TransitionToPatrol(RadarBlip, Callsign);
+                        // Recreate radar blip cleanly as a steady patrol blip to eradicate any sticky native flash timers or intervals
+                        if (RadarBlip != null && RadarBlip.Exists())
+                        {
+                            BlipService.SafeDeleteBlip(ref RadarBlip);
+                            if (Cruiser != null && Cruiser.Exists())
+                            {
+                                RadarBlip = BlipService.AttachPatrolBlip(Cruiser, Callsign);
+                            }
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -826,13 +1573,35 @@ namespace Cadence.Features
                 State = SessionState.StandingDown;
                 StandDownStartTime = Game.GameTime;
 
+                // Clean up officer foot blips upon stand down
+                BlipService.SafeDeleteBlip(ref DriverBadgeBlip);
+                BlipService.SafeDeleteBlip(ref PassengerBadgeBlip);
+
                 try
                 {
+                    // Completely shut off sirens and lightbars
                     if (Cruiser != null && Cruiser.Exists())
                     {
-                        Cruiser.IsSirenOn = false;
-                        Cruiser.IsSirenSilent = false;
-                        NativeTasks.SetSilentEmergencyLights(Cruiser, false);
+                        NativeTasks.ShutOffSirenAndLights(Cruiser);
+                    }
+
+                    // Remove from active pursuit AI if still registered
+                    LHandle activePursuit = null;
+                    try { activePursuit = Functions.GetActivePursuit(); } catch { }
+                    if (activePursuit != null)
+                    {
+                        try
+                        {
+                            if (Driver != null && Driver.Exists() && Functions.IsPedInPursuit(Driver))
+                            {
+                                Functions.RemovePedFromPursuit(Driver);
+                            }
+                            if (Passenger != null && Passenger.Exists() && Functions.IsPedInPursuit(Passenger))
+                            {
+                                Functions.RemovePedFromPursuit(Passenger);
+                            }
+                        }
+                        catch { }
                     }
 
                     if (Driver != null && Driver.Exists() && Driver.IsAlive)
@@ -850,8 +1619,15 @@ namespace Cadence.Features
                         Passenger.BlockPermanentEvents = false;
                     }
 
-                    // Restore Navy Blue routine patrol blip
-                    BlipService.TransitionToPatrol(RadarBlip, Callsign);
+                    // Recreate radar blip cleanly as a steady patrol blip to eradicate any sticky native flash timers or intervals
+                    if (RadarBlip != null && RadarBlip.Exists())
+                    {
+                        BlipService.SafeDeleteBlip(ref RadarBlip);
+                        if (Cruiser != null && Cruiser.Exists())
+                        {
+                            RadarBlip = BlipService.AttachPatrolBlip(Cruiser, Callsign);
+                        }
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -863,43 +1639,28 @@ namespace Cadence.Features
             {
                 // 1. Zero-leak blip destructor (4-step protocol)
                 BlipService.SafeDeleteBlip(ref RadarBlip);
+                BlipService.SafeDeleteBlip(ref DriverBadgeBlip);
+                BlipService.SafeDeleteBlip(ref PassengerBadgeBlip);
                 BlipService.SafeDeleteEntityBlip(Cruiser);
                 BlipService.SafeDeleteEntityBlip(Driver);
                 BlipService.SafeDeleteEntityBlip(Passenger);
 
-                // 2. Entities clean up
+                // 2. Safe entity dismissals via TeardownHelper
                 try
                 {
-                    if (Cruiser != null && Cruiser.Exists())
+                    if (Passenger != null)
                     {
-                        Cruiser.IsSirenOn = false;
-                        Cruiser.IsSirenSilent = false;
+                        TeardownHelper.SafeDismissPed(Passenger, delete: immediateDelete);
                     }
 
-                    if (Passenger != null && Passenger.Exists())
+                    if (Driver != null)
                     {
-                        Passenger.BlockPermanentEvents = false;
-                        if (immediateDelete) Passenger.Delete();
-                        else Passenger.Dismiss();
+                        TeardownHelper.SafeDismissPed(Driver, delete: immediateDelete);
                     }
 
-                    if (Driver != null && Driver.Exists())
+                    if (Cruiser != null)
                     {
-                        Driver.BlockPermanentEvents = false;
-                        if (immediateDelete)
-                        {
-                            Driver.Delete();
-                        }
-                        else
-                        {
-                            Driver.Dismiss();
-                        }
-                    }
-
-                    if (Cruiser != null && Cruiser.Exists())
-                    {
-                        if (immediateDelete) Cruiser.Delete();
-                        else Cruiser.Dismiss();
+                        TeardownHelper.SafeDismissVehicle(Cruiser, delete: immediateDelete);
                     }
                 }
                 catch (Exception ex)

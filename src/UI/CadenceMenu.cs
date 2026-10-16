@@ -64,6 +64,7 @@ namespace Cadence.UI
         private static UIMenuItem _triggerEmergencyRunItem;
         private static UIMenuItem _triggerPanicItem;
         private static UIMenuItem _triggerGroupBackupItem;
+        private static UIMenuItem _triggerCalloutItem;
 
         // Top-Level Actions
         private static UIMenuItem _purgeAllItem;
@@ -176,6 +177,7 @@ namespace Cadence.UI
 
                 if (IsVisible)
                 {
+                    InputHelper.SuppressMenuNavigationControls();
                     _menuPool?.ProcessMenus();
 
                     // Real-time telemetry updates while the telemetry submenu is actively viewed
@@ -243,11 +245,37 @@ namespace Cadence.UI
                 _isRunning = false;
                 Close();
 
+                if (_menuPool != null)
+                {
+                    try
+                    {
+                        _menuPool.CloseAllMenus();
+                        _menuPool.Clear();
+                    }
+                    catch { }
+                    _menuPool = null;
+                }
+
+                _mainMenu = null;
+                _telemetryMenu = null;
+                _togglesMenu = null;
+                _settingsMenu = null;
+                _testingMenu = null;
+
                 try
                 {
                     if (_watchdogFiber != null && _watchdogFiber.IsAlive)
                     {
-                        _watchdogFiber.Abort();
+                        int waited = 0;
+                        while (_watchdogFiber.IsAlive && waited < 200)
+                        {
+                            GameFiber.Sleep(20);
+                            waited += 20;
+                        }
+                        if (_watchdogFiber.IsAlive)
+                        {
+                            _watchdogFiber.Abort();
+                        }
                     }
                 }
                 catch { }
@@ -268,90 +296,23 @@ namespace Cadence.UI
         public static void PurgeAllFeatures(bool immediateDelete = false)
         {
             Logger.Info($"[CadenceMenu] Purging all active Cadence features, vehicles, sirens, and blips (immediateDelete={immediateDelete}).");
-            string[] featureNames = new[]
-            {
-                "PatrolFeature",
-                "TrafficStopFeature",
-                "StationaryFeature",
-                "ResponseFeature",
-                "PursuitFeature",
-                "AssistFeature",
-                "BackupFeature"
-            };
-
-            foreach (string feat in featureNames)
-            {
-                try
-                {
-                    Type t = Type.GetType($"Cadence.Features.{feat}");
-                    if (t != null)
-                    {
-                        MethodInfo method = t.GetMethod("PurgeAll", BindingFlags.Public | BindingFlags.Static);
-                        if (method != null)
-                        {
-                            var parameters = method.GetParameters();
-                            if (parameters.Length == 1 && parameters[0].ParameterType == typeof(bool))
-                            {
-                                method.Invoke(null, new object[] { immediateDelete });
-                            }
-                            else
-                            {
-                                method.Invoke(null, null);
-                            }
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Logger.Error($"[CadenceMenu] Failed to purge {feat}", ex);
-                }
-            }
+            FeatureRegistry.PurgeAll(immediateDelete);
         }
 
         public static void StopAllFeatures()
         {
             Logger.Info("[CadenceMenu] Stopping all Cadence features.");
-            string[] featureNames = new[]
-            {
-                "PatrolFeature",
-                "TrafficStopFeature",
-                "StationaryFeature",
-                "ResponseFeature",
-                "PursuitFeature",
-                "AssistFeature",
-                "BackupFeature"
-            };
-
-            foreach (string feat in featureNames)
-            {
-                try
-                {
-                    Type t = Type.GetType($"Cadence.Features.{feat}");
-                    if (t != null)
-                    {
-                        MethodInfo method = t.GetMethod("Stop", BindingFlags.Public | BindingFlags.Static);
-                        method?.Invoke(null, null);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Logger.Error($"[CadenceMenu] Failed to stop {feat}", ex);
-                }
-            }
+            FeatureRegistry.StopAll();
         }
 
         private static int GetFeatureCount(string featureName)
         {
             try
             {
-                Type t = Type.GetType($"Cadence.Features.{featureName}");
-                if (t != null)
+                IFeature feat = FeatureRegistry.Get(featureName);
+                if (feat != null)
                 {
-                    MethodInfo method = t.GetMethod("GetActiveCount", BindingFlags.Public | BindingFlags.Static);
-                    if (method != null)
-                    {
-                        return (int)method.Invoke(null, null);
-                    }
+                    return feat.GetActiveCount();
                 }
             }
             catch { }
@@ -383,12 +344,11 @@ namespace Cadence.UI
         {
             try
             {
-                Type t = Type.GetType($"Cadence.Features.{featureName}");
-                if (t != null)
+                IFeature feat = FeatureRegistry.Get(featureName);
+                if (feat != null)
                 {
-                    string methodName = enable ? "Start" : "Stop";
-                    MethodInfo method = t.GetMethod(methodName, BindingFlags.Public | BindingFlags.Static);
-                    method?.Invoke(null, null);
+                    if (enable) feat.Start();
+                    else feat.Stop();
                 }
             }
             catch (Exception ex)
@@ -508,6 +468,7 @@ namespace Cadence.UI
             _triggerEmergencyRunItem = new UIMenuItem("Trigger Code 3 Emergency Run", "Dispatches an ambient cruiser Code 3 to an incident node.");
             _triggerPanicItem = new UIMenuItem("Trigger Panic Backup", "Immediately triggers high-priority emergency panic backup.");
             _triggerGroupBackupItem = new UIMenuItem("Trigger Group Backup", "Immediately dispatches multi-unit tactical group reinforcement.");
+            _triggerCalloutItem = new UIMenuItem("Trigger Callout Response", "Dispatches ambient or fallback units responding to your active waypoint / callout.");
 
             _testingMenu.AddItem(_spawnPatrolItem);
             _testingMenu.AddItem(_spawnPulloverItem);
@@ -516,6 +477,7 @@ namespace Cadence.UI
             _testingMenu.AddItem(_triggerEmergencyRunItem);
             _testingMenu.AddItem(_triggerPanicItem);
             _testingMenu.AddItem(_triggerGroupBackupItem);
+            _testingMenu.AddItem(_triggerCalloutItem);
             _testingMenu.RefreshIndex();
 
             // Top-Level Actions on Main Menu
@@ -607,6 +569,7 @@ namespace Cadence.UI
                     Settings.HighwayPatrolRatio = HighwayRatioValues[newIndex];
                     Game.DisplayNotification($"~b~Cadence~s~: Highway Patrol Ratio set to ~b~{Settings.HighwayPatrolRatio}%~s~.");
                 }
+                Settings.Save();
             };
 
             _settingsMenu.OnCheckboxChange += (sender, item, isChecked) =>
@@ -616,6 +579,7 @@ namespace Cadence.UI
                     Settings.AllowFallback = isChecked;
                     Game.DisplayNotification($"~b~Cadence~s~: Allow Native Fallback: {(isChecked ? "~r~Enabled (Vanilla Models Allowed)~s~" : "~g~Disabled (Strict UB Only)~s~")}.");
                 }
+                Settings.Save();
             };
 
             _togglesMenu.OnCheckboxChange += (sender, item, isChecked) =>
@@ -663,6 +627,7 @@ namespace Cadence.UI
                     ToggleFeature("BackupFeature", isChecked);
                     Game.DisplayNotification($"~b~Cadence~s~: Ambient Backup System {(isChecked ? "~g~Resumed~s~" : "~o~Paused~s~")}.");
                 }
+                Settings.Save();
                 UpdateTelemetry();
             };
 
@@ -672,47 +637,84 @@ namespace Cadence.UI
 
                 if (item == _spawnPatrolItem)
                 {
-                    bool ok = InvokeFeatureSpawn("PatrolFeature", "SpawnTestUnit");
-                    if (ok) Game.DisplayNotification("~b~Cadence~s~: Patrol cruiser ~g~spawned~s~.");
-                    else Game.DisplayNotification("~b~Cadence~s~: ~r~Failed~s~ to spawn patrol cruiser (check safe street position).");
+                    GameFiber.StartNew(() =>
+                    {
+                        bool ok = InvokeFeatureSpawn("PatrolFeature", "SpawnTestUnit");
+                        if (ok) Game.DisplayNotification("~b~Cadence~s~: Patrol cruiser ~g~spawned~s~.");
+                        else Game.DisplayNotification("~b~Cadence~s~: ~r~Failed~s~ to spawn patrol cruiser (check safe street position).");
+                        UpdateTelemetry();
+                    }, "Cadence - Test Spawn Patrol");
                 }
                 else if (item == _spawnPulloverItem)
                 {
-                    bool ok = InvokeFeatureSpawn("TrafficStopFeature", "SpawnTestStop");
-                    if (ok) Game.DisplayNotification("~b~Cadence~s~: Roadside pullover ~g~spawned~s~.");
-                    else Game.DisplayNotification("~b~Cadence~s~: ~r~Failed~s~ to spawn roadside pullover (check shoulder spot).");
+                    GameFiber.StartNew(() =>
+                    {
+                        bool ok = InvokeFeatureSpawn("TrafficStopFeature", "SpawnTestStop");
+                        if (ok) Game.DisplayNotification("~b~Cadence~s~: Roadside pullover ~g~spawned~s~.");
+                        else Game.DisplayNotification("~b~Cadence~s~: ~r~Failed~s~ to spawn roadside pullover (check shoulder spot).");
+                        UpdateTelemetry();
+                    }, "Cadence - Test Spawn Pullover");
                 }
                 else if (item == _spawnRadarItem)
                 {
-                    bool ok = InvokeFeatureSpawn("StationaryFeature", "SpawnTestRadarUnit");
-                    if (ok) Game.DisplayNotification("~b~Cadence~s~: Radar speed trap ~g~spawned~s~.");
-                    else Game.DisplayNotification("~b~Cadence~s~: ~r~Failed~s~ to spawn radar speed trap (check turnout spot).");
+                    GameFiber.StartNew(() =>
+                    {
+                        bool ok = InvokeFeatureSpawn("StationaryFeature", "SpawnTestRadarUnit");
+                        if (ok) Game.DisplayNotification("~b~Cadence~s~: Radar speed trap ~g~spawned~s~.");
+                        else Game.DisplayNotification("~b~Cadence~s~: ~r~Failed~s~ to spawn radar speed trap (check turnout spot).");
+                        UpdateTelemetry();
+                    }, "Cadence - Test Spawn Radar");
                 }
                 else if (item == _spawnChillingItem)
                 {
-                    bool ok = InvokeFeatureSpawn("StationaryFeature", "SpawnTestChillingUnit");
-                    if (ok) Game.DisplayNotification("~b~Cadence~s~: Chilling patrol unit ~g~spawned~s~.");
-                    else Game.DisplayNotification("~b~Cadence~s~: ~r~Failed~s~ to spawn chilling patrol unit (check turnout spot).");
+                    GameFiber.StartNew(() =>
+                    {
+                        bool ok = InvokeFeatureSpawn("StationaryFeature", "SpawnTestChillingUnit");
+                        if (ok) Game.DisplayNotification("~b~Cadence~s~: Chilling patrol unit ~g~spawned~s~.");
+                        else Game.DisplayNotification("~b~Cadence~s~: ~r~Failed~s~ to spawn chilling patrol unit (check turnout spot).");
+                        UpdateTelemetry();
+                    }, "Cadence - Test Spawn Chilling");
                 }
                 else if (item == _triggerEmergencyRunItem)
                 {
-                    bool ok = InvokeFeatureSpawn("ResponseFeature", "TriggerTestRun");
-                    if (ok) Game.DisplayNotification("~b~Cadence~s~: Code 3 emergency run ~g~triggered~s~.");
-                    else Game.DisplayNotification("~b~Cadence~s~: ~r~Failed~s~ to trigger emergency run.");
+                    GameFiber.StartNew(() =>
+                    {
+                        bool ok = InvokeFeatureSpawn("ResponseFeature", "TriggerTestRun");
+                        if (ok) Game.DisplayNotification("~b~Cadence~s~: Code 3 emergency run ~g~triggered~s~.");
+                        else Game.DisplayNotification("~b~Cadence~s~: ~r~Failed~s~ to trigger emergency run.");
+                        UpdateTelemetry();
+                    }, "Cadence - Test Trigger Emergency");
                 }
                 else if (item == _triggerPanicItem)
                 {
-                    bool ok = InvokeFeatureSpawn("BackupFeature", "TriggerPanicButton");
-                    if (ok) Game.DisplayNotification("~b~Cadence~s~: Panic backup ~r~triggered~s~.");
-                    else Game.DisplayNotification("~b~Cadence~s~: ~r~Failed~s~ to trigger panic backup.");
+                    GameFiber.StartNew(() =>
+                    {
+                        bool ok = InvokeFeatureSpawn("BackupFeature", "TriggerPanicButton");
+                        if (ok) Game.DisplayNotification("~b~Cadence~s~: Panic backup ~r~triggered~s~.");
+                        else Game.DisplayNotification("~b~Cadence~s~: ~r~Failed~s~ to trigger panic backup.");
+                        UpdateTelemetry();
+                    }, "Cadence - Test Panic Backup");
                 }
                 else if (item == _triggerGroupBackupItem)
                 {
-                    bool ok = InvokeFeatureSpawn("BackupFeature", "TriggerGroupBackup");
-                    if (ok) Game.DisplayNotification("~b~Cadence~s~: Group backup ~y~triggered~s~.");
-                    else Game.DisplayNotification("~b~Cadence~s~: ~r~Failed~s~ to trigger group backup.");
+                    GameFiber.StartNew(() =>
+                    {
+                        bool ok = InvokeFeatureSpawn("BackupFeature", "TriggerGroupBackup");
+                        if (ok) Game.DisplayNotification("~b~Cadence~s~: Group backup ~y~triggered~s~.");
+                        else Game.DisplayNotification("~b~Cadence~s~: ~r~Failed~s~ to trigger group backup.");
+                        UpdateTelemetry();
+                    }, "Cadence - Test Group Backup");
                 }
-                UpdateTelemetry();
+                else if (item == _triggerCalloutItem)
+                {
+                    GameFiber.StartNew(() =>
+                    {
+                        bool ok = InvokeFeatureSpawn("BackupFeature", "TriggerCalloutResponse");
+                        if (ok) Game.DisplayNotification("~b~Cadence~s~: Callout response unit ~g~dispatched~s~.");
+                        else Game.DisplayNotification("~b~Cadence~s~: ~r~Failed~s~ to dispatch callout response (set waypoint or start callout).");
+                        UpdateTelemetry();
+                    }, "Cadence - Test Callout Response");
+                }
             };
 
             _mainMenu.OnItemSelect += (sender, item, index) =>

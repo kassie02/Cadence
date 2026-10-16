@@ -10,12 +10,18 @@ namespace Cadence.Common
         private const float MaxGroundDelta = 3.5f;
 
         /// <summary>
-        /// Watchdog to verify if a coordinate is trapped in a subterranean void or invalid elevation.
+        /// Watchdog to verify if a coordinate is trapped in a subterranean void or invalid elevation [A18].
         /// </summary>
         public static bool IsSubterraneanOrVoid(Vector3 pos)
         {
+            if (float.IsNaN(pos.X) || float.IsInfinity(pos.X) ||
+                float.IsNaN(pos.Y) || float.IsInfinity(pos.Y) ||
+                float.IsNaN(pos.Z) || float.IsInfinity(pos.Z))
+            {
+                return true;
+            }
+
             if (pos == Vector3.Zero || (Math.Abs(pos.X) < 0.001f && Math.Abs(pos.Y) < 0.001f && Math.Abs(pos.Z) < 0.001f)) return true;
-            if (float.IsNaN(pos.X) || float.IsNaN(pos.Y) || float.IsNaN(pos.Z) || float.IsInfinity(pos.Z)) return true;
             return pos.Z < MinValidGroundZ;
         }
 
@@ -112,13 +118,19 @@ namespace Cadence.Common
         }
 
         /// <summary>
-        /// Probes and validates ground elevation for an arbitrary 3D coordinate prior to entity creation.
+        /// Probes and validates ground elevation for an arbitrary 3D coordinate prior to entity creation [A21].
+        /// Returns true only when ground elevation is strictly verified against native/RPH probes.
         /// </summary>
         public static bool GetAccurateGroundZ(Vector3 queryPos, out float safeGroundZ)
         {
             safeGroundZ = queryPos.Z;
             try
             {
+                if (IsSubterraneanOrVoid(queryPos))
+                {
+                    return false;
+                }
+
                 NativeFunction.Natives.REQUEST_COLLISION_AT_COORD(queryPos.X, queryPos.Y, queryPos.Z);
                 float probeZ = queryPos.Z + 2.5f;
 
@@ -138,9 +150,12 @@ namespace Cadence.Common
                     return true;
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Core.Logger.Debug($"GetAccurateGroundZ exception: {ex.Message}");
+            }
 
-            return !IsSubterraneanOrVoid(queryPos);
+            return false;
         }
 
         /// <summary>
@@ -213,11 +228,30 @@ namespace Cadence.Common
 
         /// <summary>
         /// Checks whether a given position has sufficient clearance from existing vehicles, peds, and obstructions.
+        /// Excludes the local player and Cadence-owned units [A6] so existing units do not starve new spawns.
+        /// Fails closed (returns false) on unexpected exceptions.
         /// </summary>
         public static bool IsAreaClear(Vector3 pos, float clearanceRadius, bool checkVehicles = true, bool checkPeds = true)
         {
+            if (IsSubterraneanOrVoid(pos) || clearanceRadius <= 0.0f)
+            {
+                return false;
+            }
+
             try
             {
+                Ped playerPed = null;
+                Vehicle playerVeh = null;
+                try
+                {
+                    playerPed = Game.LocalPlayer?.Character;
+                    if (playerPed != null && playerPed.Exists())
+                    {
+                        playerVeh = playerPed.CurrentVehicle ?? playerPed.LastVehicle;
+                    }
+                }
+                catch { }
+
                 if (checkVehicles)
                 {
                     Entity[] nearbyVehicles = World.GetEntities(pos, clearanceRadius, GetEntitiesFlags.ConsiderAllVehicles);
@@ -225,7 +259,15 @@ namespace Cadence.Common
                     {
                         foreach (Entity veh in nearbyVehicles)
                         {
-                            if (veh != null && veh.Exists() && veh.DistanceTo(pos) < clearanceRadius)
+                            if (veh == null || !veh.Exists()) continue;
+
+                            // Exclude local player vehicle
+                            if (playerVeh != null && playerVeh.Exists() && veh.Handle == playerVeh.Handle) continue;
+
+                            // Exclude Cadence-owned units so ambient density isn't self-starved [A6]
+                            if (UnitRegistry.IsClaimed(veh)) continue;
+
+                            if (veh.DistanceTo(pos) < clearanceRadius)
                             {
                                 return false;
                             }
@@ -240,7 +282,15 @@ namespace Cadence.Common
                     {
                         foreach (Entity ped in nearbyPeds)
                         {
-                            if (ped != null && ped.Exists() && ped.DistanceTo(pos) < clearanceRadius)
+                            if (ped == null || !ped.Exists()) continue;
+
+                            // Exclude local player character
+                            if (playerPed != null && playerPed.Exists() && ped.Handle == playerPed.Handle) continue;
+
+                            // Exclude Cadence-owned officers [A6]
+                            if (UnitRegistry.IsClaimed(ped)) continue;
+
+                            if (ped.DistanceTo(pos) < clearanceRadius)
                             {
                                 return false;
                             }
@@ -254,9 +304,10 @@ namespace Cadence.Common
 
                 return true;
             }
-            catch
+            catch (Exception ex)
             {
-                return true;
+                Core.Logger.Debug($"IsAreaClear encountered exception (failing closed) [A6]: {ex.Message}");
+                return false;
             }
         }
 
@@ -334,9 +385,13 @@ namespace Cadence.Common
             return false;
         }
 
+        private static readonly object _randLock = new object();
+        private static readonly Random _rand = new Random();
+
         /// <summary>
         /// Determines whether to spawn a Highway Patrol unit (State Patrol) or Local Police/Sheriff
         /// based on highway detection and the user's configured balance setting (0 - 100).
+        /// Thread-safe locked Random [A10].
         /// </summary>
         public static bool ShouldSpawnHighwayUnit(Vector3 pos)
         {
@@ -345,7 +400,11 @@ namespace Cadence.Common
             if (ratio >= 100) return true;
 
             bool isHwy = IsHighway(pos);
-            int roll = new Random().Next(100);
+            int roll;
+            lock (_randLock)
+            {
+                roll = _rand.Next(100);
+            }
 
             if (isHwy)
             {
@@ -359,6 +418,198 @@ namespace Cadence.Common
                 int localHwyThreshold = (int)(ratio * 0.30f);
                 return roll < Math.Min(50, Math.Max(2, localHwyThreshold));
             }
+        }
+
+        /// <summary>
+        /// Safe model streaming loader with timeout protection to prevent game freezes.
+        /// Releases pending model requests on timeout [A15].
+        /// </summary>
+        public static bool SafeLoad(this Model model, int timeoutMs = 4000)
+        {
+            if (!model.IsValid) return false;
+            try
+            {
+                if (model.IsLoaded) return true;
+                model.Load();
+                uint start = Game.GameTime;
+                while (!model.IsLoaded)
+                {
+                    GameFiber.Yield();
+                    if (Game.GameTime - start > timeoutMs)
+                    {
+                        Core.Logger.Warn($"Model '{model.Name}' (0x{model.Hash:X}) timed out loading after {timeoutMs}ms");
+                        try
+                        {
+                            model.Dismiss(); // [A15] Release pending stream request on timeout
+                        }
+                        catch { }
+                        return false;
+                    }
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Core.Logger.Error($"SafeLoad error for model '{model.Name}'", ex);
+                try { model.Dismiss(); } catch { }
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Detects whether a coordinate is located on an elevated building rooftop, parking deck, or overhead bridge.
+        /// Compares the candidate's elevation against the nearest paved ground road node (nodeType 0 or 1).
+        /// If candidate is farther than 25m from a road or elevated by more than 2.2m above street level, it is flagged as rooftop/elevated.
+        /// Handles legitimate underpass geometry [A20].
+        /// </summary>
+        public static bool IsRooftopOrElevatedStructure(Vector3 pos)
+        {
+            if (pos == Vector3.Zero || IsSubterraneanOrVoid(pos)) return true;
+
+            try
+            {
+                // Find nearest ground-level paved road node
+                bool foundRoad = NativeFunction.Natives.GET_CLOSEST_VEHICLE_NODE_WITH_HEADING<bool>(
+                    pos.X, pos.Y, pos.Z,
+                    out Vector3 roadNode,
+                    out float roadHeading,
+                    0, 3.0f, 0f
+                );
+
+                if (!foundRoad || roadNode == Vector3.Zero)
+                {
+                    // Fallback test: any road (nodeType 1)
+                    foundRoad = NativeFunction.Natives.GET_CLOSEST_VEHICLE_NODE_WITH_HEADING<bool>(
+                        pos.X, pos.Y, pos.Z,
+                        out roadNode,
+                        out roadHeading,
+                        1, 3.0f, 0f
+                    );
+                }
+
+                if (!foundRoad || roadNode == Vector3.Zero)
+                {
+                    // No road node exists within probing range -> definitely not a safe roadside location
+                    return true;
+                }
+
+                // If candidate is too far horizontally from the road (e.g. interior building roof), reject
+                float horizontalDist = Vector3.Distance(new Vector3(pos.X, pos.Y, 0f), new Vector3(roadNode.X, roadNode.Y, 0f));
+                if (horizontalDist > 25.0f)
+                {
+                    return true;
+                }
+
+                // If candidate elevation is higher than the road by > 2.2m, it's on a roof or elevated parking deck.
+                // For lower bound, allow underpass geometry unless extreme drop (> 15m) into void/water [A20].
+                float deltaZ = pos.Z - roadNode.Z;
+                if (deltaZ > 2.2f || deltaZ < -15.0f)
+                {
+                    return true;
+                }
+
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Core.Logger.Debug($"IsRooftopOrElevatedStructure exception: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Finds a safe off-road parking lot, turnout, or shoulder position away from traffic travel lanes.
+        /// Uses off-road vehicle nodes (nodeType 3) and road boundary detection, strictly rejecting rooftops.
+        /// </summary>
+        public static bool GetSafeOffroadPosition(Vector3 searchCenter, float minDistance, float maxDistance, out Vector3 offroadPos, out float offroadHeading)
+        {
+            offroadPos = Vector3.Zero;
+            offroadHeading = 0f;
+
+            try
+            {
+                // Priority 1: Check for off-road / parking lot / turnout vehicle nodes (nodeType = 3)
+                try
+                {
+                    bool foundOffroad = NativeFunction.Natives.GET_CLOSEST_VEHICLE_NODE_WITH_HEADING<bool>(
+                        searchCenter.X, searchCenter.Y, searchCenter.Z,
+                        out Vector3 offroadNode,
+                        out float offHeading,
+                        3, 3.0f, 0f
+                    );
+
+                    if (foundOffroad && offroadNode != Vector3.Zero && !IsSubterraneanOrVoid(offroadNode) && !IsRooftopOrElevatedStructure(offroadNode))
+                    {
+                        float dist = offroadNode.DistanceTo(searchCenter);
+                        if (dist >= minDistance && dist <= maxDistance && IsAreaClear(offroadNode, 8.0f))
+                        {
+                            offroadPos = offroadNode;
+                            offroadHeading = offHeading;
+                            return true;
+                        }
+                    }
+                }
+                catch { }
+
+                // Priority 2: Use road boundary detection to step completely beyond the asphalt into shoulder / turnout
+                if (GetSafeStreetPosition(searchCenter, 1, out Vector3 streetPos, out float streetHeading))
+                {
+                    try
+                    {
+                        bool foundBoundary = NativeFunction.Natives.GET_ROAD_BOUNDARY_USING_HEADING<bool>(
+                            streetPos.X, streetPos.Y, streetPos.Z,
+                            streetHeading,
+                            out Vector3 boundaryPos
+                        );
+
+                        if (foundBoundary && boundaryPos != Vector3.Zero && !IsSubterraneanOrVoid(boundaryPos))
+                        {
+                            float hRad = streetHeading * (float)(Math.PI / 180.0);
+                            Vector3 rightDir = new Vector3((float)Math.Cos(hRad), (float)Math.Sin(hRad), 0f);
+
+                            // Push 3.0m beyond the outer road edge into dirt / shoulder
+                            Vector3 shoulderSpot = boundaryPos + rightDir * 3.0f;
+                            if (GetAccurateGroundZ(shoulderSpot, out float safeGZ))
+                            {
+                                shoulderSpot.Z = safeGZ + 0.35f;
+                            }
+
+                            if (!IsSubterraneanOrVoid(shoulderSpot) && !IsRooftopOrElevatedStructure(shoulderSpot) && IsAreaClear(shoulderSpot, 8.0f))
+                            {
+                                offroadPos = shoulderSpot;
+                                offroadHeading = streetHeading;
+                                return true;
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch (Exception ex)
+            {
+                Core.Logger.Debug($"GetSafeOffroadPosition error: {ex.Message}");
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Checks whether a given position is located within an active vehicle travel lane or too close to street centerline.
+        /// </summary>
+        public static bool IsOnActiveRoadOrLane(Vector3 pos, float laneThreshold = 4.8f)
+        {
+            try
+            {
+                if (GetSafeStreetPosition(pos, 1, out Vector3 nodePos, out _))
+                {
+                    if (nodePos != Vector3.Zero && pos.DistanceTo(nodePos) < laneThreshold)
+                    {
+                        return true;
+                    }
+                }
+            }
+            catch { }
+            return false;
         }
     }
 }

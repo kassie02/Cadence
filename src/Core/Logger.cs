@@ -16,13 +16,15 @@ namespace Cadence.Core
     /// </summary>
     public static class Logger
     {
-        private const int MaxQueueCapacity = 4000;
+        private const int MaxQueueCapacity = 5000;
         private const int MaxArchiveFiles = 10;
         private const int FlushIntervalMs = 200;
 
         private static readonly object _initLock = new object();
+        private static readonly object _writerLock = new object();
         private static readonly ConcurrentQueue<string> _queue = new ConcurrentQueue<string>();
-        private static readonly AutoResetEvent _wakeEvent = new AutoResetEvent(false);
+        private static readonly ManualResetEventSlim _workerStopped = new ManualResetEventSlim(false);
+        private static AutoResetEvent _wakeEvent = new AutoResetEvent(false);
 
         private static Thread _workerThread;
         private static StreamWriter _fileWriter;
@@ -30,7 +32,8 @@ namespace Cadence.Core
         private static string _activeLogPath;
         private static volatile bool _isRunning;
         private static volatile bool _initialized;
-        private static long _droppedMessagesCount;
+        private static long _droppedDebugCount;
+        private static long _droppedNonDebugCount;
 
         // Settings toggles (synced from Settings.cs / Cadence.ini)
         public static bool EnableDebugLogging { get; set; } = true;
@@ -39,6 +42,10 @@ namespace Cadence.Core
         public static string ActiveLogPath => _activeLogPath;
         public static string LogsDirectory => _logsDirectory;
 
+        /// <summary>
+        /// Deterministic initialization called during plugin startup [A4].
+        /// Heavy operations (directories, archiving, file stream, worker thread) run here exclusively.
+        /// </summary>
         public static void Initialize(string preferredBaseDir = null)
         {
             lock (_initLock)
@@ -47,6 +54,14 @@ namespace Cadence.Core
 
                 try
                 {
+                    // Ensure wake event exists and is reset
+                    if (_wakeEvent == null)
+                    {
+                        _wakeEvent = new AutoResetEvent(false);
+                    }
+
+                    _workerStopped.Reset();
+
                     // 1. Resolve logs directory: plugins/LSPDFR/Cadence/Logs/
                     string baseDir = preferredBaseDir;
                     if (string.IsNullOrEmpty(baseDir) || !Directory.Exists(baseDir))
@@ -71,9 +86,12 @@ namespace Cadence.Core
                     // 4. Enforce 10-session archive retention
                     EnforceArchiveRetention();
 
-                    // 5. Open stream writer for the new session
-                    FileStream fs = new FileStream(_activeLogPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
-                    _fileWriter = new StreamWriter(fs, Encoding.UTF8) { AutoFlush = true };
+                    // 5. Open stream writer for the new session under lock
+                    lock (_writerLock)
+                    {
+                        FileStream fs = new FileStream(_activeLogPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+                        _fileWriter = new StreamWriter(fs, Encoding.UTF8) { AutoFlush = true };
+                    }
 
                     // 6. Start asynchronous background worker thread (zero fiber latency)
                     _isRunning = true;
@@ -98,30 +116,47 @@ namespace Cadence.Core
                 {
                     try
                     {
-                        Game.LogTrivial($"[Cadence] [ERROR] Failed initializing Logger: {ex.Message}");
+                        TryLogToRph($"[Cadence] [ERROR] Failed initializing Logger: {ex.Message}");
                     }
                     catch { }
                 }
             }
         }
 
+        /// <summary>
+        /// Graceful logger shutdown with bounded worker wait and clean stream disposal [A2, A23].
+        /// </summary>
         public static void Shutdown()
         {
             lock (_initLock)
             {
-                if (!_isRunning) return;
+                if (!_isRunning && !_initialized) return;
                 _isRunning = false;
-                _wakeEvent.Set();
+                _workerStopped.Reset();
+
+                try
+                {
+                    _wakeEvent?.Set();
+                }
+                catch { }
             }
 
             try
             {
                 if (_workerThread != null && _workerThread.IsAlive)
                 {
-                    _workerThread.Join(1000);
+                    // Wait for worker to signal complete stop [A2]
+                    if (!_workerStopped.Wait(1500))
+                    {
+                        _workerThread.Join(500);
+                    }
                 }
             }
             catch { }
+            finally
+            {
+                _workerThread = null;
+            }
 
             lock (_initLock)
             {
@@ -129,12 +164,16 @@ namespace Cadence.Core
                 {
                     SessionMetrics.LogSummary();
                     DrainQueueToFile();
-                    if (_fileWriter != null)
+
+                    lock (_writerLock)
                     {
-                        _fileWriter.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] [INFO] [Logger] Cadence logging session closed cleanly.");
-                        _fileWriter.Flush();
-                        _fileWriter.Dispose();
-                        _fileWriter = null;
+                        if (_fileWriter != null)
+                        {
+                            _fileWriter.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] [INFO] [Logger] Cadence logging session closed cleanly.");
+                            _fileWriter.Flush();
+                            _fileWriter.Dispose();
+                            _fileWriter = null;
+                        }
                     }
                 }
                 catch { }
@@ -143,6 +182,13 @@ namespace Cadence.Core
                 {
                     AppDomain.CurrentDomain.DomainUnload -= OnDomainUnload;
                     AppDomain.CurrentDomain.ProcessExit -= OnDomainUnload;
+                }
+                catch { }
+
+                try
+                {
+                    _wakeEvent?.Dispose(); // [A23]
+                    _wakeEvent = null;
                 }
                 catch { }
 
@@ -191,13 +237,13 @@ namespace Cadence.Core
             string categoryPrefix = string.IsNullOrEmpty(category) ? string.Empty : $"[{category}] ";
             string fullMessage = $"{categoryPrefix}{message}";
 
-            // 1. Output to RagePluginHook Console / log (RagePluginHook.log)
-            // Debug messages only echo to RPH log if EnableDebugLogging is active
-            if (level != "DEBUG" || EnableDebugLogging)
+            // 1. Output to RagePluginHook Console / log (RagePluginHook.log) [A14]
+            // Mirror only WARN and ERROR to avoid flooding RagePluginHook.log
+            if (level == "WARN" || level == "ERROR")
             {
                 try
                 {
-                    Game.LogTrivial($"[Cadence] [{level}] {fullMessage}");
+                    TryLogToRph($"[Cadence] [{level}] {fullMessage}");
                 }
                 catch
                 {
@@ -208,93 +254,125 @@ namespace Cadence.Core
             // 2. Output to Cadence dedicated log file
             if (!EnableFileLogging) return;
 
+            // [A4] Lazy init fallback: if not initialized, do not perform heavy disk I/O on calling fiber
             if (!_initialized)
             {
-                Initialize();
+                return;
             }
 
-            // Memory watchdog: drop debug messages if queue capacity is reached
+            // [A5] Bounded queue watchdog: cap queue at MaxQueueCapacity
             if (_queue.Count >= MaxQueueCapacity)
             {
                 if (level == "DEBUG")
                 {
-                    Interlocked.Increment(ref _droppedMessagesCount);
+                    Interlocked.Increment(ref _droppedDebugCount);
                     return;
+                }
+                else
+                {
+                    // Drop oldest non-debug log line to make room for new critical entries
+                    if (_queue.TryDequeue(out _))
+                    {
+                        Interlocked.Increment(ref _droppedNonDebugCount);
+                    }
                 }
             }
 
             string line = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] [{level}] {fullMessage}";
             _queue.Enqueue(line);
-            _wakeEvent.Set();
+
+            try
+            {
+                _wakeEvent?.Set();
+            }
+            catch { }
         }
 
         private static void WorkerLoop()
         {
-            while (_isRunning)
+            try
             {
-                try
-                {
-                    _wakeEvent.WaitOne(FlushIntervalMs);
-                    DrainQueueToFile();
-                }
-                catch (ThreadAbortException)
-                {
-                    break;
-                }
-                catch (Exception ex)
+                while (_isRunning)
                 {
                     try
                     {
-                        Game.LogTrivial($"[Cadence] [ERROR] Logger worker thread encountered exception: {ex.Message}");
+                        _wakeEvent?.WaitOne(FlushIntervalMs);
+                        DrainQueueToFile();
                     }
-                    catch { }
+                    catch (ThreadAbortException)
+                    {
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        try
+                        {
+                            TryLogToRph($"[Cadence] [ERROR] Logger worker thread encountered exception: {ex.Message}");
+                        }
+                        catch { }
+                    }
                 }
-            }
 
-            // Final drain when loop exits
-            DrainQueueToFile();
+                // Final drain when loop exits
+                DrainQueueToFile();
+            }
+            finally
+            {
+                _workerStopped.Set();
+            }
         }
 
         private static void DrainQueueToFile()
         {
-            if (_fileWriter == null) return;
-
-            bool wroteAny = false;
-            while (_queue.TryDequeue(out string line))
+            lock (_writerLock)
             {
-                try
-                {
-                    _fileWriter.WriteLine(line);
-                    wroteAny = true;
-                }
-                catch
-                {
-                    break;
-                }
-            }
+                if (_fileWriter == null) return;
 
-            if (_droppedMessagesCount > 0)
-            {
-                long dropped = Interlocked.Exchange(ref _droppedMessagesCount, 0);
-                if (dropped > 0)
+                bool wroteAny = false;
+                while (_queue.TryDequeue(out string line))
                 {
                     try
                     {
-                        _fileWriter.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] [WARN] [Logger] Dropped {dropped} debug messages due to queue congestion.");
+                        _fileWriter.WriteLine(line);
+                        wroteAny = true;
+                    }
+                    catch
+                    {
+                        break;
+                    }
+                }
+
+                long droppedDbg = Interlocked.Exchange(ref _droppedDebugCount, 0);
+                if (droppedDbg > 0)
+                {
+                    try
+                    {
+                        _fileWriter.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] [WARN] [Logger] Dropped {droppedDbg} debug messages due to queue congestion.");
                         wroteAny = true;
                     }
                     catch { }
                 }
-            }
 
-            if (wroteAny)
-            {
-                try
+                long droppedNonDbg = Interlocked.Exchange(ref _droppedNonDebugCount, 0);
+                if (droppedNonDbg > 0)
                 {
-                    _fileWriter.Flush();
-                    CheckMidSessionRotation();
+                    try
+                    {
+                        _fileWriter.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] [WARN] [Logger] Dropped {droppedNonDbg} older non-debug messages due to queue congestion.");
+                        wroteAny = true;
+                    }
+                    catch { }
                 }
-                catch { }
+
+                if (wroteAny)
+                {
+                    try
+                    {
+                        _fileWriter.Flush();
+                        CheckMidSessionRotation();
+                    }
+                    catch { }
+                }
             }
         }
 
@@ -312,13 +390,7 @@ namespace Cadence.Core
                         _fileWriter.Dispose();
                         _fileWriter = null;
 
-                        string timeStamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-                        string rotatedPath = Path.Combine(_logsDirectory, $"Cadence_Archive_{timeStamp}.log");
-                        if (File.Exists(_activeLogPath))
-                        {
-                            File.Move(_activeLogPath, rotatedPath);
-                        }
-
+                        ArchivePreviousSession();
                         EnforceArchiveRetention();
 
                         FileStream fs = new FileStream(_activeLogPath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite);
@@ -330,21 +402,28 @@ namespace Cadence.Core
             catch { }
         }
 
+        // ====================================================================
+        // File Archival & Maintenance Helpers
+        // ====================================================================
+
         private static void WriteSessionHeader()
         {
-            string bar = new string('=', 78);
-            Write("INFO", "Session", bar);
-            Write("INFO", "Session", "  Cadence - Ambient Policing System for LSPDFR");
-            Write("INFO", "Session", $"  Session Started : {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
-            Write("INFO", "Session", $"  Logs Directory  : {_logsDirectory}");
-            Write("INFO", "Session", $"  Active Log File : {_activeLogPath}");
-            Write("INFO", "Session", $"  Debug Logging   : {EnableDebugLogging}");
-            Write("INFO", "Session", bar);
+            lock (_writerLock)
+            {
+                if (_fileWriter == null) return;
+                try
+                {
+                    string bar = new string('=', 78);
+                    _fileWriter.WriteLine(bar);
+                    _fileWriter.WriteLine($"  Project Cadence - Ambient Policing System for LSPDFR");
+                    _fileWriter.WriteLine($"  Session Started: {DateTime.Now:yyyy-MM-dd HH:mm:ss} (Local)");
+                    _fileWriter.WriteLine($"  Log Destination: {_activeLogPath}");
+                    _fileWriter.WriteLine(bar);
+                    _fileWriter.Flush();
+                }
+                catch { }
+            }
         }
-
-        // ====================================================================
-        // File Archival & Retention Management
-        // ====================================================================
 
         private static void ArchivePreviousSession()
         {
@@ -355,13 +434,13 @@ namespace Cadence.Core
                     FileInfo fi = new FileInfo(_activeLogPath);
                     if (fi.Length > 0)
                     {
-                        string timeStamp = fi.LastWriteTime.ToString("yyyyMMdd_HHmmss");
-                        string archiveName = $"Cadence_Archive_{timeStamp}.log";
+                        string timestamp = fi.LastWriteTime.ToString("yyyyMMdd_HHmmss");
+                        string archiveName = $"Cadence_{timestamp}.log";
                         string archivePath = Path.Combine(_logsDirectory, archiveName);
 
                         if (File.Exists(archivePath))
                         {
-                            archivePath = Path.Combine(_logsDirectory, $"Cadence_Archive_{timeStamp}_{Guid.NewGuid().ToString().Substring(0, 4)}.log");
+                            archivePath = Path.Combine(_logsDirectory, $"Cadence_{timestamp}_{Guid.NewGuid().ToString().Substring(0, 4)}.log");
                         }
 
                         File.Move(_activeLogPath, archivePath);
@@ -372,37 +451,20 @@ namespace Cadence.Core
                     }
                 }
             }
-            catch (Exception ex)
-            {
-                try { Game.LogTrivial($"[Cadence] [WARN] Could not archive previous log: {ex.Message}"); } catch { }
-            }
+            catch { }
         }
 
         private static void MigrateLegacyLogs(string baseDir)
         {
             try
             {
-                // Check if old Cadence.log exists in plugins/LSPDFR directly
                 string legacyPath = Path.Combine(baseDir, "Cadence.log");
                 if (File.Exists(legacyPath))
                 {
                     FileInfo fi = new FileInfo(legacyPath);
-                    string target = Path.Combine(_logsDirectory, $"Cadence_Legacy_{fi.LastWriteTime:yyyyMMdd_HHmmss}.log");
-                    try
-                    {
-                        File.Move(legacyPath, target);
-                    }
-                    catch
-                    {
-                        try { File.Delete(legacyPath); } catch { }
-                    }
-                }
-
-                // Also check old Cadence.old.log
-                string oldLegacyPath = Path.Combine(baseDir, "Cadence.old.log");
-                if (File.Exists(oldLegacyPath))
-                {
-                    try { File.Delete(oldLegacyPath); } catch { }
+                    string timestamp = fi.LastWriteTime.ToString("yyyyMMdd_HHmmss");
+                    string dest = Path.Combine(_logsDirectory, $"Cadence_legacy_{timestamp}.log");
+                    File.Move(legacyPath, dest);
                 }
             }
             catch { }
@@ -414,8 +476,8 @@ namespace Cadence.Core
             {
                 if (!Directory.Exists(_logsDirectory)) return;
 
-                DirectoryInfo dir = new DirectoryInfo(_logsDirectory);
-                FileInfo[] allLogs = dir.GetFiles("*.log");
+                DirectoryInfo di = new DirectoryInfo(_logsDirectory);
+                FileInfo[] allLogs = di.GetFiles("Cadence_*.log");
 
                 List<FileInfo> archives = new List<FileInfo>();
                 foreach (FileInfo f in allLogs)
@@ -428,7 +490,8 @@ namespace Cadence.Core
 
                 if (archives.Count > MaxArchiveFiles)
                 {
-                    archives.Sort((a, b) => DateTime.Compare(a.CreationTimeUtc, b.CreationTimeUtc));
+                    // Sort by LastWriteTimeUtc [A23]
+                    archives.Sort((a, b) => DateTime.Compare(a.LastWriteTimeUtc, b.LastWriteTimeUtc));
 
                     int toDelete = archives.Count - MaxArchiveFiles;
                     for (int i = 0; i < toDelete; i++)
@@ -465,6 +528,12 @@ namespace Cadence.Core
             }
 
             return sb.ToString();
+        }
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        private static void TryLogToRph(string message)
+        {
+            Game.LogTrivial(message);
         }
     }
 

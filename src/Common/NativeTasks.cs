@@ -11,9 +11,10 @@ namespace Cadence.Common
         // ====================================================================
 
         /// <summary>
-        /// Standard ambient cruising: obeys traffic signals, stops for pedestrians and cars, stays in lane.
+        /// Standard ambient cruising: obeys traffic signals, stops for sudden road hazards, but actively steers
+        /// around stationary/parked vehicles (8), pedestrians (16), objects (32), and changes lanes around obstructions (524288).
         /// </summary>
-        public const VehicleDrivingFlags CruisingFlags = (VehicleDrivingFlags)447; // 0x1BF: Normal authentic ambient traffic driving
+        public const VehicleDrivingFlags CruisingFlags = (VehicleDrivingFlags)786603; // Standard authentic ambient driving with obstacle avoidance
 
         /// <summary>
         /// Code 3 emergency response: bypasses traffic signals, aggressive lane overtaking, yields to obstacles when forced.
@@ -31,19 +32,23 @@ namespace Cadence.Common
         public const VehicleDrivingFlags PursuitFlags = (VehicleDrivingFlags)1074528311;
 
         /// <summary>
-        /// Long-range emergency response flag (0xC023C = 787004L): avoids vehicles, avoids peds, allows median crossing, ignores traffic lights, avoids empty vehicles.
-        /// Flawless pathfinding over long distances (> 100m) without abandoning waypoints or jamming at intersections.
+        /// Long-range emergency response flag (0xC023C = 787004L):
+        /// Swerve around vehicles (4), SteerAroundStationaryVehicles (8), SteerAroundPeds (16), SteerAroundObjects (32),
+        /// DriveIntoOncomingTraffic (512), UseShortCutLinks (262144), and ChangeLanesAroundObstructions (524288).
+        /// Flawless forward emergency pathfinding over long distances without reversing or jamming at intersections.
         /// </summary>
         public const long LongRangeEmergencyDrivingFlag = 787004L;
 
         /// <summary>
-        /// Normal long-range ambient traffic flag (0x1BF = 447L): stops for cars, peds, and traffic lights.
+        /// Normal long-range ambient traffic flag (786603L): stops for signals and peds, but changes lanes around obstructions
+        /// and steers around parked cars and roadside pedestrians.
         /// </summary>
-        public const long NormalDrivingFlag = 447L;
+        public const long NormalDrivingFlag = 786603L;
 
         /// <summary>
         /// Commands a driver to navigate an emergency vehicle to destination coordinates using the long-range pathing engine.
-        /// Aggressiveness is set to 0.0f and ability to 1.0f to ensure clean navigation around obstacles without ramming.
+        /// Aggressiveness is set to 0.8f, ability to 1.0f, and chase behavior flag 8 enabled for assertive response driving and overtaking.
+        /// Explicitly enforces SET_DRIVE_TASK_DRIVING_STYLE and SET_DRIVE_TASK_CRUISE_SPEED so AI actively navigates around obstacles.
         /// </summary>
         public static void TaskLongRangeEmergencyDrive(Ped driver, Vehicle vehicle, Vector3 destination, float speedMps = 32.0f, float stoppingRadius = 12.0f)
         {
@@ -52,8 +57,12 @@ namespace Cadence.Common
             try
             {
                 NativeFunction.Natives.SET_DRIVER_ABILITY(driver, 1.0f);
-                NativeFunction.Natives.SET_DRIVER_AGGRESSIVENESS(driver, 0.0f);
+                NativeFunction.Natives.SET_DRIVER_AGGRESSIVENESS(driver, 0.8f);
+                NativeFunction.Natives.SET_DRIVER_RACING_MODIFIER(driver, 1.0f);
+                NativeFunction.Natives.SET_TASK_VEHICLE_CHASE_BEHAVIOR_FLAG(driver, 8, true);
                 driver.BlockPermanentEvents = true;
+
+                vehicle.ShouldVehiclesYieldToThisVehicle = true;
 
                 try
                 {
@@ -67,6 +76,9 @@ namespace Cadence.Common
                         (int)LongRangeEmergencyDrivingFlag,
                         stoppingRadius
                     );
+
+                    NativeFunction.Natives.SET_DRIVE_TASK_DRIVING_STYLE(driver, (int)LongRangeEmergencyDrivingFlag);
+                    NativeFunction.Natives.SET_DRIVE_TASK_CRUISE_SPEED(driver, speedMps);
                 }
                 catch
                 {
@@ -90,7 +102,7 @@ namespace Cadence.Common
             try
             {
                 NativeFunction.Natives.SET_DRIVER_ABILITY(driver, 1.0f);
-                NativeFunction.Natives.SET_DRIVER_AGGRESSIVENESS(driver, 0.0f);
+                NativeFunction.Natives.SET_DRIVER_AGGRESSIVENESS(driver, 0.2f);
                 driver.BlockPermanentEvents = true;
 
                 try
@@ -105,6 +117,9 @@ namespace Cadence.Common
                         (int)drivingFlags,
                         stoppingRadius
                     );
+
+                    NativeFunction.Natives.SET_DRIVE_TASK_DRIVING_STYLE(driver, (int)drivingFlags);
+                    NativeFunction.Natives.SET_DRIVE_TASK_CRUISE_SPEED(driver, speedMps);
                 }
                 catch
                 {
@@ -147,6 +162,27 @@ namespace Cadence.Common
         }
 
         /// <summary>
+        /// Commands a driver in a vehicle to aggressively pursue a fleeing target entity using GTA V's native chase AI.
+        /// </summary>
+        public static void TaskVehicleChase(Ped driver, Entity target)
+        {
+            if (driver == null || !driver.Exists() || target == null || !target.Exists()) return;
+
+            try
+            {
+                driver.BlockPermanentEvents = true;
+                NativeFunction.Natives.SET_DRIVER_ABILITY(driver, 1.0f);
+                NativeFunction.Natives.SET_DRIVER_AGGRESSIVENESS(driver, 0.7f);
+                NativeFunction.Natives.SET_TASK_VEHICLE_CHASE_BEHAVIOR_FLAG(driver, 8, true);
+                NativeFunction.Natives.TASK_VEHICLE_CHASE(driver, target);
+            }
+            catch (Exception ex)
+            {
+                Core.Logger.Debug($"[NativeTasks] TaskVehicleChase error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
         /// Configures calm, organic ambient driving parameters for routine cruisers.
         /// Driver keeps BlockPermanentEvents = false so GTA V's native traffic decision-making operates naturally.
         /// </summary>
@@ -158,11 +194,14 @@ namespace Cadence.Common
             {
                 NativeFunction.Natives.SET_DRIVER_ABILITY(driver, 1.0f);
                 NativeFunction.Natives.SET_DRIVER_AGGRESSIVENESS(driver, 0.0f);
+                NativeFunction.Natives.SET_DRIVER_RACING_MODIFIER(driver, 0.0f);
+                NativeFunction.Natives.SET_TASK_VEHICLE_CHASE_BEHAVIOR_FLAG(driver, 8, false);
                 driver.BlockPermanentEvents = false;
 
                 if (cruiser != null && cruiser.Exists())
                 {
                     cruiser.ShouldVehiclesYieldToThisVehicle = false;
+                    ShutOffSirenAndLights(cruiser);
                 }
             }
             catch (Exception ex)
@@ -190,10 +229,7 @@ namespace Cadence.Common
                 }
                 else
                 {
-                    vehicle.IsSirenOn = false;
-                    vehicle.IsSirenSilent = false;
-                    NativeFunction.Natives.SET_VEHICLE_HAS_MUTED_SIRENS(vehicle, false);
-                    NativeFunction.Natives.SET_VEHICLE_SIREN(vehicle, false);
+                    ShutOffSirenAndLights(vehicle);
                 }
             }
             catch (Exception ex)
@@ -203,9 +239,101 @@ namespace Cadence.Common
         }
 
         /// <summary>
+        /// Completely terminates all audible sirens and visual emergency lights on a vehicle.
+        /// Cleanly neutralizes siren audio and emergency yield state without leaving muted sirens armed.
+        /// </summary>
+        public static void ShutOffSirenAndLights(Vehicle vehicle)
+        {
+            if (vehicle == null || !vehicle.Exists()) return;
+
+            try
+            {
+                vehicle.IsSirenOn = false;
+                vehicle.IsSirenSilent = false;
+                NativeFunction.Natives.SET_VEHICLE_SIREN(vehicle, false);
+                NativeFunction.Natives.SET_VEHICLE_HAS_MUTED_SIRENS(vehicle, false);
+                NativeFunction.Natives.SET_SIREN_WITH_NO_DRIVER(vehicle, false);
+                vehicle.ShouldVehiclesYieldToThisVehicle = false;
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Enforces the global siren policy: if emergency lights are turned off, siren audio is strictly killed.
+        /// </summary>
+        public static void EnforceSirenLightbarPolicy(Vehicle vehicle)
+        {
+            if (vehicle == null || !vehicle.Exists()) return;
+
+            try
+            {
+                if (!Core.Settings.RequireLightsForSiren) return;
+
+                bool isLightOn = vehicle.IsSirenOn;
+                try
+                {
+                    isLightOn = isLightOn || NativeFunction.Natives.IS_VEHICLE_SIREN_ON<bool>(vehicle);
+                }
+                catch { }
+
+                if (!isLightOn)
+                {
+                    bool isAudioOn = false;
+                    try
+                    {
+                        isAudioOn = NativeFunction.Natives.IS_VEHICLE_SIREN_AUDIO_ON<bool>(vehicle);
+                    }
+                    catch { }
+
+                    if (isAudioOn || !vehicle.IsSirenSilent)
+                    {
+                        vehicle.IsSirenSilent = true;
+                        NativeFunction.Natives.SET_VEHICLE_HAS_MUTED_SIRENS(vehicle, true);
+                        NativeFunction.Natives.SET_SIREN_WITH_NO_DRIVER(vehicle, false);
+                        NativeFunction.Natives.SET_VEHICLE_SIREN(vehicle, false);
+                    }
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>
         /// Alias for SetSilentEmergencyLights.
         /// </summary>
         public static void SetSilentSiren(Vehicle vehicle, bool enabled) => SetSilentEmergencyLights(vehicle, enabled);
+
+        /// <summary>
+        /// Native wrapper for SET_VEHICLE_SIREN.
+        /// </summary>
+        public static void SET_VEHICLE_SIREN(Vehicle vehicle, bool toggle)
+        {
+            if (vehicle != null && vehicle.Exists())
+            {
+                NativeFunction.Natives.SET_VEHICLE_SIREN(vehicle, toggle);
+            }
+        }
+
+        /// <summary>
+        /// Native wrapper for SET_VEHICLE_HAS_MUTED_SIRENS.
+        /// </summary>
+        public static void SET_VEHICLE_HAS_MUTED_SIRENS(Vehicle vehicle, bool toggle)
+        {
+            if (vehicle != null && vehicle.Exists())
+            {
+                NativeFunction.Natives.SET_VEHICLE_HAS_MUTED_SIRENS(vehicle, toggle);
+            }
+        }
+
+        /// <summary>
+        /// Native wrapper for SET_SIREN_WITH_NO_DRIVER.
+        /// </summary>
+        public static void SET_SIREN_WITH_NO_DRIVER(Vehicle vehicle, bool toggle)
+        {
+            if (vehicle != null && vehicle.Exists())
+            {
+                NativeFunction.Natives.SET_SIREN_WITH_NO_DRIVER(vehicle, toggle);
+            }
+        }
 
         /// <summary>
         /// Streams an animation dictionary into memory with timeout protection.
@@ -230,6 +358,11 @@ namespace Cadence.Common
                     if (Game.GameTime - startTime > timeoutMs)
                     {
                         Core.Logger.Warn($"Animation dictionary '{animDict}' timed out loading after {timeoutMs}ms");
+                        try
+                        {
+                            NativeFunction.Natives.REMOVE_ANIM_DICT(animDict);
+                        }
+                        catch { }
                         return false;
                     }
                 }

@@ -27,6 +27,9 @@ namespace Cadence.Services
                 if (blip.Exists())
                 {
                     try { NativeFunction.Natives.SET_BLIP_FLASHES(blip, false); } catch { }
+                    try { NativeFunction.Natives.SET_BLIP_FLASHES_ALTERNATE(blip, false); } catch { }
+                    try { NativeFunction.Natives.SET_BLIP_FLASH_INTERVAL(blip, 0); } catch { }
+                    try { NativeFunction.Natives.SET_BLIP_FLASH_TIMER(blip, 0); } catch { }
                     try { blip.StopFlashing(); } catch { }
                     blip.Delete();
                 }
@@ -75,16 +78,63 @@ namespace Cadence.Services
             }
         }
 
+        /// <summary>
+        /// Checks whether the entity (or, if a ped, their current vehicle) has any active radar blip attached.
+        /// Checks both RPH managed blips and native GTA V / LSPDFR blip handles (GET_BLIP_FROM_ENTITY).
+        /// Prevents redundant duplicate watchdog blips on suspects and officers already marked by LSPDFR.
+        /// </summary>
+        public static bool HasAnyActiveRadarMarker(Entity entity)
+        {
+            if (entity == null || !entity.Exists() || !entity.IsValid()) return false;
+
+            // 1. Check managed RPH blip attached by Cadence
+            Blip b = SafeGetAttachedBlip(entity);
+            if (b != null && b.Exists()) return true;
+
+            // 2. Check native GTA V / LSPDFR blip handle directly on entity
+            try
+            {
+                int blipHandle = NativeFunction.Natives.GET_BLIP_FROM_ENTITY<int>(entity);
+                if (blipHandle != 0 && NativeFunction.Natives.DOES_BLIP_EXIST<bool>(blipHandle))
+                {
+                    return true;
+                }
+            }
+            catch { }
+
+            // 3. If ped, check current vehicle (both managed and native)
+            if (entity is Ped ped)
+            {
+                try
+                {
+                    if (ped.IsInAnyVehicle(false) && ped.CurrentVehicle != null && ped.CurrentVehicle.Exists())
+                    {
+                        Blip vb = SafeGetAttachedBlip(ped.CurrentVehicle);
+                        if (vb != null && vb.Exists()) return true;
+
+                        int vehBlipHandle = NativeFunction.Natives.GET_BLIP_FROM_ENTITY<int>(ped.CurrentVehicle);
+                        if (vehBlipHandle != 0 && NativeFunction.Natives.DOES_BLIP_EXIST<bool>(vehBlipHandle))
+                        {
+                            return true;
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            return false;
+        }
+
         // ====================================================================
         // Universal Blip Attachment Engine
         // ====================================================================
 
         /// <summary>
-        /// Cruising Patrol Unit: Sprite 56, Color 38 (Navy Blue), Solid, {Callsign} [PATROL].
+        /// Cruising Patrol Unit: Configurable from INI (Default: Sprite 56, Color 38 Navy Blue, Solid, {Callsign} [PATROL]).
         /// </summary>
         public static Blip AttachCruisingBlip(Vehicle vehicle, string callsign)
         {
-            return CreateOrUpdateBlip(vehicle, callsign, "PATROL", spriteId: 56, colorId: 38, isShortRange: Settings.ShortRangeBlips, flashIntervalMs: 0);
+            return CreateOrUpdateBlip(vehicle, callsign, "PATROL", spriteId: Settings.PatrolBlipSprite, colorId: Settings.PatrolBlipColor, isShortRange: Settings.ShortRangeBlips, flashIntervalMs: 0, alternateFlash: false, scaleOverride: Settings.PatrolBlipScale);
         }
 
         /// <summary>
@@ -93,35 +143,35 @@ namespace Cadence.Services
         public static Blip AttachPatrolBlip(Vehicle vehicle, string callsign) => AttachCruisingBlip(vehicle, callsign);
 
         /// <summary>
-        /// Roadside Traffic Stop: Sprite 56, Color 4 (Yellow), Solid, {Callsign} [TRAFFIC STOP].
+        /// Roadside Traffic Stop: Configurable from INI (Default: Sprite 56, Color 4 Yellow, Solid, {Callsign} [TRAFFIC STOP]).
         /// </summary>
         public static Blip AttachTrafficStopBlip(Vehicle vehicle, string callsign)
         {
-            return CreateOrUpdateBlip(vehicle, callsign, "TRAFFIC STOP", spriteId: 56, colorId: 4, isShortRange: Settings.ShortRangeBlips, flashIntervalMs: 0);
+            return CreateOrUpdateBlip(vehicle, callsign, "TRAFFIC STOP", spriteId: Settings.TrafficStopBlipSprite, colorId: Settings.TrafficStopBlipColor, isShortRange: Settings.ShortRangeBlips, flashIntervalMs: 0, alternateFlash: false, scaleOverride: Settings.TrafficStopBlipScale);
         }
 
         /// <summary>
-        /// Stationary / Radar Trap: Sprite 56, Color 2 (Mint Green), Solid, {Callsign} [RADAR].
+        /// Stationary / Radar Trap: Configurable from INI (Default: Sprite 56, Color 2 Mint Green, Solid, {Callsign} [RADAR]).
         /// </summary>
         public static Blip AttachRadarWatchBlip(Vehicle vehicle, string callsign)
         {
-            return CreateOrUpdateBlip(vehicle, callsign, "RADAR", spriteId: 56, colorId: 2, isShortRange: Settings.ShortRangeBlips, flashIntervalMs: 0);
+            return CreateOrUpdateBlip(vehicle, callsign, "RADAR", spriteId: Settings.StationaryBlipSprite, colorId: Settings.StationaryBlipColor, isShortRange: Settings.ShortRangeBlips, flashIntervalMs: 0, alternateFlash: false, scaleOverride: Settings.StationaryBlipScale);
         }
 
         /// <summary>
-        /// Standing Ambient / Chilling Officer: Sprite 56, Color 2 (Mint Green), Solid, {Callsign} [CHILLING PATROL].
+        /// Standing Ambient / Chilling Officer: Configurable from INI (Default: Sprite 56, Color 2 Mint Green, Solid, {Callsign} [CHILLING PATROL]).
         /// </summary>
         public static Blip AttachChillingBlip(Vehicle vehicle, string callsign)
         {
-            return CreateOrUpdateBlip(vehicle, callsign, "CHILLING PATROL", spriteId: 56, colorId: 2, isShortRange: Settings.ShortRangeBlips, flashIntervalMs: 0);
+            return CreateOrUpdateBlip(vehicle, callsign, "CHILLING PATROL", spriteId: Settings.StationaryBlipSprite, colorId: Settings.StationaryBlipColor, isShortRange: Settings.ShortRangeBlips, flashIntervalMs: 0, alternateFlash: false, scaleOverride: Settings.StationaryBlipScale);
         }
 
         /// <summary>
-        /// Stationary / Standby Unit (Generic): Sprite 56, Color 2 (Mint Green), Solid, {Callsign} [STANDBY].
+        /// Stationary / Standby Unit (Generic): Configurable from INI (Default: Sprite 56, Color 2 Mint Green, Solid, {Callsign} [STANDBY]).
         /// </summary>
         public static Blip AttachStationaryBlip(Vehicle vehicle, string callsign)
         {
-            return CreateOrUpdateBlip(vehicle, callsign, "STANDBY", spriteId: 56, colorId: 2, isShortRange: Settings.ShortRangeBlips, flashIntervalMs: 0);
+            return CreateOrUpdateBlip(vehicle, callsign, "STANDBY", spriteId: Settings.StationaryBlipSprite, colorId: Settings.StationaryBlipColor, isShortRange: Settings.ShortRangeBlips, flashIntervalMs: 0, alternateFlash: false, scaleOverride: Settings.StationaryBlipScale);
         }
 
         /// <summary>
@@ -130,27 +180,37 @@ namespace Cadence.Services
         public static Blip AttachStandbyBlip(Vehicle vehicle, string callsign) => AttachStationaryBlip(vehicle, callsign);
 
         /// <summary>
-        /// Emergency Run / Declined Call Takeover: Sprite 56, Color 1 (Red), Flashing 600ms, {Callsign} [CODE 3].
+        /// Emergency Run / Declined Call Takeover: Configurable from INI (Default: Sprite 56, Color 1 Red, Flashing 600ms, {Callsign} [CODE 3]).
         /// </summary>
         public static Blip AttachEmergencyBlip(Vehicle vehicle, string callsign)
         {
-            return CreateOrUpdateBlip(vehicle, callsign, "CODE 3", spriteId: 56, colorId: 1, isShortRange: false, flashIntervalMs: 600);
+            return CreateOrUpdateBlip(vehicle, callsign, "CODE 3", spriteId: Settings.EmergencyBlipSprite, colorId: Settings.EmergencyBlipColor, isShortRange: false, flashIntervalMs: 600, alternateFlash: false, scaleOverride: Settings.EmergencyBlipScale);
         }
 
         /// <summary>
-        /// Active Pursuit Assist: Sprite 56, Color 17 (Orange), Flashing 400ms, {Callsign} [PURSUIT].
+        /// Active Pursuit Assist: Native Red & Blue alternating flashing police pursuit blip.
+        /// Configurable from INI (Default: Sprite 56, Color 38 Navy Blue, Alternate Flashing 400ms Red/Blue).
+        /// Replaces the static orange blip with authentic GTA V / LSPDFR alternating emergency police markers.
         /// </summary>
         public static Blip AttachPursuitBlip(Vehicle vehicle, string callsign)
         {
-            return CreateOrUpdateBlip(vehicle, callsign, "PURSUIT", spriteId: 56, colorId: 17, isShortRange: false, flashIntervalMs: 400);
+            return CreateOrUpdateBlip(vehicle, callsign, "PURSUIT", spriteId: Settings.PursuitBlipSprite, colorId: Settings.PursuitBlipColor, isShortRange: false, flashIntervalMs: 400, alternateFlash: false, scaleOverride: Settings.PursuitBlipScale);
         }
 
         /// <summary>
-        /// Threat Reaction / Combat: Sprite 56, Color 49 (Dark Orange), Flashing 300ms, {Callsign} [ENGAGING].
+        /// Callout Waypoint Response: Configurable from INI (Default: Sprite 56 PoliceCar, Color 27 Purple, Flashing 600ms, {Callsign} [CALLOUT]).
+        /// </summary>
+        public static Blip AttachCalloutResponseBlip(Vehicle vehicle, string callsign)
+        {
+            return CreateOrUpdateBlip(vehicle, callsign, "CALLOUT", spriteId: Settings.CalloutResponseBlipSprite, colorId: Settings.CalloutResponseBlipColor, isShortRange: false, flashIntervalMs: 600, alternateFlash: false, scaleOverride: Settings.CalloutResponseBlipScale);
+        }
+
+        /// <summary>
+        /// Threat Reaction / Combat: Configurable from INI (Default: Sprite 56, Color 49 Dark Orange, Flashing 300ms, {Callsign} [ENGAGING]).
         /// </summary>
         public static Blip AttachThreatBlip(Vehicle vehicle, string callsign)
         {
-            return CreateOrUpdateBlip(vehicle, callsign, "ENGAGING", spriteId: 56, colorId: 49, isShortRange: false, flashIntervalMs: 300);
+            return CreateOrUpdateBlip(vehicle, callsign, "ENGAGING", spriteId: Settings.CombatBlipSprite, colorId: Settings.CombatBlipColor, isShortRange: false, flashIntervalMs: 300, alternateFlash: false, scaleOverride: Settings.CombatBlipScale);
         }
 
         /// <summary>
@@ -159,7 +219,7 @@ namespace Cadence.Services
         public static Blip AttachCombatBlip(Vehicle vehicle, string callsign) => AttachThreatBlip(vehicle, callsign);
 
         /// <summary>
-        /// Dismounted Officer Ped: Sprite 58 (Badge), Color 38 (Navy Blue), Solid, {Callsign} [ON FOOT].
+        /// Dismounted Officer Ped: Configurable from INI (Default: Sprite 58 Badge, Color 38 Navy Blue, Solid, {Callsign} [ON FOOT]).
         /// </summary>
         public static Blip AttachOfficerFootBlip(Ped officer, string callsign)
         {
@@ -174,12 +234,15 @@ namespace Cadence.Services
                 }
                 if (blip == null || !blip.Exists()) return null;
 
-                blip.Sprite = (BlipSprite)58; // Badge
-                NativeFunction.Natives.SET_BLIP_COLOUR(blip, 38);
-                blip.Scale = Settings.BlipScale * 0.90f;
+                blip.Sprite = (BlipSprite)Settings.OfficerFootBlipSprite;
+                NativeFunction.Natives.SET_BLIP_COLOUR(blip, Settings.OfficerFootBlipColor);
+                blip.Scale = Settings.OfficerFootBlipScale;
                 NativeFunction.Natives.SET_BLIP_AS_SHORT_RANGE(blip, Settings.ShortRangeBlips);
                 NativeFunction.Natives.SET_BLIP_FLASHES(blip, false);
-                blip.StopFlashing();
+                NativeFunction.Natives.SET_BLIP_FLASHES_ALTERNATE(blip, false);
+                NativeFunction.Natives.SET_BLIP_FLASH_INTERVAL(blip, 0);
+                NativeFunction.Natives.SET_BLIP_FLASH_TIMER(blip, 0);
+                try { blip.StopFlashing(); } catch { }
 
                 string tag = SanitizeCallsign(callsign);
                 blip.Name = $"{tag} [ON FOOT]";
@@ -193,66 +256,82 @@ namespace Cadence.Services
         }
 
         /// <summary>
-        /// Parked Cruiser (dismounted): Sprite 56, Color 62 (Slate Gray), Solid, {Callsign} [PARKED].
+        /// Parked Cruiser (dismounted / empty): Configurable from INI (Default: Sprite 56, Color 0 White, Solid, {Callsign} [PARKED]).
         /// </summary>
         public static Blip AttachParkedCruiserBlip(Vehicle vehicle, string callsign)
         {
-            return CreateOrUpdateBlip(vehicle, callsign, "PARKED", spriteId: 56, colorId: 62, isShortRange: Settings.ShortRangeBlips, flashIntervalMs: 0);
+            return CreateOrUpdateBlip(vehicle, callsign, "PARKED", spriteId: Settings.ParkedCruiserBlipSprite, colorId: Settings.ParkedCruiserBlipColor, isShortRange: Settings.ShortRangeBlips, flashIntervalMs: 0, alternateFlash: false, scaleOverride: Settings.ParkedCruiserBlipScale);
         }
 
-        // ====================================================================
-        // Dynamic State Transitions
-        // ====================================================================
-
-        public static void TransitionToPatrol(Blip blip, string callsign)
+        /// <summary>
+        /// Officer Dismount Protocol:
+        /// Empty cruiser turns White (Color 0, Sprite 56, [PARKED]).
+        /// Dismounted officer ped receives Badge blip (Sprite 58, Color 38, [ON FOOT]).
+        /// </summary>
+        public static void HandleOfficerDismount(Vehicle cruiser, Ped officer, ref Blip cruiserBlip, ref Blip officerBadgeBlip, string callsign)
         {
-            ApplyBlipState(blip, callsign, "PATROL", spriteId: 56, colorId: 38, isShortRange: Settings.ShortRangeBlips, flashIntervalMs: 0);
+            try
+            {
+                SafeDeleteBlip(ref cruiserBlip);
+                if (cruiser != null && cruiser.Exists())
+                {
+                    cruiserBlip = AttachParkedCruiserBlip(cruiser, callsign);
+                }
+
+                if (officer != null && officer.Exists())
+                {
+                    SafeDeleteBlip(ref officerBadgeBlip);
+                    officerBadgeBlip = AttachOfficerFootBlip(officer, callsign);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug($"HandleOfficerDismount error: {ex.Message}");
+            }
         }
 
-        public static void TransitionToTrafficStop(Blip blip, string callsign)
+        /// <summary>
+        /// Officer Remount Protocol:
+        /// Officer badge blip is cleanly destroyed.
+        /// Cruiser blip is cleanly recreated in designated state (e.g. [PATROL] Color 38 Navy Blue)
+        /// with zero inherited flash timers or sticky animation loops.
+        /// Honors stateLabel and stateColor parameters [E7].
+        /// </summary>
+        public static void HandleOfficerRemount(Vehicle cruiser, Ped officer, ref Blip cruiserBlip, ref Blip officerBadgeBlip, string callsign, string stateLabel = "PATROL", int stateColor = 38)
         {
-            ApplyBlipState(blip, callsign, "TRAFFIC STOP", spriteId: 56, colorId: 4, isShortRange: Settings.ShortRangeBlips, flashIntervalMs: 0);
+            try
+            {
+                SafeDeleteBlip(ref officerBadgeBlip);
+                if (officer != null && officer.Exists())
+                {
+                    SafeDeleteEntityBlip(officer);
+                }
+
+                SafeDeleteBlip(ref cruiserBlip);
+                if (cruiser != null && cruiser.Exists())
+                {
+                    cruiserBlip = CreateOrUpdateBlip(cruiser, callsign, stateLabel, spriteId: Settings.PatrolBlipSprite, colorId: stateColor, isShortRange: Settings.ShortRangeBlips, flashIntervalMs: 0, alternateFlash: false, scaleOverride: Settings.PatrolBlipScale);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug($"HandleOfficerRemount error: {ex.Message}");
+            }
         }
 
-        public static void TransitionToRadar(Blip blip, string callsign)
-        {
-            ApplyBlipState(blip, callsign, "RADAR", spriteId: 56, colorId: 2, isShortRange: Settings.ShortRangeBlips, flashIntervalMs: 0);
-        }
-
-        public static void TransitionToChilling(Blip blip, string callsign)
-        {
-            ApplyBlipState(blip, callsign, "CHILLING PATROL", spriteId: 56, colorId: 2, isShortRange: Settings.ShortRangeBlips, flashIntervalMs: 0);
-        }
-
-        public static void TransitionToStationary(Blip blip, string callsign)
-        {
-            ApplyBlipState(blip, callsign, "STANDBY", spriteId: 56, colorId: 2, isShortRange: Settings.ShortRangeBlips, flashIntervalMs: 0);
-        }
-
-        public static void TransitionToEmergency(Blip blip, string callsign)
-        {
-            ApplyBlipState(blip, callsign, "CODE 3", spriteId: 56, colorId: 1, isShortRange: false, flashIntervalMs: 600);
-        }
-
-        public static void TransitionToPursuit(Blip blip, string callsign)
-        {
-            ApplyBlipState(blip, callsign, "PURSUIT", spriteId: 56, colorId: 17, isShortRange: false, flashIntervalMs: 400);
-        }
-
-        public static void TransitionToThreat(Blip blip, string callsign)
-        {
-            ApplyBlipState(blip, callsign, "ENGAGING", spriteId: 56, colorId: 49, isShortRange: false, flashIntervalMs: 300);
-        }
-
-        public static void TransitionToCombat(Blip blip, string callsign) => TransitionToThreat(blip, callsign);
-
-        // ====================================================================
-        // Internal Helpers
-        // ====================================================================
-
-        private static Blip CreateOrUpdateBlip(Entity entity, string callsign, string suffix, int spriteId, int colorId, bool isShortRange, int flashIntervalMs)
+        /// <summary>
+        /// Active Pursuit Suspect Fallback:
+        /// Provides an authentic fallback blip (Sprite 1 / Destination, Color 1 Red, 0.45f scale)
+        /// if LSPDFR has not already marked the suspect. Checks HasAnyActiveRadarMarker to prevent duplicates [E5].
+        /// </summary>
+        public static Blip AttachSuspectBlip(Entity entity, string label = "SUSPECT")
         {
             if (!Settings.ShowRadarBlips || entity == null || !entity.Exists() || !entity.IsValid())
+            {
+                return null;
+            }
+
+            if (HasAnyActiveRadarMarker(entity))
             {
                 return null;
             }
@@ -266,7 +345,286 @@ namespace Cadence.Services
                 }
                 if (blip == null || !blip.Exists()) return null;
 
-                ApplyBlipState(blip, callsign, suffix, spriteId, colorId, isShortRange, flashIntervalMs);
+                blip.Sprite = (BlipSprite)1;
+                NativeFunction.Natives.SET_BLIP_COLOUR(blip, 1);
+                blip.Scale = 0.45f;
+                NativeFunction.Natives.SET_BLIP_AS_SHORT_RANGE(blip, false);
+                NativeFunction.Natives.SET_BLIP_FLASHES(blip, false);
+                NativeFunction.Natives.SET_BLIP_FLASHES_ALTERNATE(blip, false);
+                NativeFunction.Natives.SET_BLIP_FLASH_INTERVAL(blip, 0);
+                NativeFunction.Natives.SET_BLIP_FLASH_TIMER(blip, 0);
+                try { blip.StopFlashing(); } catch { }
+
+                string tag = string.IsNullOrWhiteSpace(label) ? "SUSPECT" : label.Trim();
+                blip.Name = tag;
+                return blip;
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug($"AttachSuspectBlip error: {ex.Message}");
+                return null;
+            }
+        }
+
+        public static Blip AttachSuspectBlip(Ped suspect, string label = "SUSPECT") => AttachSuspectBlip((Entity)suspect, label);
+
+        /// <summary>
+        /// EMS / Ambulance Unit: Sprite 61 (Ambulance), Color 1 Red, Flashing 600ms, {Callsign} [EMS] [E17].
+        /// </summary>
+        public static Blip AttachEmsBlip(Vehicle vehicle, string callsign)
+        {
+            return CreateOrUpdateBlip(vehicle, callsign, "EMS", spriteId: 61, colorId: 1, isShortRange: false, flashIntervalMs: 600, alternateFlash: false, scaleOverride: Settings.EmergencyBlipScale);
+        }
+
+        /// <summary>
+        /// Fire Truck Unit: Sprite 60 (Firetruck), Color 1 Red, Flashing 600ms, {Callsign} [FIRE] [E17].
+        /// </summary>
+        public static Blip AttachFireBlip(Vehicle vehicle, string callsign)
+        {
+            return CreateOrUpdateBlip(vehicle, callsign, "FIRE", spriteId: 60, colorId: 1, isShortRange: false, flashIntervalMs: 600, alternateFlash: false, scaleOverride: Settings.EmergencyBlipScale);
+        }
+
+        // ====================================================================
+        // Dynamic State Transitions
+        // ====================================================================
+
+        public static void TransitionToPatrol(Blip blip, string callsign)
+        {
+            ApplyBlipState(blip, callsign, "PATROL", spriteId: Settings.PatrolBlipSprite, colorId: Settings.PatrolBlipColor, isShortRange: Settings.ShortRangeBlips, flashIntervalMs: 0, alternateFlash: false, scaleOverride: Settings.PatrolBlipScale);
+        }
+
+        public static void TransitionToTrafficStop(Blip blip, string callsign)
+        {
+            ApplyBlipState(blip, callsign, "TRAFFIC STOP", spriteId: Settings.TrafficStopBlipSprite, colorId: Settings.TrafficStopBlipColor, isShortRange: Settings.ShortRangeBlips, flashIntervalMs: 0, alternateFlash: false, scaleOverride: Settings.TrafficStopBlipScale);
+        }
+
+        public static void TransitionToRadar(Blip blip, string callsign)
+        {
+            ApplyBlipState(blip, callsign, "RADAR", spriteId: Settings.StationaryBlipSprite, colorId: Settings.StationaryBlipColor, isShortRange: Settings.ShortRangeBlips, flashIntervalMs: 0, alternateFlash: false, scaleOverride: Settings.StationaryBlipScale);
+        }
+
+        public static void TransitionToChilling(Blip blip, string callsign)
+        {
+            ApplyBlipState(blip, callsign, "CHILLING PATROL", spriteId: Settings.StationaryBlipSprite, colorId: Settings.StationaryBlipColor, isShortRange: Settings.ShortRangeBlips, flashIntervalMs: 0, alternateFlash: false, scaleOverride: Settings.StationaryBlipScale);
+        }
+
+        public static void TransitionToStationary(Blip blip, string callsign)
+        {
+            ApplyBlipState(blip, callsign, "STANDBY", spriteId: Settings.StationaryBlipSprite, colorId: Settings.StationaryBlipColor, isShortRange: Settings.ShortRangeBlips, flashIntervalMs: 0, alternateFlash: false, scaleOverride: Settings.StationaryBlipScale);
+        }
+
+        public static void TransitionToEmergency(Blip blip, string callsign)
+        {
+            ApplyBlipState(blip, callsign, "CODE 3", spriteId: Settings.EmergencyBlipSprite, colorId: Settings.EmergencyBlipColor, isShortRange: false, flashIntervalMs: 600, alternateFlash: false, scaleOverride: Settings.EmergencyBlipScale);
+        }
+
+        public static void TransitionToEms(Blip blip, string callsign)
+        {
+            ApplyBlipState(blip, callsign, "EMS", spriteId: 61, colorId: 1, isShortRange: false, flashIntervalMs: 600, alternateFlash: false, scaleOverride: Settings.EmergencyBlipScale);
+        }
+
+        public static void TransitionToFire(Blip blip, string callsign)
+        {
+            ApplyBlipState(blip, callsign, "FIRE", spriteId: 60, colorId: 1, isShortRange: false, flashIntervalMs: 600, alternateFlash: false, scaleOverride: Settings.EmergencyBlipScale);
+        }
+
+        public static void TransitionToPursuit(Blip blip, string callsign)
+        {
+            ApplyBlipState(blip, callsign, "PURSUIT", spriteId: Settings.PursuitBlipSprite, colorId: Settings.PursuitBlipColor, isShortRange: false, flashIntervalMs: 400, alternateFlash: false, scaleOverride: Settings.PursuitBlipScale);
+        }
+
+        public static void TransitionToCalloutResponse(Blip blip, string callsign)
+        {
+            ApplyBlipState(blip, callsign, "CALLOUT", spriteId: Settings.CalloutResponseBlipSprite, colorId: Settings.CalloutResponseBlipColor, isShortRange: false, flashIntervalMs: 600, alternateFlash: false, scaleOverride: Settings.CalloutResponseBlipScale);
+        }
+
+        public static void TransitionToThreat(Blip blip, string callsign)
+        {
+            ApplyBlipState(blip, callsign, "ENGAGING", spriteId: Settings.CombatBlipSprite, colorId: Settings.CombatBlipColor, isShortRange: false, flashIntervalMs: 300, alternateFlash: false, scaleOverride: Settings.CombatBlipScale);
+        }
+
+        public static void TransitionToCombat(Blip blip, string callsign) => TransitionToThreat(blip, callsign);
+        public static void TransitionToParked(Blip blip, string callsign)
+        {
+            ApplyBlipState(blip, callsign, "PARKED", spriteId: Settings.ParkedCruiserBlipSprite, colorId: Settings.ParkedCruiserBlipColor, isShortRange: Settings.ShortRangeBlips, flashIntervalMs: 0, alternateFlash: false, scaleOverride: Settings.ParkedCruiserBlipScale);
+        }
+
+        public static void TransitionToEmptyCruiser(Blip blip, string callsign) => TransitionToParked(blip, callsign);
+
+        // ====================================================================
+        // Player Personal Vehicle Blip Management
+        // ====================================================================
+
+        private static readonly object _playerVehicleLock = new object();
+        private static GameFiber _playerVehicleFiber;
+        private static volatile bool _playerVehicleMonitoringActive;
+        private static Blip _playerVehicleBlip;
+        private static Vehicle _lastPlayerVehicle;
+
+        public static void StartPlayerVehicleMonitoring()
+        {
+            lock (_playerVehicleLock)
+            {
+                if (_playerVehicleMonitoringActive) return;
+                _playerVehicleMonitoringActive = true;
+                _playerVehicleFiber = GameFiber.StartNew(PlayerVehicleMonitoringLoop, "Cadence - Player Vehicle Blip Fiber");
+            }
+        }
+
+        public static void StopPlayerVehicleMonitoring()
+        {
+            lock (_playerVehicleLock)
+            {
+                if (!_playerVehicleMonitoringActive && _playerVehicleFiber == null) return;
+                _playerVehicleMonitoringActive = false;
+
+                if (_playerVehicleFiber != null && _playerVehicleFiber.IsAlive)
+                {
+                    int waited = 0;
+                    while (_playerVehicleFiber.IsAlive && waited < 200)
+                    {
+                        GameFiber.Sleep(20);
+                        waited += 20;
+                    }
+                    if (_playerVehicleFiber.IsAlive)
+                    {
+                        try { _playerVehicleFiber.Abort(); } catch { }
+                    }
+                }
+                _playerVehicleFiber = null;
+
+                SafeDeleteBlip(ref _playerVehicleBlip);
+                _lastPlayerVehicle = null;
+            }
+        }
+
+        private static void PlayerVehicleMonitoringLoop()
+        {
+            while (_playerVehicleMonitoringActive)
+            {
+                try
+                {
+                    UpdatePlayerVehicleBlip();
+                }
+                catch (Exception ex)
+                {
+                    Logger.Debug($"PlayerVehicleMonitoringLoop error: {ex.Message}");
+                }
+
+                GameFiber.Sleep(300);
+            }
+        }
+
+        public static void UpdatePlayerVehicleBlip()
+        {
+            if (!Settings.EnablePlugin || !Settings.ShowRadarBlips || !Settings.EnablePlayerVehicleBlip)
+            {
+                SafeDeleteBlip(ref _playerVehicleBlip);
+                return;
+            }
+
+            Ped player = Game.LocalPlayer?.Character;
+            if (player == null || !player.Exists() || !player.IsAlive)
+            {
+                return;
+            }
+
+            // Track player's current vehicle
+            if (player.IsInAnyVehicle(false) && player.CurrentVehicle != null && player.CurrentVehicle.Exists())
+            {
+                _lastPlayerVehicle = player.CurrentVehicle;
+                if (_playerVehicleBlip != null && _playerVehicleBlip.Exists())
+                {
+                    SafeDeleteBlip(ref _playerVehicleBlip);
+                }
+                return;
+            }
+
+            // Player is outside on foot: target is their personal cruiser
+            Vehicle targetVeh = _lastPlayerVehicle;
+            if (targetVeh == null || !targetVeh.Exists() || !targetVeh.IsDriveable)
+            {
+                targetVeh = player.LastVehicle;
+            }
+
+            if (targetVeh == null || !targetVeh.Exists() || !targetVeh.IsDriveable)
+            {
+                SafeDeleteBlip(ref _playerVehicleBlip);
+                return;
+            }
+
+            float customScale = Settings.PlayerVehicleBlipScale;
+            int customColor = Settings.PlayerVehicleBlipColor;
+            int customSprite = Settings.PlayerVehicleBlipSprite;
+
+            // 1. If an external blip (e.g. LSPDFR native marker) already exists on the vehicle,
+            // do NOT mutate native blip handles in-place to avoid corrupting LSPDFR state [E4].
+            int nativeHandle = 0;
+            try { nativeHandle = NativeFunction.Natives.GET_BLIP_FROM_ENTITY<int>(targetVeh); } catch { }
+
+            uint ownHandle = (_playerVehicleBlip != null && _playerVehicleBlip.Exists()) ? _playerVehicleBlip.Handle.Value : 0;
+
+            if (nativeHandle != 0 && (uint)nativeHandle != ownHandle && NativeFunction.Natives.DOES_BLIP_EXIST<bool>(nativeHandle))
+            {
+                SafeDeleteBlip(ref _playerVehicleBlip);
+                return;
+            }
+
+            // 2. If no external blip exists, create and maintain Cadence's dedicated player cruiser blip
+            if (_playerVehicleBlip == null || !_playerVehicleBlip.Exists() || _playerVehicleBlip.Entity != targetVeh)
+            {
+                SafeDeleteBlip(ref _playerVehicleBlip);
+                _playerVehicleBlip = targetVeh.AttachBlip();
+            }
+
+            if (_playerVehicleBlip != null && _playerVehicleBlip.Exists())
+            {
+                _playerVehicleBlip.Sprite = (BlipSprite)customSprite;
+                NativeFunction.Natives.SET_BLIP_COLOUR(_playerVehicleBlip, customColor);
+                _playerVehicleBlip.Scale = customScale;
+                NativeFunction.Natives.SET_BLIP_AS_SHORT_RANGE(_playerVehicleBlip, false);
+                _playerVehicleBlip.Name = "Personal Cruiser";
+            }
+        }
+
+        // ====================================================================
+        // Internal Helpers
+        // ====================================================================
+
+        private static Blip CreateOrUpdateBlip(Entity entity, string callsign, string suffix, int spriteId, int colorId, bool isShortRange, int flashIntervalMs, bool alternateFlash = false, float? scaleOverride = null)
+        {
+            if (!Settings.ShowRadarBlips || entity == null || !entity.Exists() || !entity.IsValid())
+            {
+                return null;
+            }
+
+            try
+            {
+                Blip blip = SafeGetAttachedBlip(entity);
+                if (blip != null && blip.Exists())
+                {
+                    // In GTA V native blip engine, once a blip has been set to flash (e.g. Code 3 / Callout),
+                    // SET_BLIP_FLASHES(blip, false) fails to clear the flashing state on the existing blip handle.
+                    // If target state is solid (flashIntervalMs == 0) and the blip is actively flashing, we cleanly destroy
+                    // the old blip and attach a fresh one to guarantee an authentic, solid, non-flashing radar icon.
+                    if (flashIntervalMs == 0)
+                    {
+                        bool isFlashing = false;
+                        try { isFlashing = NativeFunction.Natives.IS_BLIP_FLASHING<bool>(blip); } catch { }
+                        if (isFlashing)
+                        {
+                            SafeDeleteBlip(ref blip);
+                        }
+                    }
+                }
+
+                if (blip == null || !blip.Exists())
+                {
+                    blip = entity.AttachBlip();
+                }
+                if (blip == null || !blip.Exists()) return null;
+
+                ApplyBlipState(blip, callsign, suffix, spriteId, colorId, isShortRange, flashIntervalMs, alternateFlash, scaleOverride);
                 return blip;
             }
             catch (Exception ex)
@@ -276,7 +634,7 @@ namespace Cadence.Services
             }
         }
 
-        private static void ApplyBlipState(Blip blip, string callsign, string suffix, int spriteId, int colorId, bool isShortRange, int flashIntervalMs)
+        private static void ApplyBlipState(Blip blip, string callsign, string suffix, int spriteId, int colorId, bool isShortRange, int flashIntervalMs, bool alternateFlash = false, float? scaleOverride = null)
         {
             if (blip == null || !blip.Exists()) return;
 
@@ -284,18 +642,23 @@ namespace Cadence.Services
             {
                 blip.Sprite = (BlipSprite)spriteId;
                 NativeFunction.Natives.SET_BLIP_COLOUR(blip, colorId);
-                blip.Scale = Settings.BlipScale;
+                blip.Scale = scaleOverride ?? Settings.BlipScale;
                 NativeFunction.Natives.SET_BLIP_AS_SHORT_RANGE(blip, isShortRange);
 
-                blip.StopFlashing();
                 if (flashIntervalMs > 0)
                 {
                     NativeFunction.Natives.SET_BLIP_FLASHES(blip, true);
+                    bool canAlternate = alternateFlash && spriteId != 56;
+                    NativeFunction.Natives.SET_BLIP_FLASHES_ALTERNATE(blip, canAlternate);
                     NativeFunction.Natives.SET_BLIP_FLASH_INTERVAL(blip, flashIntervalMs);
                 }
                 else
                 {
                     NativeFunction.Natives.SET_BLIP_FLASHES(blip, false);
+                    NativeFunction.Natives.SET_BLIP_FLASHES_ALTERNATE(blip, false);
+                    NativeFunction.Natives.SET_BLIP_FLASH_INTERVAL(blip, 0);
+                    NativeFunction.Natives.SET_BLIP_FLASH_TIMER(blip, 0);
+                    try { blip.StopFlashing(); } catch { }
                 }
 
                 string tag = SanitizeCallsign(callsign);

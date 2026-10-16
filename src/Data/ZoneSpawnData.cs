@@ -170,6 +170,45 @@ namespace Cadence.Data
             (new Vector3(280.8f, -180.5f, 54.2f), 340.0f)        // Hawick Ave Retail Lot
         };
 
+        public static readonly (Vector3 pos, float heading)[] BlaineCountyCommercialAndLots = new (Vector3, float)[]
+        {
+            // Sandy Shores Sheriff & Medical Hub
+            (new Vector3(1853.25f, 3687.97f, 33.80f), 213.0f),   // Sandy Shores Sheriff Front Lot
+            (new Vector3(1840.4f, 3698.8f, 33.8f), 30.0f),       // Sandy Shores Sheriff Rear Lot
+            (new Vector3(1836.3f, 3672.8f, 34.27f), 210.0f),     // Sandy Shores Medical Clinic Lot
+            // Sandy Shores Commercial, Shore & Marina
+            (new Vector3(1327.2f, 4268.5f, 31.5f), 190.0f),      // Marina Dr Boat House Lot
+            (new Vector3(1707.9f, 3774.5f, 34.5f), 215.0f),      // Marina Dr Store Lot
+            (new Vector3(1960.5f, 3740.2f, 32.3f), 300.0f),      // Sandy Shores 24/7 / Liquors Lot
+            (new Vector3(1975.2f, 3817.5f, 33.4f), 120.0f),      // Ace Liquor Lot
+            // Sandy Shores Airfield Specialized Aprons
+            (new Vector3(1738.2f, 3291.5f, 41.1f), 195.0f),      // Airfield West Hangar Apron
+            (new Vector3(1710.5f, 3270.8f, 41.1f), 105.0f),      // Trevor's Hangar Turnout
+            (new Vector3(1845.8f, 3266.4f, 41.3f), 105.0f),      // Airfield East Apron
+            // Route 68 & Grand Senora Desert
+            (new Vector3(1982.5f, 3053.8f, 47.2f), 58.0f),       // Route 68 Yellow Jack Inn Lot
+            (new Vector3(546.4f, 2669.8f, 42.16f), 96.0f),       // Route 68 Harmony 24/7 & Gas
+            (new Vector3(593.2f, 2736.5f, 42.0f), 180.0f),       // Route 68 Harmony Discount Store
+            (new Vector3(1198.8f, 2673.5f, 37.8f), 90.0f),       // Route 68 Motel & Truck Stop
+            (new Vector3(2530.1f, 2623.4f, 37.9f), 115.0f),      // Senora Way Quarry Overlook
+            (new Vector3(1707.9f, 4920.6f, 42.06f), 324.0f),     // Senora Fwy Rest Stop / Diner
+            // Grapeseed
+            (new Vector3(1701.3f, 6416.7f, 32.76f), 245.0f),     // Grapeseed LTD Gas Station
+            (new Vector3(2444.1f, 4976.2f, 46.8f), 45.0f),       // Grapeseed Silos / Farm Turnout
+            (new Vector3(1679.5f, 4884.2f, 41.9f), 95.0f),       // Grapeseed Main St Plaza
+            // Paleto Bay & Northern Coast
+            (new Vector3(-448.24f, 6012.31f, 31.72f), 225.0f),   // Paleto Bay Sheriff Station Lot
+            (new Vector3(-139.5f, 6296.8f, 31.5f), 45.0f),       // Paleto Bay Clucking Bell Lot
+            (new Vector3(105.8f, 6622.1f, 31.8f), 270.0f),       // Paleto Bay Beeker's Garage
+            (new Vector3(-110.2f, 6467.5f, 31.6f), 135.0f),      // Paleto Bay Bank / Shopping Lot
+            (new Vector3(-742.1f, 5595.3f, 41.6f), 90.0f),       // Paleto Bay Cable Car Lot
+            (new Vector3(-285.5f, 6625.2f, 7.5f), 215.0f),       // Great Ocean Hwy Vista Point (North)
+            (new Vector3(-2048.5f, 3144.2f, 32.8f), 240.0f),     // Fort Zancudo Route 68 Gate Turnout
+            (new Vector3(-3154.2f, 1129.8f, 20.86f), 65.0f),     // Chumash Plaza Shopping
+            (new Vector3(-3040.6f, 583.9f, 7.91f), 19.0f),       // 24/7 Ineseno Banham Canyon
+            (new Vector3(2555.22f, 380.78f, 108.62f), 90.0f)     // 24/7 Palomino Rest Stop
+        };
+
         // ====================================================================
         // Vehicle Pools
         // ====================================================================
@@ -222,15 +261,9 @@ namespace Cadence.Data
             return new List<(Vector3 pos, float heading)[]>
             {
                 LSUrbanPoliceStations,
-                LSCommercialPlazas
+                LSCommercialPlazas,
+                BlaineCountyCommercialAndLots
             };
-        }
-
-        public static List<(Vector3 pos, float heading)[]> GetAllZones()
-        {
-            var all = GetRoadsidePulloverZones();
-            all.AddRange(GetStationaryStandbyZones());
-            return all;
         }
 
         // ====================================================================
@@ -262,8 +295,29 @@ namespace Cadence.Data
             (new Vector3(298.9492f, -268.1412f, 53.68773f), 320.6631f),
             (new Vector3(2166.917f, 4898.333f, 40.45398f), 291.9043f),
             (new Vector3(-405.9179f, 1192.172f, 325.3149f), 94.66913f),
-            (new Vector3(2499.215f, 4199.535f, 39.55725f), 165.1826f)
+            (new Vector3(2499.215f, 4199.535f, 39.55725f), 165.1826f),
+            // Sandy Shores & Blaine County Standby Hubs
+            (new Vector3(1853.25f, 3687.97f, 33.80f), 213.0f),   // Sandy Shores Sheriff Lot
+            (new Vector3(1836.3f, 3672.8f, 34.27f), 210.0f),     // Sandy Shores Clinic Lot
+            (new Vector3(1738.2f, 3291.5f, 41.1f), 195.0f),      // Sandy Airfield West Apron
+            (new Vector3(1845.8f, 3266.4f, 41.3f), 105.0f),      // Sandy Airfield East Apron
+            (new Vector3(1707.9f, 3774.5f, 34.5f), 215.0f),      // Marina Dr Store Lot
+            (new Vector3(1960.5f, 3740.2f, 32.3f), 300.0f),      // Sandy Shores 24/7 Lot
+            (new Vector3(1982.5f, 3053.8f, 47.2f), 58.0f),       // Yellow Jack Inn Lot
+            (new Vector3(546.4f, 2669.8f, 42.16f), 96.0f),       // Route 68 Harmony Gas
+            (new Vector3(1198.8f, 2673.5f, 37.8f), 90.0f),       // Route 68 Motel Lot
+            (new Vector3(1701.3f, 6416.7f, 32.76f), 245.0f),     // Grapeseed LTD Lot
+            (new Vector3(-448.24f, 6012.31f, 31.72f), 225.0f),   // Paleto Bay Sheriff Lot
+            (new Vector3(105.8f, 6622.1f, 31.8f), 270.0f)        // Paleto Bay Beeker's Garage
         };
+
+        private static string GetCoordKey(Vector3 pos)
+        {
+            int x = (int)Math.Round(pos.X);
+            int y = (int)Math.Round(pos.Y);
+            int z = (int)Math.Round(pos.Z);
+            return $"{x}_{y}_{z}";
+        }
 
         public static bool FindBestStandbyLocation(Vector3 playerPos, float minDistance, float maxDistance, out Vector3 spotPos, out float spotHeading)
         {
@@ -271,12 +325,43 @@ namespace Cadence.Data
             spotHeading = 0f;
 
             var candidates = new List<(Vector3 pos, float heading)>();
+            var seenKeys = new HashSet<string>();
 
+            // Pass 1: Strict range (minDistance to maxDistance)
+            CollectStandbyCandidates(playerPos, minDistance, maxDistance, candidates, seenKeys);
+
+            // Pass 2: Progressive expansion if no curated spot in immediate range (up to 450m)
+            if (candidates.Count == 0 && maxDistance < 450.0f)
+            {
+                CollectStandbyCandidates(playerPos, maxDistance, 450.0f, candidates, seenKeys);
+            }
+
+            if (candidates.Count > 0)
+            {
+                int index;
+                lock (_rand)
+                {
+                    index = _rand.Next(candidates.Count);
+                }
+                spotPos = candidates[index].pos;
+                spotHeading = candidates[index].heading;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static void CollectStandbyCandidates(Vector3 playerPos, float minDistance, float maxDistance, List<(Vector3 pos, float heading)> candidates, HashSet<string> seenKeys)
+        {
             foreach (var spot in CuratedStandbyLocations)
             {
+                string key = GetCoordKey(spot.pos);
+                if (seenKeys.Contains(key)) continue;
+
                 float dist = spot.pos.DistanceTo(playerPos);
-                if (dist >= minDistance && dist <= maxDistance && WorldUtils.IsAreaClear(spot.pos, 12.0f))
+                if (dist >= minDistance && dist <= maxDistance && WorldUtils.IsAreaClear(spot.pos, 9.0f))
                 {
+                    seenKeys.Add(key);
                     candidates.Add(spot);
                 }
             }
@@ -285,23 +370,17 @@ namespace Cadence.Data
             {
                 foreach (var spot in zone)
                 {
+                    string key = GetCoordKey(spot.pos);
+                    if (seenKeys.Contains(key)) continue;
+
                     float dist = spot.pos.DistanceTo(playerPos);
-                    if (dist >= minDistance && dist <= maxDistance && WorldUtils.IsAreaClear(spot.pos, 12.0f))
+                    if (dist >= minDistance && dist <= maxDistance && WorldUtils.IsAreaClear(spot.pos, 9.0f))
                     {
+                        seenKeys.Add(key);
                         candidates.Add(spot);
                     }
                 }
             }
-
-            if (candidates.Count > 0)
-            {
-                int index = _rand.Next(candidates.Count);
-                spotPos = candidates[index].pos;
-                spotHeading = candidates[index].heading;
-                return true;
-            }
-
-            return false;
         }
 
         public static bool FindBestPulloverSpot(Vector3 playerPos, float minDistance, float maxDistance, out Vector3 spotPos, out float spotHeading)
@@ -310,22 +389,24 @@ namespace Cadence.Data
             spotHeading = 0f;
 
             var candidates = new List<(Vector3 pos, float heading)>();
+            var seenKeys = new HashSet<string>();
 
-            foreach (var zone in GetRoadsidePulloverZones())
+            // Pass 1: Strict range
+            CollectPulloverCandidates(playerPos, minDistance, maxDistance, candidates, seenKeys);
+
+            // Pass 2: Progressive expansion if no spot found (up to 450m)
+            if (candidates.Count == 0 && maxDistance < 450.0f)
             {
-                foreach (var spot in zone)
-                {
-                    float dist = spot.pos.DistanceTo(playerPos);
-                    if (dist >= minDistance && dist <= maxDistance && WorldUtils.IsAreaClear(spot.pos, 12.0f))
-                    {
-                        candidates.Add(spot);
-                    }
-                }
+                CollectPulloverCandidates(playerPos, maxDistance, 450.0f, candidates, seenKeys);
             }
 
             if (candidates.Count > 0)
             {
-                int index = _rand.Next(candidates.Count);
+                int index;
+                lock (_rand)
+                {
+                    index = _rand.Next(candidates.Count);
+                }
                 spotPos = candidates[index].pos;
                 spotHeading = candidates[index].heading;
                 return true;
@@ -334,24 +415,53 @@ namespace Cadence.Data
             return false;
         }
 
+        private static void CollectPulloverCandidates(Vector3 playerPos, float minDistance, float maxDistance, List<(Vector3 pos, float heading)> candidates, HashSet<string> seenKeys)
+        {
+            foreach (var zone in GetRoadsidePulloverZones())
+            {
+                foreach (var spot in zone)
+                {
+                    string key = GetCoordKey(spot.pos);
+                    if (seenKeys.Contains(key)) continue;
+
+                    float dist = spot.pos.DistanceTo(playerPos);
+                    if (dist >= minDistance && dist <= maxDistance &&
+                        !WorldUtils.IsOnActiveRoadOrLane(spot.pos, 3.5f) &&
+                        WorldUtils.IsAreaClear(spot.pos, 9.0f))
+                    {
+                        seenKeys.Add(key);
+                        candidates.Add(spot);
+                    }
+                }
+            }
+        }
+
         public static string GetRandomCivilianVehicle()
         {
-            return CivilianVehicles[_rand.Next(CivilianVehicles.Length)];
+            lock (_rand)
+            {
+                return CivilianVehicles[_rand.Next(CivilianVehicles.Length)];
+            }
         }
 
         public static string GetDefaultPoliceVehicleForPosition(Vector3 pos)
         {
-            if (WorldUtils.IsHighway(pos))
+            bool isHwy = WorldUtils.IsHighway(pos);
+            bool isBlaine = WorldUtils.IsBlaineCounty(pos);
+            lock (_rand)
             {
-                return PoliceVehiclesHighway[_rand.Next(PoliceVehiclesHighway.Length)];
-            }
+                if (isHwy)
+                {
+                    return PoliceVehiclesHighway[_rand.Next(PoliceVehiclesHighway.Length)];
+                }
 
-            if (WorldUtils.IsBlaineCounty(pos))
-            {
-                return PoliceVehiclesSheriff[_rand.Next(PoliceVehiclesSheriff.Length)];
-            }
+                if (isBlaine)
+                {
+                    return PoliceVehiclesSheriff[_rand.Next(PoliceVehiclesSheriff.Length)];
+                }
 
-            return PoliceVehiclesCity[_rand.Next(PoliceVehiclesCity.Length)];
+                return PoliceVehiclesCity[_rand.Next(PoliceVehiclesCity.Length)];
+            }
         }
 
         public static string GetDefaultCopPedModelForPosition(Vector3 pos)
@@ -366,7 +476,10 @@ namespace Cadence.Data
 
         public static string GetDefaultStatePatrolVehicle()
         {
-            return PoliceVehiclesHighway[_rand.Next(PoliceVehiclesHighway.Length)];
+            lock (_rand)
+            {
+                return PoliceVehiclesHighway[_rand.Next(PoliceVehiclesHighway.Length)];
+            }
         }
 
         public static string GetDefaultStatePatrolPed()

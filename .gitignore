@@ -1,20 +1,22 @@
 # Visual Studio and Build Artefacts
 bin/
 obj/
+*.pdb
 *.user
 *.suo
 *.userosscache
 *.sln.docstates
 .vs/
+TestResults/
 
 # Logs
 *.log
 Cadence.log
 
-# Temporary distribution archives
+# Temporary distribution archives and staging
 dist/*.zip
+dist/_staging/
 
 # Python
 __pycache__/
 *.py[cod]
-

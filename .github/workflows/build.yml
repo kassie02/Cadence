@@ -1,0 +1,45 @@
+name: Build & Test Cadence
+
+on:
+  push:
+    branches: [ main, dev ]
+  pull_request:
+    branches: [ main, dev ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build, Validate & Package
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build Solution (Release x64)
+        run: msbuild src\Cadence.sln /p:Configuration=Release /p:Platform=x64 /p:TreatWarningsAsErrors=true /v:m
+
+      - name: Run Native Validator
+        run: python scripts/validate_natives.py
+
+      - name: Run Automated Test Suite
+        run: tests\Cadence.Tests\bin\Release\Cadence.Tests.exe
+
+      - name: Package Release Archive
+        shell: cmd
+        run: dist\build.bat --nopause
+
+      - name: Upload Release Archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cadence_v1.2.0
+          path: dist/Cadence_v1.2.0.zip
+          if-no-files-found: error

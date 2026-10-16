@@ -14,7 +14,8 @@
     <Deterministic>true</Deterministic>
     <LangVersion>latest</LangVersion>
     <OutputPath>bin\Release\</OutputPath>
-    <FrameworkPathOverride>C:\Windows\Microsoft.NET\Framework64\v4.0.30319</FrameworkPathOverride>
+    <!-- Fallback FrameworkPathOverride for local build environments without the .NET Framework 4.8 Targeting Pack -->
+    <FrameworkPathOverride Condition="'$(FrameworkPathOverride)' == '' and !Exists('$(MSBuildProgramFiles32)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.8')">C:\Windows\Microsoft.NET\Framework64\v4.0.30319</FrameworkPathOverride>
     <ResolveNuGetPackages>false</ResolveNuGetPackages>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|x64' ">
