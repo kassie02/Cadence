@@ -533,27 +533,41 @@ namespace Cadence.Features
             EmergencyServiceType serviceType = EmergencyServiceType.Police;
             if (!isCalloutTakeover)
             {
-                var candidateServices = new List<EmergencyServiceType>();
-                if (Settings.AllowPoliceRuns)
+                int policeCount = 0, fireCount = 0, ambulanceCount = 0;
+                lock (_syncLock)
                 {
-                    candidateServices.Add(EmergencyServiceType.Police);
-                    candidateServices.Add(EmergencyServiceType.Police); // 50% base weight
+                    foreach (var u in _activeUnits)
+                    {
+                        if (u == null || !u.IsValid()) continue;
+                        if (u.ServiceType == EmergencyServiceType.Police) policeCount++;
+                        else if (u.ServiceType == EmergencyServiceType.Fire) fireCount++;
+                        else if (u.ServiceType == EmergencyServiceType.Ambulance) ambulanceCount++;
+                    }
+                }
+
+                var candidateServices = new List<EmergencyServiceType>();
+                if (Settings.AllowPoliceRuns && policeCount < Settings.MaxPoliceRuns)
+                {
+                    int weight = Math.Max(1, Settings.EmergencyRunPoliceWeight);
+                    for (int i = 0; i < weight; i++) candidateServices.Add(EmergencyServiceType.Police);
                 }
                 if (Settings.EnableEmergencyVariety)
                 {
-                    if (Settings.AllowFireRuns)
+                    if (Settings.AllowFireRuns && fireCount < Settings.MaxFireRuns)
                     {
-                        candidateServices.Add(EmergencyServiceType.Fire); // 25% base weight
+                        int weight = Math.Max(1, Settings.EmergencyRunFireWeight);
+                        for (int i = 0; i < weight; i++) candidateServices.Add(EmergencyServiceType.Fire);
                     }
-                    if (Settings.AllowAmbulanceRuns)
+                    if (Settings.AllowAmbulanceRuns && ambulanceCount < Settings.MaxAmbulanceRuns)
                     {
-                        candidateServices.Add(EmergencyServiceType.Ambulance); // 25% base weight
+                        int weight = Math.Max(1, Settings.EmergencyRunAmbulanceWeight);
+                        for (int i = 0; i < weight; i++) candidateServices.Add(EmergencyServiceType.Ambulance);
                     }
                 }
 
                 if (candidateServices.Count == 0)
                 {
-                    Logger.Debug("ResponseFeature", "No emergency service types allowed by settings. Aborting spawn.");
+                    Logger.Debug("ResponseFeature", "No emergency service types allowed or under max caps. Aborting spawn.");
                     return null;
                 }
 
@@ -1013,6 +1027,7 @@ namespace Cadence.Features
                 if (WorldUtils.GetSafeStreetPosition(probe, 1, out Vector3 streetPos, out float _))
                 {
                     if (WorldUtils.IsSubterraneanOrVoid(streetPos)) continue;
+                    if (WorldUtils.IsPositionInWater(streetPos)) continue;
                     if (streetPos.DistanceTo(center) < (minDistance - 30f)) continue;
 
                     targetPos = streetPos;
@@ -1047,6 +1062,7 @@ namespace Cadence.Features
                 if (WorldUtils.GetSafeStreetPosition(probe, 1, out Vector3 candidatePos, out float candidateHeading))
                 {
                     if (WorldUtils.IsSubterraneanOrVoid(candidatePos)) continue;
+                    if (WorldUtils.IsPositionInWater(candidatePos)) continue;
                     if (candidatePos.DistanceTo(playerPos) < 140f) continue;
                     if (!WorldUtils.IsAreaClear(candidatePos, 7.5f)) continue;
 
@@ -1091,7 +1107,7 @@ namespace Cadence.Features
                     unit.Dispose(immediateDelete);
                 }
             }
-            _lastAutonomousRunTime = Game.GameTime + 45000;
+            _lastAutonomousRunTime = 0;
         }
 
         // ====================================================================
@@ -1115,6 +1131,7 @@ namespace Cadence.Features
 
             private uint _arrivedTime;
             private uint _lastNavRefreshTime;
+            private uint _lastToneCycleTime;
 
             public bool IsFinished => State == ResponseState.Finished;
 
@@ -1130,6 +1147,7 @@ namespace Cadence.Features
                 ServiceType = serviceType;
                 SpawnTime = Game.GameTime;
                 _lastNavRefreshTime = Game.GameTime;
+                _lastToneCycleTime = Game.GameTime;
                 State = ResponseState.EnRoute;
             }
 
@@ -1152,6 +1170,13 @@ namespace Cadence.Features
                 switch (State)
                 {
                     case ResponseState.EnRoute:
+                        // Authentic dynamic siren tone cycling during Code 3 emergency response
+                        if (IsCode3 && Settings.EnableSirenToneVariation && (now - _lastToneCycleTime > 8500))
+                        {
+                            _lastToneCycleTime = now;
+                            NativeTasks.CycleSirenTone(Cruiser);
+                        }
+
                         float distToDest = Cruiser.Position.DistanceTo(Destination);
                         bool isAtDestination = distToDest <= 18.0f || (distToDest <= 35.0f && Cruiser.Speed < 1.0f);
 
@@ -1304,7 +1329,11 @@ namespace Cadence.Features
 
                     if (Cruiser != null && Cruiser.Exists())
                     {
-                        TeardownHelper.SafeDismissVehicle(Cruiser, immediateDelete);
+                        bool hasLivingDriver = (Driver != null && Driver.Exists() && Driver.IsAlive) ||
+                                               (Passenger != null && Passenger.Exists() && Passenger.IsAlive);
+                        bool shouldDeleteCruiser = immediateDelete || !hasLivingDriver;
+                        NativeTasks.ShutOffSirenAndLights(Cruiser);
+                        TeardownHelper.SafeDismissVehicle(Cruiser, shouldDeleteCruiser);
                     }
                 }
                 catch (Exception ex)

@@ -522,7 +522,7 @@ namespace Cadence.Features
             // Priority 1: Check curated urban / station / highway standby locations (LivingCity parity)
             if (ZoneSpawnData.FindBestStandbyLocation(playerPos, 65.0f, 300.0f, out Vector3 standbyPos, out float standbyHeading))
             {
-                if (!WorldUtils.IsSubterraneanOrVoid(standbyPos) && !WorldUtils.IsRooftopOrElevatedStructure(standbyPos) && WorldUtils.IsAreaClear(standbyPos, 8.0f))
+                if (!WorldUtils.IsSubterraneanOrVoid(standbyPos) && !WorldUtils.IsRooftopOrElevatedStructure(standbyPos) && !WorldUtils.IsPositionInWater(standbyPos) && WorldUtils.IsAreaClear(standbyPos, 8.0f))
                 {
                     spawnPos = standbyPos;
                     spawnHeading = standbyHeading;
@@ -533,7 +533,7 @@ namespace Cadence.Features
             // Priority 2: Check curated turnouts from ZoneSpawnData
             if (ZoneSpawnData.FindBestPulloverSpot(playerPos, 120.0f, 300.0f, out Vector3 curatedPos, out float curatedHeading))
             {
-                if (!WorldUtils.IsSubterraneanOrVoid(curatedPos) && !WorldUtils.IsRooftopOrElevatedStructure(curatedPos) && WorldUtils.IsAreaClear(curatedPos, 8.0f))
+                if (!WorldUtils.IsSubterraneanOrVoid(curatedPos) && !WorldUtils.IsRooftopOrElevatedStructure(curatedPos) && !WorldUtils.IsPositionInWater(curatedPos) && WorldUtils.IsAreaClear(curatedPos, 8.0f))
                 {
                     spawnPos = curatedPos;
                     spawnHeading = curatedHeading;
@@ -560,7 +560,7 @@ namespace Cadence.Features
 
                 if (WorldUtils.GetSafeOffroadPosition(probeCenter, 30.0f, 150.0f, out Vector3 offroadPos, out float offroadH))
                 {
-                    if (!WorldUtils.IsHighway(offroadPos) && !WorldUtils.IsSubterraneanOrVoid(offroadPos) && !WorldUtils.IsRooftopOrElevatedStructure(offroadPos) && !WorldUtils.IsOnActiveRoadOrLane(offroadPos) && WorldUtils.IsAreaClear(offroadPos, 7.5f))
+                    if (!WorldUtils.IsHighway(offroadPos) && !WorldUtils.IsSubterraneanOrVoid(offroadPos) && !WorldUtils.IsRooftopOrElevatedStructure(offroadPos) && !WorldUtils.IsOnActiveRoadOrLane(offroadPos) && !WorldUtils.IsPositionInWater(offroadPos) && WorldUtils.IsAreaClear(offroadPos, 7.5f))
                     {
                         spawnPos = offroadPos;
                         spawnHeading = offroadH;
@@ -772,7 +772,7 @@ namespace Cadence.Features
             {
                 snapshot = _activeUnits.ToArray();
                 _activeUnits.Clear();
-                _lastSpawnAttemptTime = Game.GameTime + 35000;
+                _lastSpawnAttemptTime = 0;
             }
 
             foreach (var unit in snapshot)
@@ -856,6 +856,12 @@ namespace Cadence.Features
             {
                 if (!IsValid()) return;
 
+                // Enforce steady cruiser siren policy so standby units never have sirens sounding
+                if (Cruiser != null && Cruiser.Exists())
+                {
+                    NativeTasks.EnforceSteadyCruiserSirenPolicy(Cruiser);
+                }
+
                 uint now = Game.GameTime;
 
                 // Absolute station-keeping timeout watchdog: force mobilize after 5m, complete after 6m
@@ -915,7 +921,9 @@ namespace Cadence.Features
                         Officer.Tasks.CruiseWithVehicle(Cruiser, 18.0f, NativeTasks.CruisingFlags);
 
                         // Transition blip to normal patrol radar blip and clean up officer foot blip
-                        BlipService.HandleOfficerRemount(Cruiser, Officer, ref RadarBlip, ref OfficerFootBlip, Callsign, "PATROL", 38);
+                        BlipService.HandleOfficerRemount(Cruiser, Officer, ref RadarBlip, ref OfficerFootBlip, Callsign, "PATROL", Settings.PatrolBlipColor);
+                        UnitRegistry.Release(Cruiser);
+                        UnitRegistry.Release(Officer);
 
                         _state = StationaryState.CruisingAway;
                         _stateStartTime = now;
@@ -1257,7 +1265,10 @@ namespace Cadence.Features
 
                     if (Cruiser != null && Cruiser.Exists())
                     {
-                        TeardownHelper.SafeDismissVehicle(Cruiser, delete: immediateDelete);
+                        bool hasLivingOfficer = Officer != null && Officer.Exists() && Officer.IsAlive;
+                        bool shouldDeleteCruiser = immediateDelete || !hasLivingOfficer;
+                        NativeTasks.ShutOffSirenAndLights(Cruiser);
+                        TeardownHelper.SafeDismissVehicle(Cruiser, delete: shouldDeleteCruiser);
                     }
                 }
                 catch (Exception ex)

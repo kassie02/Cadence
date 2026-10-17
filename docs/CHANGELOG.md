@@ -6,6 +6,49 @@ All notable changes to the Cadence project are documented in this file.
 
 ## [1.2.0] - 2026-10-16
 
+### Field Diagnostics, Siren Neutralization, Tactical Blips & Preset Architecture Overhaul
+- **Strict Siren & Lightbar Policy Enforcement (`NativeTasks.cs`, `PatrolFeature.cs`, `StationaryFeature.cs`, `PursuitFeature.cs`, `ResponseFeature.cs`)**:
+  - Implemented `EnforceSteadyCruiserSirenPolicy`: strictly neutralizes emergency lightbars, audible sirens, and driverless siren flags on routine cruising and standby cruisers (`IsSirenSilent = false`, `SET_VEHICLE_SIREN(false)`, `SET_VEHICLE_HAS_MUTED_SIRENS(false)`, `SET_SIREN_WITH_NO_DRIVER(false)`). Steady blue blips can never have emergency sirens or lights active.
+  - Restricted emergency sirens exclusively to active vehicular pursuits (alternating red/blue), autonomous 911 runs (flashing red), and dispatched backup/callout units.
+  - When officers conclude pursuits or traffic stops and re-enter cruisers, sirens are immediately muted and extinguished before re-entering traffic.
+- **Abandoned Cruiser Cleanup & Deep Purge Sweeper (`PatrolFeature.cs`, `TrafficStopFeature.cs`, `StationaryFeature.cs`, `PursuitFeature.cs`, `BackupFeature.cs`, `CadenceMenu.cs`)**:
+  - Eliminated persistent empty cruisers lingering on roadways without blips or drivers. Unified entity disposal across all modules: `bool shouldDeleteCruiser = immediateDelete || !hasLivingDriver;`, ensuring driverless or orphaned vehicles are deleted cleanly.
+  - Added `SweepAbandonedCruisers`: on Full Clean Purge, sweeps a 250m radius around the player to delete any abandoned, unbliped, driverless police cruisers.
+- **Water & Riverbed Spawning Elimination (`WorldUtils.cs`, `PatrolFeature.cs`, `TrafficStopFeature.cs`, `StationaryFeature.cs`, `ResponseFeature.cs`)**:
+  - Added native water detection probes: `WorldUtils.IsPositionInWater` via `GET_WATER_HEIGHT` (`0xF6829842C06AE524`) and `TEST_VERTICAL_PROBE_AGAINST_ALL_WATER` (`0x2B3451FA1E3142E2`), alongside `WorldUtils.IsEntityInWater` (`IS_ENTITY_IN_WATER` `0xCFB0A0D8EDD145A3`).
+  - Integrated water checks into `GetAccurateGroundZ`, `GetSafeStreetPosition`, and road/standby coordinate finders across all features, preventing units from spawning in rivers, canals, or submerged terrain.
+- **Tactical Radar Minimap Blip Overhaul (`BlipService.cs`, `Settings.cs`, `BackupFeature.cs`, `PursuitFeature.cs`, `PatrolFeature.cs`)**:
+  - **Pursuit Alternating Flashing Blips**: Unblocked `SET_BLIP_FLASHES_ALTERNATE(blip, true)` for police car blips (`Sprite 56`), rendering authentic alternating Red & Blue pursuit indicators on the radar.
+  - **Watchdog Stomping Guard**: Guarded `PatrolFeature.UpdateBlipStates()` against active pursuit cruisers, preventing the routine patrol loop from resetting alternating pursuit blips to steady blue.
+  - **Group Backup Minimap Identity**: Group backup units display high-visibility Flashing Yellow Car blips (`GroupBackupBlipSprite = 56`, `GroupBackupBlipColor = 4`). Dismounted group officers display Yellow Badge icons (`GroupOfficerFootBlipSprite = 58`, `GroupOfficerFootBlipColor = 4`), and empty cruisers show White Car icons (`ParkedCruiserBlipColor = 0`).
+  - **Backup Menu Responders**: Units summoned via the Lean Backup Menu (`X + PageDown`) display distinct Flashing Cyan/Light Blue Car icons (`BackupResponseBlipSprite = 56`, `BackupResponseBlipColor = 18`).
+- **Numbered Preset Profiles & Menu Cursor Stabilization (`Settings.cs`, `CadenceMenu.cs`, `Cadence.ini`)**:
+  - Standardized numbered preset profile tiers 1–6:
+    * `1 - Rural County (Light)`: 2 patrol, 1 stop, 1 standby, 1 run, 3 pursuit.
+    * `2 - Authentic Realistic (Balanced)`: 4 patrol, 2 stops, 2 standby, 2 run, 4 pursuit (Production Default).
+    * `3 - Heavy Urban Patrol (High Density)`: 6 patrol, 3 stops, 3 standby, 3 run, 5 pursuit.
+    * `4 - Highway Interdiction (SAHP Focus)`: 5 patrol, 3 stops, 4 standby, 2 run, 4 pursuit, State Police Ratio 0.8.
+    * `5 - Chaos Metropolis (Heavy City Lockdown)`: 8 patrol, 4 stops, 4 standby, 4 run, 6 pursuit.
+    * `6 - Warzone Lockdown (Maximum Tactical)`: 12 patrol, 5 stops, 5 standby, 6 run, 8 pursuit.
+  - **Token Collision Bug Fix**: Fixed substring token matching bug in `Settings.ApplyPreset` where `"balanced"` matched `"la"`, improperly switching to Chaos mode.
+  - **RAGENativeUI Cursor Mutation Loop Fix**: Added `_isSyncingSettingsMenu` recursion guard and bypassed redundant preset index reassignment inside `OnListChange`, enabling smooth bidirectional right and left arrow key navigation across all 6 presets without skipping Warzone.
+  - **State Police Ratio Clarification**: Renamed "Highway Ratio" to "State Police Ratio (SAHP vs Local Police/Sheriff)" with descriptive tooltips clarifying SAHP Troopers vs municipal police/county sheriff weighting.
+  - **Native Fallback Disabled by Default**: Hard-locked default `AllowFallback = false` across settings and INI to protect custom addon fleets from vanilla vehicle contamination.
+- **Dual Purge Cadence System & Cooldown Reset (`CadenceMenu.cs`, `PatrolFeature.cs`, `TrafficStopFeature.cs`, `StationaryFeature.cs`, `ResponseFeature.cs`)**:
+  - Split purge menu action into two dedicated options:
+    * `[Semi Purge (Ambient Dismissal)]`: Dismisses active units into ambient traffic, clears blips, mutes sirens (`immediateDelete = false`).
+    * `[Full Clean Purge (Instant Wipe)]`: Instantly deletes all active Cadence vehicles, peds, props, and blips, sweeps abandoned cruisers within 250m, and completely wipes all entities (`immediateDelete = true`).
+  - Reset all feature spawn cooldown clocks (`_lastSpawnTime = 0`, `_lastSpawnAttemptTime = 0`, `_lastAutonomousRunTime = 0`) upon purge, allowing immediate repopulation without 35s–90s cooldown delays.
+- **Fine-Grained Emergency Run Customization & Dynamic Siren Cycling (`Settings.cs`, `ResponseFeature.cs`, `PursuitFeature.cs`, `CadenceMenu.cs`, `Cadence.ini`)**:
+  - Added configurable service type caps (`MaxPoliceRuns`, `MaxFireRuns`, `MaxAmbulanceRuns`) and agency weights (`EmergencyRunPoliceWeight`, `EmergencyRunFireWeight`, `EmergencyRunAmbulanceWeight`).
+  - Added `EnableSirenToneVariation`: emergency responders and pursuit units periodically cycle secondary and primary siren tones every 8.5 seconds via native `BLIP_SIREN` (`0x1B9025BDA76822B6`), avoiding monotonous background siren loops.
+- **Tactical Scenario & Dispatch Edge Case Resolutions (`BackupFeature.cs`, `TrafficStopFeature.cs`, `PursuitFeature.cs`)**:
+  - **De Morgan Logic Fix**: Corrected candidate vehicle filtering in `BackupFeature.FindCandidateAmbientVehicle` where ambulance and fire requests improperly selected police cruisers.
+  - **Re-engagement Quota Fix**: Panic Button and Group Backup re-engagement now strictly checks for units in `Dismissing` state. If units are already on scene (`ArrivedOnScene`), fresh batches of randomized units (4–6 for panic, 2–3 for group backup) are dispatched without quota starvation.
+  - **Panic Ambient Commandeering**: Removed `Functions.IsCopBusy` exclusion on ambient cruisers during Panic calls so officers actively driving on the beat immediately answer distress calls.
+  - **100% On-Foot Traffic Stops**: Removed Scenario 0 (In-Vehicle Observation) so officers never sit passively in their cruiser during stops. Concluding traffic stops (`ReleasingVehicles`) release `UnitRegistry` immediately so officers can be drafted into pursuits or backup calls without delay.
+  - **Post-Pursuit Scene Guard & Track Egress**: Replaced hyper circular pacing post-pursuit with `TaskCalmSceneGuard` (`TASK_STAND_GUARD`). Added safe street node egress (`GetSafeStreetPosition`) with a 6-second warp fallback for cruisers stopping on train tracks.
+
 ### Production Readiness & Tier 0 Architectural Hardening
 - **Shared Ownership Registry (`UnitRegistry.cs`)**:
   - Centralized atomic entity claim and release mechanism preventing cross-feature dual ownership conflicts (§3.1).

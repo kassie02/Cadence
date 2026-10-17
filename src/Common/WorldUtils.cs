@@ -26,6 +26,63 @@ namespace Cadence.Common
         }
 
         /// <summary>
+        /// Ironclad water watchdog: Checks whether a given position is submerged, on water, or in a riverbed/water body.
+        /// Uses GET_WATER_HEIGHT, TEST_VERTICAL_PROBE_AGAINST_ALL_WATER, and Z bounds to prevent river/water spawns.
+        /// </summary>
+        public static bool IsPositionInWater(Vector3 pos)
+        {
+            if (IsSubterraneanOrVoid(pos)) return false;
+
+            try
+            {
+                // 1. Native GET_WATER_HEIGHT (0xF6829842C06AE524)
+                float waterZ = 0f;
+                bool hasWater = NativeFunction.Natives.GET_WATER_HEIGHT<bool>(pos.X, pos.Y, pos.Z, out waterZ);
+                if (hasWater && pos.Z <= (waterZ + 0.75f))
+                {
+                    return true;
+                }
+
+                // 2. Native TEST_VERTICAL_PROBE_AGAINST_ALL_WATER (0x2B3451FA1E3142E2)
+                // Probes from 5m above to detect rivers, rapids, creeks, canals, and shallow streams
+                float probeWaterZ = 0f;
+                int probeResult = NativeFunction.Natives.TEST_VERTICAL_PROBE_AGAINST_ALL_WATER<int>(pos.X, pos.Y, pos.Z + 5.0f, 0, out probeWaterZ);
+                // 1 == SCRIPT_WATER_TEST_RESULT_WATER
+                if (probeResult == 1 && pos.Z <= (probeWaterZ + 0.75f))
+                {
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                Core.Logger.Debug($"IsPositionInWater exception: {ex.Message}");
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Validates whether an entity is currently submerged in or interacting with water.
+        /// </summary>
+        public static bool IsEntityInWater(Entity entity)
+        {
+            if (entity == null || !entity.Exists() || !entity.IsValid()) return false;
+
+            try
+            {
+                if (NativeFunction.Natives.IS_ENTITY_IN_WATER<bool>(entity))
+                {
+                    return true;
+                }
+                return IsPositionInWater(entity.Position);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
         /// Ironclad ground elevation watchdog for peds and vehicles.
         /// Prevents subterranean falling, roof snapping, or geometry clipping.
         /// </summary>
@@ -126,7 +183,7 @@ namespace Cadence.Common
             safeGroundZ = queryPos.Z;
             try
             {
-                if (IsSubterraneanOrVoid(queryPos))
+                if (IsSubterraneanOrVoid(queryPos) || IsPositionInWater(queryPos))
                 {
                     return false;
                 }
@@ -172,7 +229,7 @@ namespace Cadence.Common
             {
                 // Primary: RPH fast managed street lookup
                 Vector3 rphStreet = World.GetNextPositionOnStreet(searchCenter);
-                if (rphStreet != Vector3.Zero && !IsSubterraneanOrVoid(rphStreet))
+                if (rphStreet != Vector3.Zero && !IsSubterraneanOrVoid(rphStreet) && !IsPositionInWater(rphStreet))
                 {
                     try
                     {
@@ -185,7 +242,7 @@ namespace Cadence.Common
                             1, 3.0f, 0f
                         );
 
-                        if (foundNode && nodePos != Vector3.Zero && !IsSubterraneanOrVoid(nodePos))
+                        if (foundNode && nodePos != Vector3.Zero && !IsSubterraneanOrVoid(nodePos) && !IsPositionInWater(nodePos))
                         {
                             streetPos = nodePos;
                             streetHeading = nodeHeading;
@@ -209,7 +266,7 @@ namespace Cadence.Common
                         1, 3.0f, 0f
                     );
 
-                    if (foundDirect && directNode != Vector3.Zero && !IsSubterraneanOrVoid(directNode))
+                    if (foundDirect && directNode != Vector3.Zero && !IsSubterraneanOrVoid(directNode) && !IsPositionInWater(directNode))
                     {
                         streetPos = directNode;
                         streetHeading = directHeading;
@@ -233,7 +290,7 @@ namespace Cadence.Common
         /// </summary>
         public static bool IsAreaClear(Vector3 pos, float clearanceRadius, bool checkVehicles = true, bool checkPeds = true)
         {
-            if (IsSubterraneanOrVoid(pos) || clearanceRadius <= 0.0f)
+            if (IsSubterraneanOrVoid(pos) || IsPositionInWater(pos) || clearanceRadius <= 0.0f)
             {
                 return false;
             }

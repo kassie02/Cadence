@@ -21,36 +21,42 @@ Cadence was built from the ground up using the **"Ponytail" Delete-Friendly Arch
 
 ### Feature 1: Ambient Cruising Patrol (`PatrolFeature.cs`)
 - **Autonomous Roadway Patrols**: Ambient cruisers patrol naturally across San Andreas streets and highways using enhanced obstacle avoidance driving flags (`CruisingFlags = 786603`), respecting traffic signals, steering around parked cars and pedestrians, and maintaining realistic cruising speeds (12–21 m/s).
+- **Strict Siren & Lightbar Policy**: Steady blue blips (`Sprite 56`, `Color 38`) strictly operate without audible sirens or emergency lightbars under all circumstances. Enforced automatically by `NativeTasks.EnforceSteadyCruiserSirenPolicy`.
+- **Water & River Spawning Prevention**: Spawning node validation verifies positions against native water probes (`WorldUtils.IsPositionInWater` via `GET_WATER_HEIGHT` and `TEST_VERTICAL_PROBE_AGAINST_ALL_WATER`), completely eliminating accidental cruiser or officer spawns in rivers, channels, and lakes.
 - **Safe Road Node Generation**: New units spawn on validated road nodes 80m–250m from the player, preventing visual pop-in or mid-air/subterranean anomalies.
 - **Dynamic Liveries & Uniforms**: Integrated with Ultimate Backup and native EUP uniform presets to ensure officers match local jurisdictions (LSPD, BCSO, SAHP, Park Rangers).
 - **Radar Minimap Identity**: Color-coded Navy Blue blip (`Sprite 56`, `Color 38`). When officers dismount, their cruiser blip turns White (`Color 0`, `[PARKED]`) and officers receive a Badge blip (`Sprite 58`, `Color 38`, `[ON FOOT]`).
+- **Abandoned Cruiser Cleanup**: Cruisers left behind without living drivers or map blips are cleanly deleted rather than lingering on roadways (`shouldDeleteCruiser = immediateDelete || !hasLivingDriver`).
 - **Despawn Watchdog**: Safely dismisses cruisers when beyond 450m or off-screen, maintaining minimal memory footprint.
 
 ### Feature 2: 1803 Roadside Traffic Stops (`TrafficStopFeature.cs`)
 - **Authentic RPH Port**: Direct, native RagePluginHook recreation of the roadside pullover system with 0 external dependencies (no ScriptHookVDotNet required).
-- **Curated Shoulder Coordinates**: Uses over 40 hand-tuned roadside pullover zones from `ZoneSpawnData.cs` across all major highways and arterials for safe, natural vehicle positioning.
+- **Curated Shoulder Coordinates**: Uses over 40 hand-tuned roadside pullover zones from `ZoneSpawnData.cs` across all major highways and arterials for safe, natural vehicle positioning, fully validated against water probes.
 - **Silent Lightbar Protocol**: Officers keep emergency lightbars flashing while muting siren audio, avoiding repetitive siren screeching during stops.
-- **Three Authentic Scenarios**:
+- **100% On-Foot Pullover Scenarios**: Removed in-vehicle observation (Scenario 0) so officers always perform interactive on-foot roadside pullovers:
   1. *Routine Citation*: Officer approaches the driver's window holding a clipboard and notepad (`prop_notepad_01`), taking notes and issuing citations.
   2. *Driver Pat-Down*: Officer orders the suspect to the rear of the vehicle, conducting a thorough hands-on frisk against the cruiser hood.
   3. *K9 Chassis Sniff*: Officer deploys a trained police K9 Shepherd (`a_c_shepherd`) to perform a 4-point walk-around sniff of the suspect's vehicle perimeter.
+- **Immediate Unit Availability on Concluding Stops**: As soon as a stop completes (`ReleasingVehicles`), `UnitRegistry` releases the officer and cruiser immediately so they can be drafted into pursuits or summoned for backup without waiting for despawn delays.
 - **Smooth Re-Entry**: Upon completion, the violator and cruiser smoothly merge back into highway traffic before being naturally dismissed.
-- **Radar Minimap Identity**: Color-coded Yellow blip (`Sprite 56`, `Color 4`).
+- **Radar Minimap Identity**: Color-coded Yellow blip (`Sprite 56`, `Color 4`). Dismounted officers show Badge icon (`Sprite 58`), and parked empty cruisers display White Car icon (`Color 0`).
 
 ### Feature 3: Stationary Units & Radar Speed Traps (`StationaryFeature.cs`)
-- **Strategic Standby Locations**: Spawns parked cruisers in highway medians, turnouts, side streets, and commercial parking lots 80m–250m from the player.
+- **Strategic Standby Locations**: Spawns parked cruisers in highway medians, turnouts, side streets, and commercial parking lots 80m–250m from the player, checked against water probes.
+- **Strict Siren Neutralization**: Parked and remounting officers strictly enforce siren muting and lightbar deactivation.
 - **Five Immersive Idle Behaviors**:
   1. *In-Car Radar Watch*: Officers seated inside their cruiser monitoring traffic.
   2. *Hood Lean*: Officer leaning casually against the cruiser fender (`WORLD_HUMAN_COP_IDLES`).
   3. *Coffee Break*: Officer standing beside the cruiser enjoying a coffee cup (`ng_proc_coffee_01a`).
   4. *Phone Call*: Officer conducting dispatch communication via smartphone (`WORLD_HUMAN_STAND_MOBILE`).
   5. *Lidar / Speed Observation*: Officer scanning highway lanes with binoculars/radar device (`WORLD_HUMAN_BINOCULARS`).
-- **Tactical Remount & Rejoin**: When despawn timers trigger or the unit is mobilized for backup, officers cleanly holster/drop props, enter their cruiser, and merge back into traffic.
-- **Radar Minimap Identity**: Color-coded Mint Green blip (`Sprite 56`, `Color 2`).
+- **Tactical Remount & Rejoin**: When despawn timers trigger or the unit is mobilized for backup, officers cleanly holster/drop props, enter their cruiser, silence any lights/sirens, release registry locks, and merge back into traffic.
+- **Radar Minimap Identity**: Color-coded Mint Green blip (`Sprite 56`, `Color 2`). Dismounted officers display Badge icon (`Sprite 58`, `Color 2`), and parked empty cruisers display White Car icon (`Color 0`).
 
 ### Feature 4A: Background 911 Emergency Runs (`ResponseFeature.cs`)
 - Ambient cruisers periodically receive simulated emergency dispatches, activating emergency lights and sirens to navigate rapidly through traffic Code 2 or Code 3 to distant incident locations (400m–800m away) before standing down.
-- **Agency Variety**: Police cruisers, Los Santos / County Fire engines (`firetruk`), and Paramedic ambulances (`ambulance`).
+- **Agency Variety & Configurable Caps**: Police cruisers, Los Santos / County Fire engines (`firetruk`), and Paramedic ambulances (`ambulance`), governed by individual service caps (`MaxPoliceRuns`, `MaxFireRuns`, `MaxAmbulanceRuns`) and agency weights (`EmergencyRunPoliceWeight`, `EmergencyRunFireWeight`, `EmergencyRunAmbulanceWeight`).
+- **Dynamic Siren Tone Variation**: Responders periodically cycle through secondary and primary siren tones every 8.5 seconds via native `BLIP_SIREN` when `EnableSirenToneVariation = true`, eliminating repetitive background siren drone.
 - **Radar Minimap Identity**: Color-coded Flashing Red blip (`Sprite 56`, `Color 1`, 600ms pulse).
 
 ### Feature 4B: Rejected Callout Takeover (`ResponseFeature.cs`)
@@ -63,8 +69,10 @@ Cadence was built from the ground up using the **"Ponytail" Delete-Friendly Arch
 - Continuously monitors active LSPDFR pursuits via `Functions.GetActivePursuit()`.
 - If an active chase has fewer cruisers than `MaxPursuitUnits`, Cadence drafts nearby cruising officers into the chase (within 220m, strictly excluding cruisers engaged in traffic stops or emergency calls), registering both driver and passenger into LSPDFR's pursuit engine (`Functions.AddCopToPursuit`).
 - Drafted cruisers activate pursuit driving AI (`SET_DRIVER_ABILITY` clamped to engine maximum `1.0f`, `SET_DRIVER_AGGRESSIVENESS` calibrated to `0.6f`), sirens, and emergency maneuvers.
-- **Code 4 Stand-Down & Scene Resolution**: When the pursuit terminates or a suspect surrenders/kneels, all sirens within 60m are muted, all officers dismount, draw combat pistols, and establish a tactical perimeter. Empty cruisers turn White (`[PARKED]`) and officers receive Badge blips (`[ON FOOT]`).
-- **Radar Minimap Identity**: Color-coded Solid Orange blip (`Sprite 56`, `Color 38`).
+- **Dynamic Siren Tone Variation**: Pursuit units periodically cycle siren tones every 8.5 seconds via `BLIP_SIREN`.
+- **Native Alternating Red/Blue Pursuit Blip**: Drafted cruisers display authentic native alternating Red & Blue flashing blips (`Sprite 56`, `Color 38`, `SET_BLIP_FLASHES_ALTERNATE(blip, true)`). Routine patrol watchdogs are explicitly blocked from stomping pursuit blips back to steady blue.
+- **Code 4 Stand-Down & Scene Resolution**: When the pursuit terminates or a suspect surrenders/kneels, all sirens within 60m are muted, and officers establish a calm scene guard perimeter (`TaskCalmSceneGuard` via `TASK_STAND_GUARD`) rather than pacing in circles. Empty cruisers turn White (`[PARKED]`) and officers receive Badge blips (`[ON FOOT]`).
+- **Train Track & Obstacle Avoidance**: Dismissed units stuck on train tracks or offroad hazards navigate to validated street positions (`GetSafeStreetPosition`) with a 6-second warp fallback.
 
 ### Feature 6: Nearby Threat Reaction & Combat Defense (`AssistFeature.cs`)
 - Cruisers monitor a 60m–90m radius for active hostile gunfire and armed suspects attacking officers or civilians.
@@ -87,15 +95,19 @@ Cadence was built from the ground up using the **"Ponytail" Delete-Friendly Arch
       - **Seamless Hand-Off**: As soon as the player arrives on scene (within 35m), units transition automatically to close buddy-following support.
     - *Standard Backup Actions*: Local Patrol, State Patrol, Ambulance / EMS, Fire Department, Group Backup, Panic Button, and Dismiss All Backup Units.
 - **Ambient-First Commandeering Architecture**:
-  - Scans a 320m radius for existing ambient cruisers, stationary speed traps, ambulances, or fire engines.
-  - Commandeers active road units atomically through `UnitRegistry`, clearing cruising tasks, setting emergency sirens (Code 3: 32 m/s, Code 2: 20 m/s), and routing them to the player.
-  - Seamless fallback spawner fulfills requested unit quotas via Ultimate Backup or native fallback if ambient units are unavailable.
+  - Scans a 320m radius for existing ambient cruisers, stationary speed traps, ambulances, or fire engines. Fixed candidate selection logic ensures EMS and Fire requests strictly select appropriate service vehicles.
+  - Commandeers active road units atomically through `UnitRegistry`, clearing cruising tasks, setting emergency sirens (Code 3: 32 m/s, Code 2: 20 m/s), and routing them to the player. Panic Button requests commandeer ambient officers directly even when general ambient flags are active.
+  - Seamless fallback spawner fulfills requested unit quotas via Ultimate Backup or native fallback (if enabled) when ambient units are unavailable.
 - **Responding Unit Lifecycle & State Machine**:
   - **En Route**: High-speed emergency driving with Backspace fast-spawn support.
   - **Scene Arrival (within 25m)**: Mutes audible sirens immediately while keeping lightbars flashing, followed by staggered vehicle egress (driver exits first, passenger follows after 350ms).
   - **Threat Engagement**: Scans for active gunfire, suspects attacking player/police, or active pursuits. Officers unholster sidearms, take tactical cover, and neutralize hostiles.
   - **Follow / Buddy Support**: If no threat is present, officers follow the player with close support and an interior watchdog that teleports officers if distance > 25m into buildings.
   - **Clean Dismissal (`Enter` held ~1.2s or menu option)**: Deletes blips atomically, extinguishes sirens, remounts cruiser, and cruises away before seamlessly merging back into ambient traffic.
+- **Customizable Radar Minimap Identity**:
+  - **Group Backup Units**: Flashing Yellow Car blip (`GroupBackupBlipSprite = 56`, `GroupBackupBlipColor = 4`). When officers dismount, they receive Yellow Badge blips (`GroupOfficerFootBlipSprite = 58`, `GroupOfficerFootBlipColor = 4`), and empty parked cruisers display White Car blips (`ParkedCruiserBlipColor = 0`).
+  - **Backup Menu Responders**: Flashing Cyan/Light Blue Car blip (`BackupResponseBlipSprite = 56`, `BackupResponseBlipColor = 18`).
+  - **Panic & Group Re-engagement Fix**: Repeated Panic or Group requests only re-engage dismissing units. If units are already on scene, fresh batches of randomized units (4–6 for panic, 2–3 for group) are dispatched without quota starvation.
 
 ---
 
@@ -149,14 +161,26 @@ Cadence includes an in-game dashboard powered by RAGENativeUI.
      - Ambient Backup System
 3. **Settings & Customization Submenu**:
    - On-the-fly customization of density, limits, and service varieties:
-     - **Preset Profile**: Toggle between `Realistic (Default)` (balanced, authentic density: 4 patrol, 2 stops, 2 standby, 2 emergency runs, 4 pursuit) and `Chaos` (high density, living city feel: 8 patrol, 4 stops, 4 standby, 4 emergency runs, 6 pursuit).
+     - **Preset Profiles (Numbered Tiers 1–6)**: Seamless bidirectional cycling (fixed cursor mutation loop so all profiles, including Warzone, can be navigated cleanly with both Left and Right arrow keys):
+       * `1 - Rural County (Light)`: 2 patrol, 1 stop, 1 standby, 1 run, 3 pursuit.
+       * `2 - Authentic Realistic (Balanced)`: 4 patrol, 2 stops, 2 standby, 2 run, 4 pursuit (Production Default).
+       * `3 - Heavy Urban Patrol (High Density)`: 6 patrol, 3 stops, 3 standby, 3 run, 5 pursuit.
+       * `4 - Highway Interdiction (SAHP Focus)`: 5 patrol, 3 stops, 4 standby, 2 run, 4 pursuit, State Police Ratio 0.8.
+       * `5 - Chaos Metropolis (Heavy City Lockdown)`: 8 patrol, 4 stops, 4 standby, 4 run, 6 pursuit.
+       * `6 - Warzone Lockdown (Maximum Tactical)`: 12 patrol, 5 stops, 5 standby, 6 run, 8 pursuit.
      - **Max Patrol Cruisers**: Dynamic slider (1 to 16 cruisers; default: 4).
      - **Max Traffic Stops**: Dynamic slider (0 to 8 stops; default: 2).
      - **Max Speed Traps**: Dynamic slider (0 to 8 standby units; default: 2).
      - **Max Emergency Runs**: Dynamic slider (0 to 8 runs; default: 2).
+     - **Emergency Service Caps & Weights**:
+       * `Max Police Runs` (0 to 6; default: 2)
+       * `Max Fire Runs` (0 to 4; default: 1)
+       * `Max Ambulance Runs` (0 to 4; default: 1)
+       * Service Weights: Fine-tune probability distribution between Police, Fire, and EMS (`EmergencyRunPoliceWeight`, `EmergencyRunFireWeight`, `EmergencyRunAmbulanceWeight`).
+     - **Siren Tone Variation Cycling**: Toggle (`EnableSirenToneVariation = true/false`) to enable automatic periodic tone cycling (`BLIP_SIREN`) on Code 3 and pursuit runs.
      - **Emergency Run Variety**: Choose between `Police, Fire & EMS (Default)`, `Police & EMS`, `Police & Fire`, or `Police Only`.
-     - **Highway vs City Balance**: Adjust State/Highway Patrol ratio vs Local Police (Balanced 50/50, Heavy Highway 75/25, Heavy Local 25/75, Only Local, Only Highway).
-     - **Allow Native Fallback**: Checkbox toggle for vanilla GTA vehicle fallback.
+     - **State Police Ratio (SAHP vs Local Police/Sheriff)**: Clarified agency distribution slider (Balanced 50/50, Heavy Highway 75/25, Heavy Local 25/75, Only Local, Only Highway) adjusting the probability of spawning Highway Patrol / State Troopers versus local municipal/county law enforcement.
+     - **Allow Native Fallback**: Strictly disabled by default (`AllowFallback = false`). If enabled, allows spawning default vanilla GTA police models when custom fleet or Ultimate Backup XML spawners return empty.
 4. **Instant Testing & Spawner**:
    - Trigger instant spawns for testing or immediate immersion:
      - `[Spawn Patrol Cruiser]`
@@ -165,11 +189,16 @@ Cadence includes an in-game dashboard powered by RAGENativeUI.
      - `[Trigger Code 3 Emergency Run]`
      - `[Trigger Panic Backup]`
      - `[Trigger Group Backup]`
-5. **Purge All Cadence Units**:
-   - Safely wipes all active Cadence vehicles, officers, canines, accessory props, and radar blips in a single tick.
-   - Disenrolls officers from LSPDFR pursuits before cleanup to avoid crashes.
-   - Cleans up and silences all lingering emergency vehicle sirens within 350m to prevent GTA V audio engine ghost loops.
-   - Enforces an active 35–45 second spawner grace period so replacement cruisers do not immediately respawn.
+5. **Dual Purge Cadence Options (Instant Wipe vs Ambient Dismissal)**:
+   - **`[Semi Purge (Ambient Dismissal)]`**:
+     - Gracefully dismisses active units into ambient traffic, clears all radar blips, extinguishes lightbars and mutes audible sirens (`immediateDelete = false`).
+     - Resets spawn cooldown timers to 0s for immediate new unit generation.
+   - **`[Full Clean Purge (Instant Wipe)]`**:
+     - Instantly wipes and deletes all active Cadence vehicles, officers, canines, accessory props, and radar blips in a single tick (`immediateDelete = true`).
+     - Disenrolls officers from LSPDFR pursuits before cleanup to prevent game crashes.
+     - Executes a deep world sweep (`SweepAbandonedCruisers`), removing all empty, abandoned, or driverless cop cruisers within a 250m radius to eliminate traffic bottlenecks.
+     - Cleans up and silences lingering emergency vehicle sirens within 350m to prevent GTA V audio engine ghost loops.
+     - Resets all spawner cooldown clocks to 0s, allowing an instantaneous fresh repopulation of the world.
 6. **Save / Reload Cadence.ini**:
    - `Settings.Save()` safely persists all in-game menu customizations back to `Cadence.ini`.
    - `Settings.Load()` re-reads settings from disk and immediately synchronizes running parameters.

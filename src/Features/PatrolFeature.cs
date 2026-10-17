@@ -299,7 +299,7 @@ namespace Cadence.Features
                 if (!unit.IsValid())
                 {
                     Logger.Debug("PatrolFeature", $"Removing invalid/dead unit {unit.Callsign}.");
-                    unit.Dispose(immediateDelete: false);
+                    unit.Dispose(immediateDelete: true);
                     toRemove.Add(unit);
                     continue;
                 }
@@ -350,7 +350,24 @@ namespace Cadence.Features
                 // Enforce siren and lightbar policy to guarantee zero audible siren leakage
                 if (unit.Cruiser != null && unit.Cruiser.Exists())
                 {
-                    NativeTasks.EnforceSirenLightbarPolicy(unit.Cruiser);
+                    bool inPursuit = false;
+                    try
+                    {
+                        if (unit.Driver != null && unit.Driver.Exists())
+                        {
+                            inPursuit = Functions.IsPedInPursuit(unit.Driver);
+                        }
+                    }
+                    catch { }
+
+                    if (!inPursuit && !PursuitFeature.IsPursuitCruiser(unit.Cruiser))
+                    {
+                        NativeTasks.EnforceSteadyCruiserSirenPolicy(unit.Cruiser);
+                    }
+                    else
+                    {
+                        NativeTasks.EnforceSirenLightbarPolicy(unit.Cruiser);
+                    }
                 }
             }
 
@@ -443,6 +460,7 @@ namespace Cadence.Features
                 if (WorldUtils.GetSafeStreetPosition(probeCenter, 1, out Vector3 candidatePos, out float candidateHeading))
                 {
                     if (WorldUtils.IsSubterraneanOrVoid(candidatePos)) continue;
+                    if (WorldUtils.IsPositionInWater(candidatePos)) continue;
 
                     float distToPlayer = candidatePos.DistanceTo(playerPos);
                     if (distToPlayer < minDist || distToPlayer > (maxDist + 60f)) continue;
@@ -624,7 +642,7 @@ namespace Cadence.Features
             {
                 unitsToDispose = new List<PatrolUnitInstance>(_activeUnits);
                 _activeUnits.Clear();
-                _lastSpawnTime = Game.GameTime + 35000;
+                _lastSpawnTime = 0;
             }
 
             foreach (var unit in unitsToDispose)
@@ -674,6 +692,14 @@ namespace Cadence.Features
             public void UpdateBlipStates()
             {
                 if (!Settings.ShowRadarBlips || Cruiser == null || !Cruiser.Exists()) return;
+
+                // Never stomp on active pursuits or LSPDFR pursuits
+                if (PursuitFeature.IsPursuitCruiser(Cruiser)) return;
+                try
+                {
+                    if (Driver != null && Driver.Exists() && Functions.IsPedInPursuit(Driver)) return;
+                }
+                catch { }
 
                 bool driverOutside = Driver != null && Driver.Exists() && Driver.IsAlive && !Driver.IsInVehicle(Cruiser, false);
                 bool passengerOutside = Passenger != null && Passenger.Exists() && Passenger.IsAlive && !Passenger.IsInVehicle(Cruiser, false);
@@ -727,6 +753,8 @@ namespace Cadence.Features
                         BlipService.SafeDeleteBlip(ref RadarBlip);
                         RadarBlip = BlipService.AttachPatrolBlip(Cruiser, Callsign);
                     }
+                    // Steady blue cruiser: enforce zero siren and light leakage
+                    NativeTasks.EnforceSteadyCruiserSirenPolicy(Cruiser);
                 }
             }
 
@@ -832,7 +860,11 @@ namespace Cadence.Features
 
                     if (Cruiser != null)
                     {
-                        TeardownHelper.SafeDismissVehicle(Cruiser, delete: immediateDelete);
+                        bool hasLivingDriver = (Driver != null && Driver.Exists() && Driver.IsAlive) ||
+                                               (Passenger != null && Passenger.Exists() && Passenger.IsAlive);
+                        bool shouldDeleteCruiser = immediateDelete || !hasLivingDriver;
+                        NativeTasks.ShutOffSirenAndLights(Cruiser);
+                        TeardownHelper.SafeDismissVehicle(Cruiser, delete: shouldDeleteCruiser);
                     }
                 }
                 catch (Exception ex)
