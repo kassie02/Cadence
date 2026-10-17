@@ -52,9 +52,13 @@ namespace Cadence.UI
         private static UIMenuListItem _maxStopsItem;
         private static UIMenuListItem _maxStationaryItem;
         private static UIMenuListItem _maxEmergencyItem;
+        private static UIMenuListItem _maxPoliceRunsItem;
+        private static UIMenuListItem _maxFireRunsItem;
+        private static UIMenuListItem _maxAmbulanceRunsItem;
         private static UIMenuListItem _emergencyVarietyItem;
         private static UIMenuListItem _jurisdictionBalanceItem;
         private static UIMenuCheckboxItem _fallbackToggle;
+        private static UIMenuCheckboxItem _sirenToneToggle;
 
         // Submenu 4: Testing & Spawns
         private static UIMenuItem _spawnPatrolItem;
@@ -67,18 +71,19 @@ namespace Cadence.UI
         private static UIMenuItem _triggerCalloutItem;
 
         // Top-Level Actions
-        private static UIMenuItem _purgeAllItem;
+        private static UIMenuItem _semiPurgeItem;
+        private static UIMenuItem _fullPurgeItem;
         private static UIMenuItem _reloadConfigItem;
 
         // Option Value Mappings
         private static readonly object[] PresetLabels = new object[]
         {
-            "Chaos (LA Living City)",
-            "Realistic (Authentic)",
-            "Metro (Downtown Patrol)",
-            "Highway (SAHP Patrol)",
-            "Rural (Blaine County)",
-            "Warzone (Extreme Tactical)"
+            "1 - Rural County (Light)",
+            "2 - Authentic Realistic (Balanced)",
+            "3 - Heavy Urban Patrol (High Density)",
+            "4 - Highway Interdiction (SAHP Focus)",
+            "5 - Chaos Metropolis (Heavy City Lockdown)",
+            "6 - Warzone Lockdown (Maximum Tactical)"
         };
 
         private static readonly int[] PatrolLimitValues = new int[] { 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16 };
@@ -93,15 +98,19 @@ namespace Cadence.UI
         private static readonly int[] EmergencyLimitValues = new int[] { 0, 1, 2, 3, 4, 5, 6, 8 };
         private static readonly object[] EmergencyLimitLabels = new object[] { "Off", "1", "2 (Def)", "3", "4", "5", "6", "8" };
 
+        private static readonly int[] ServiceLimitValues = new int[] { 0, 1, 2, 3, 4, 5, 6 };
+        private static readonly object[] ServiceLimitLabels = new object[] { "0 (Off)", "1", "2", "3", "4", "5", "6" };
+
         private static readonly object[] EmergencyVarietyLabels = new object[] { "All (Def)", "Police/EMS", "Police/Fire", "Police Only" };
 
         private static readonly int[] HighwayRatioValues = new int[] { 50, 75, 25, 0, 100 };
-        private static readonly object[] HighwayRatioLabels = new object[] { "Balanced (50/50)", "Highway (75/25)", "Local (25/75)", "Local (0% Fwy)", "Highway (100%)" };
+        private static readonly object[] HighwayRatioLabels = new object[] { "50% SAHP / 50% Local", "75% SAHP / 25% Local", "25% SAHP / 75% Local", "0% SAHP (All Local)", "100% SAHP (State Patrol Only)" };
 
         // Watchdog & State
         private static GameFiber _watchdogFiber;
         private static bool _isInitialized;
         private static bool _isRunning;
+        private static bool _isSyncingSettingsMenu;
         private static uint _lastTelemetryUpdate;
         private static uint _lastMenuToggleTime;
 
@@ -433,23 +442,31 @@ namespace Cadence.UI
             _mainMenu.AddItem(settingsSubItem);
             _mainMenu.BindMenuToItem(_settingsMenu, settingsSubItem);
 
-            _presetItem = new UIMenuListItem("Preset Profile", "Toggle density profile: Chaos (LA Living City), Realistic, Metro, Highway, Rural, or Warzone.", PresetLabels);
+            _presetItem = new UIMenuListItem("Preset Profile", "Toggle density profile: 1 (Rural Light) to 6 (Warzone Lockdown).", PresetLabels);
             _maxPatrolItem = new UIMenuListItem("Max Patrol Cruisers", "Maximum ambient cruisers patrolling roadways simultaneously.", PatrolLimitLabels);
             _maxStopsItem = new UIMenuListItem("Max Traffic Stops", "Maximum roadside traffic stops and citations active at one time.", StopLimitLabels);
             _maxStationaryItem = new UIMenuListItem("Max Speed Traps", "Maximum parked speed traps and stationary watch units.", StationaryLimitLabels);
             _maxEmergencyItem = new UIMenuListItem("Max Emergency Runs", "Maximum autonomous background emergency runs responding concurrently.", EmergencyLimitLabels);
+            _maxPoliceRunsItem = new UIMenuListItem("Max Police Runs", "Maximum autonomous police cruiser emergency runs active concurrently.", ServiceLimitLabels);
+            _maxFireRunsItem = new UIMenuListItem("Max Fire Runs", "Maximum autonomous fire engine emergency runs active concurrently.", ServiceLimitLabels);
+            _maxAmbulanceRunsItem = new UIMenuListItem("Max Ambulance Runs", "Maximum autonomous ambulance emergency runs active concurrently.", ServiceLimitLabels);
             _emergencyVarietyItem = new UIMenuListItem("Emergency Variety", "Permitted emergency agency types for autonomous background runs.", EmergencyVarietyLabels);
-            _jurisdictionBalanceItem = new UIMenuListItem("Highway Ratio", "Ratio between State / Highway Patrol and Local Police near freeways.", HighwayRatioLabels);
+            _jurisdictionBalanceItem = new UIMenuListItem("State Police Ratio (SAHP)", "Ratio of State Highway Patrol vs Local Police/Sheriff near freeways.", HighwayRatioLabels);
             _fallbackToggle = new UIMenuCheckboxItem("Allow Native Fallback", Settings.AllowFallback, "Permit vanilla GTA vehicle spawns if Ultimate Backup is unavailable or returns null.");
+            _sirenToneToggle = new UIMenuCheckboxItem("Siren Tone Cycling", Settings.EnableSirenToneVariation, "Dynamically cycle siren tones (yelp/wail) on Code 3 and pursuit vehicles.");
 
             _settingsMenu.AddItem(_presetItem);
             _settingsMenu.AddItem(_maxPatrolItem);
             _settingsMenu.AddItem(_maxStopsItem);
             _settingsMenu.AddItem(_maxStationaryItem);
             _settingsMenu.AddItem(_maxEmergencyItem);
+            _settingsMenu.AddItem(_maxPoliceRunsItem);
+            _settingsMenu.AddItem(_maxFireRunsItem);
+            _settingsMenu.AddItem(_maxAmbulanceRunsItem);
             _settingsMenu.AddItem(_emergencyVarietyItem);
             _settingsMenu.AddItem(_jurisdictionBalanceItem);
             _settingsMenu.AddItem(_fallbackToggle);
+            _settingsMenu.AddItem(_sirenToneToggle);
             _settingsMenu.RefreshIndex();
 
             // Submenu 4: Testing & Spawns
@@ -481,10 +498,12 @@ namespace Cadence.UI
             _testingMenu.RefreshIndex();
 
             // Top-Level Actions on Main Menu
-            _purgeAllItem = new UIMenuItem("~r~[Purge All Cadence Units]~s~", "Instantly clears all active Cadence entities, props, blips, and silences sirens.");
+            _semiPurgeItem = new UIMenuItem("~y~[Semi Purge (Ambient Dismissal)]~s~", "Dismisses active Cadence units to ambient traffic, clears blips, and silences sirens.");
+            _fullPurgeItem = new UIMenuItem("~r~[Full Clean Purge (Instant Wipe)]~s~", "Instantly deletes all Cadence vehicles, peds, blips, sirens, props, and abandoned cop cars.");
             _reloadConfigItem = new UIMenuItem("[Reload Cadence.ini]", "Reloads all settings from the configuration file on the fly.");
 
-            _mainMenu.AddItem(_purgeAllItem);
+            _mainMenu.AddItem(_semiPurgeItem);
+            _mainMenu.AddItem(_fullPurgeItem);
             _mainMenu.AddItem(_reloadConfigItem);
             _mainMenu.RefreshIndex();
 
@@ -499,40 +518,53 @@ namespace Cadence.UI
 
             _settingsMenu.OnListChange += (sender, listItem, newIndex) =>
             {
+                if (_isSyncingSettingsMenu) return;
+
                 if (listItem == _presetItem)
                 {
                     string chosen = PresetLabels[newIndex].ToString();
                     Settings.ApplyPreset(chosen);
-                    SyncSettingsMenuValues();
+                    SyncSettingsMenuValues(syncPreset: false);
                     Game.DisplayNotification($"~b~Cadence~s~: Applied ~y~{Settings.Preset} Preset~s~.");
                 }
                 else if (listItem == _maxPatrolItem)
                 {
                     Settings.MaxPatrolUnits = PatrolLimitValues[newIndex];
                     Settings.Preset = "Custom";
-                    _presetItem.Index = 0;
                     Game.DisplayNotification($"~b~Cadence~s~: Max Patrol Cruisers set to ~b~{Settings.MaxPatrolUnits}~s~.");
                 }
                 else if (listItem == _maxStopsItem)
                 {
                     Settings.MaxTrafficStops = StopLimitValues[newIndex];
                     Settings.Preset = "Custom";
-                    _presetItem.Index = 0;
                     Game.DisplayNotification($"~b~Cadence~s~: Max Traffic Stops set to ~y~{Settings.MaxTrafficStops}~s~.");
                 }
                 else if (listItem == _maxStationaryItem)
                 {
                     Settings.MaxStationaryUnits = StationaryLimitValues[newIndex];
                     Settings.Preset = "Custom";
-                    _presetItem.Index = 0;
                     Game.DisplayNotification($"~b~Cadence~s~: Max Speed Traps set to ~g~{Settings.MaxStationaryUnits}~s~.");
                 }
                 else if (listItem == _maxEmergencyItem)
                 {
                     Settings.MaxEmergencyRuns = EmergencyLimitValues[newIndex];
                     Settings.Preset = "Custom";
-                    _presetItem.Index = 0;
                     Game.DisplayNotification($"~b~Cadence~s~: Max Emergency Runs set to ~r~{Settings.MaxEmergencyRuns}~s~.");
+                }
+                else if (listItem == _maxPoliceRunsItem)
+                {
+                    Settings.MaxPoliceRuns = ServiceLimitValues[newIndex];
+                    Game.DisplayNotification($"~b~Cadence~s~: Max Police Emergency Runs set to ~b~{Settings.MaxPoliceRuns}~s~.");
+                }
+                else if (listItem == _maxFireRunsItem)
+                {
+                    Settings.MaxFireRuns = ServiceLimitValues[newIndex];
+                    Game.DisplayNotification($"~b~Cadence~s~: Max Fire Emergency Runs set to ~r~{Settings.MaxFireRuns}~s~.");
+                }
+                else if (listItem == _maxAmbulanceRunsItem)
+                {
+                    Settings.MaxAmbulanceRuns = ServiceLimitValues[newIndex];
+                    Game.DisplayNotification($"~b~Cadence~s~: Max Ambulance Emergency Runs set to ~g~{Settings.MaxAmbulanceRuns}~s~.");
                 }
                 else if (listItem == _emergencyVarietyItem)
                 {
@@ -567,7 +599,7 @@ namespace Cadence.UI
                 else if (listItem == _jurisdictionBalanceItem)
                 {
                     Settings.HighwayPatrolRatio = HighwayRatioValues[newIndex];
-                    Game.DisplayNotification($"~b~Cadence~s~: Highway Patrol Ratio set to ~b~{Settings.HighwayPatrolRatio}%~s~.");
+                    Game.DisplayNotification($"~b~Cadence~s~: State Police (SAHP) Ratio set to ~b~{Settings.HighwayPatrolRatio}%~s~.");
                 }
                 Settings.Save();
             };
@@ -578,6 +610,11 @@ namespace Cadence.UI
                 {
                     Settings.AllowFallback = isChecked;
                     Game.DisplayNotification($"~b~Cadence~s~: Allow Native Fallback: {(isChecked ? "~r~Enabled (Vanilla Models Allowed)~s~" : "~g~Disabled (Strict UB Only)~s~")}.");
+                }
+                else if (item == _sirenToneToggle)
+                {
+                    Settings.EnableSirenToneVariation = isChecked;
+                    Game.DisplayNotification($"~b~Cadence~s~: Siren Tone Cycling: {(isChecked ? "~g~Enabled~s~" : "~o~Disabled~s~")}.");
                 }
                 Settings.Save();
             };
@@ -721,11 +758,18 @@ namespace Cadence.UI
             {
                 Logger.Info("Menu", $"User selected main menu action: {item.Text}");
 
-                if (item == _purgeAllItem)
+                if (item == _semiPurgeItem)
                 {
-                    PurgeAllFeatures();
+                    PurgeAllFeatures(immediateDelete: false);
                     UpdateTelemetry();
-                    Game.DisplayNotification("~b~Cadence~s~: All Cadence units, blips, and runs ~r~purged~s~ (spawning cooldown active).");
+                    Game.DisplayNotification("~b~Cadence~s~: Active Cadence units ~y~dismissed~s~ to ambient traffic. Sirens silenced.");
+                }
+                else if (item == _fullPurgeItem)
+                {
+                    PurgeAllFeatures(immediateDelete: true);
+                    SweepAbandonedCruisers();
+                    UpdateTelemetry();
+                    Game.DisplayNotification("~b~Cadence~s~: ~r~Full Clean Purge completed~s~. All Cadence entities and abandoned cruisers deleted.");
                 }
                 else if (item == _reloadConfigItem)
                 {
@@ -735,6 +779,38 @@ namespace Cadence.UI
                     Game.DisplayNotification("~b~Cadence~s~: Configuration reloaded from ~y~Cadence.ini~s~.");
                 }
             };
+        }
+
+        private static void SweepAbandonedCruisers()
+        {
+            try
+            {
+                Ped player = Game.LocalPlayer?.Character;
+                if (player == null || !player.Exists()) return;
+
+                Entity[] vehicles = World.GetEntities(player.Position, 250.0f, GetEntitiesFlags.ConsiderAllVehicles);
+                if (vehicles != null)
+                {
+                    foreach (Entity ent in vehicles)
+                    {
+                        if (ent is Vehicle veh && veh.Exists())
+                        {
+                            if (veh.IsPoliceVehicle || veh.Model.IsLawEnforcementVehicle)
+                            {
+                                if (veh.Driver == null || !veh.Driver.Exists() || !veh.Driver.IsAlive)
+                                {
+                                    NativeTasks.ShutOffSirenAndLights(veh);
+                                    TeardownHelper.SafeDismissVehicle(veh, delete: true);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug($"SweepAbandonedCruisers error: {ex.Message}");
+            }
         }
 
         private static void UpdateTelemetry()
@@ -797,26 +873,58 @@ namespace Cadence.UI
         {
             switch (Settings.Preset?.ToLowerInvariant())
             {
-                case "chaos": return 0;
-                case "realistic": return 1;
-                case "metro": return 2;
-                case "highway": return 3;
-                case "rural": return 4;
-                case "warzone": return 5;
-                default: return Settings.ChaosMode ? 0 : 1;
+                case "rural":
+                case "1":
+                case "1 - rural county (light)":
+                    return 0;
+                case "realistic":
+                case "2":
+                case "2 - authentic realistic (balanced)":
+                    return 1;
+                case "metro":
+                case "3":
+                case "3 - heavy urban patrol (high density)":
+                    return 2;
+                case "highway":
+                case "4":
+                case "4 - highway interdiction (sahp focus)":
+                    return 3;
+                case "chaos":
+                case "5":
+                case "5 - chaos metropolis (heavy city lockdown)":
+                    return 4;
+                case "warzone":
+                case "6":
+                case "6 - warzone lockdown (maximum tactical)":
+                    return 5;
+                default:
+                    return Settings.ChaosMode ? 4 : 1;
             }
         }
 
-        private static void SyncSettingsMenuValues()
+        private static void SyncSettingsMenuValues(bool syncPreset = true)
         {
-            if (_presetItem != null) _presetItem.Index = GetPresetIndex();
-            if (_maxPatrolItem != null) _maxPatrolItem.Index = GetClosestIndex(PatrolLimitValues, Settings.MaxPatrolUnits);
-            if (_maxStopsItem != null) _maxStopsItem.Index = GetClosestIndex(StopLimitValues, Settings.MaxTrafficStops);
-            if (_maxStationaryItem != null) _maxStationaryItem.Index = GetClosestIndex(StationaryLimitValues, Settings.MaxStationaryUnits);
-            if (_maxEmergencyItem != null) _maxEmergencyItem.Index = GetClosestIndex(EmergencyLimitValues, Settings.MaxEmergencyRuns);
-            if (_emergencyVarietyItem != null) _emergencyVarietyItem.Index = GetEmergencyVarietyIndex();
-            if (_jurisdictionBalanceItem != null) _jurisdictionBalanceItem.Index = GetClosestIndex(HighwayRatioValues, Settings.HighwayPatrolRatio);
-            if (_fallbackToggle != null) _fallbackToggle.Checked = Settings.AllowFallback;
+            if (_isSyncingSettingsMenu) return;
+            try
+            {
+                _isSyncingSettingsMenu = true;
+                if (syncPreset && _presetItem != null) _presetItem.Index = GetPresetIndex();
+                if (_maxPatrolItem != null) _maxPatrolItem.Index = GetClosestIndex(PatrolLimitValues, Settings.MaxPatrolUnits);
+                if (_maxStopsItem != null) _maxStopsItem.Index = GetClosestIndex(StopLimitValues, Settings.MaxTrafficStops);
+                if (_maxStationaryItem != null) _maxStationaryItem.Index = GetClosestIndex(StationaryLimitValues, Settings.MaxStationaryUnits);
+                if (_maxEmergencyItem != null) _maxEmergencyItem.Index = GetClosestIndex(EmergencyLimitValues, Settings.MaxEmergencyRuns);
+                if (_maxPoliceRunsItem != null) _maxPoliceRunsItem.Index = GetClosestIndex(ServiceLimitValues, Settings.MaxPoliceRuns);
+                if (_maxFireRunsItem != null) _maxFireRunsItem.Index = GetClosestIndex(ServiceLimitValues, Settings.MaxFireRuns);
+                if (_maxAmbulanceRunsItem != null) _maxAmbulanceRunsItem.Index = GetClosestIndex(ServiceLimitValues, Settings.MaxAmbulanceRuns);
+                if (_emergencyVarietyItem != null) _emergencyVarietyItem.Index = GetEmergencyVarietyIndex();
+                if (_jurisdictionBalanceItem != null) _jurisdictionBalanceItem.Index = GetClosestIndex(HighwayRatioValues, Settings.HighwayPatrolRatio);
+                if (_fallbackToggle != null) _fallbackToggle.Checked = Settings.AllowFallback;
+                if (_sirenToneToggle != null) _sirenToneToggle.Checked = Settings.EnableSirenToneVariation;
+            }
+            finally
+            {
+                _isSyncingSettingsMenu = false;
+            }
         }
 
         private static void MenuFiberLoop()

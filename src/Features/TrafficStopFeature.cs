@@ -494,7 +494,7 @@ namespace Cadence.Features
 
                 if (WorldUtils.GetSafeOffroadPosition(probeCenter, 30.0f, 150.0f, out Vector3 offroadPos, out float offroadH))
                 {
-                    if (!WorldUtils.IsHighway(offroadPos) && !WorldUtils.IsSubterraneanOrVoid(offroadPos) && !WorldUtils.IsRooftopOrElevatedStructure(offroadPos) && !WorldUtils.IsOnActiveRoadOrLane(offroadPos) && WorldUtils.IsAreaClear(offroadPos, 9.0f))
+                    if (!WorldUtils.IsHighway(offroadPos) && !WorldUtils.IsSubterraneanOrVoid(offroadPos) && !WorldUtils.IsRooftopOrElevatedStructure(offroadPos) && !WorldUtils.IsOnActiveRoadOrLane(offroadPos) && !WorldUtils.IsPositionInWater(offroadPos) && WorldUtils.IsAreaClear(offroadPos, 9.0f))
                     {
                         spotPos = offroadPos;
                         spotHeading = offroadH;
@@ -517,17 +517,9 @@ namespace Cadence.Features
             Blip blip = null;
 
             int scenario;
-            if (WorldUtils.IsOnActiveRoadOrLane(shoulderPos, 6.5f))
+            lock (_rand)
             {
-                // Scenario 0: In-Vehicle Observation (shoulder is within 6.5m of hazardous active traffic lane)
-                scenario = 0;
-            }
-            else
-            {
-                lock (_rand)
-                {
-                    scenario = _rand.Next(1, 4); // 1 = Citation, 2 = Pat-Down, 3 = K9 Search
-                }
+                scenario = _rand.Next(1, 4); // 1 = Citation, 2 = Pat-Down, 3 = K9 Search (Scenario 0 removed)
             }
 
             try
@@ -790,7 +782,7 @@ namespace Cadence.Features
             {
                 snapshot = _activeStops.ToArray();
                 _activeStops.Clear();
-                _lastSpawnAttemptTime = Game.GameTime + 35000;
+                _lastSpawnAttemptTime = 0;
             }
 
             foreach (var stop in snapshot)
@@ -909,19 +901,10 @@ namespace Cadence.Features
                 switch (_state)
                 {
                     case StopState.InitialExiting:
-                        if (Scenario == 0)
-                        {
-                            // In-vehicle observation scenario: officer remains seated in cruiser for safety
-                            _state = StopState.WindowContact;
-                            _stateStartTime = now;
-                        }
-                        else
-                        {
-                            Officer.Tasks.LeaveVehicle(Cruiser, LeaveVehicleFlags.None);
-                            OfficerFootBlip = BlipService.AttachOfficerFootBlip(Officer, Callsign);
-                            _state = StopState.ApproachPassengerWindow;
-                            _stateStartTime = now;
-                        }
+                        Officer.Tasks.LeaveVehicle(Cruiser, LeaveVehicleFlags.None);
+                        BlipService.HandleOfficerDismount(Cruiser, Officer, ref RadarBlip, ref OfficerFootBlip, Callsign);
+                        _state = StopState.ApproachPassengerWindow;
+                        _stateStartTime = now;
                         break;
 
                     case StopState.ApproachPassengerWindow:
@@ -956,18 +939,7 @@ namespace Cadence.Features
                     // Scenario 1: Routine Citation
                     // ========================================================
                     case StopState.WindowContact:
-                        if (Scenario == 0)
-                        {
-                            // Officer runs MDT check for 20s while seated inside cruiser
-                            if (elapsed > 20000)
-                            {
-                                NativeTasks.SetSilentSiren(Cruiser, false);
-                                CivVehicle.IndicatorLightsStatus = VehicleIndicatorLightsStatus.Off;
-                                _state = StopState.ReleasingVehicles;
-                                _stateStartTime = now;
-                            }
-                        }
-                        else if (elapsed > 1500)
+                        if (elapsed > 1500)
                         {
                             EquipNotepadProp();
                             if (NativeTasks.RequestAnimDict("amb@world_human_clipboard@male@base"))
@@ -1117,7 +1089,7 @@ namespace Cadence.Features
                     case StopState.OfficerEnteringCruiser:
                         if (Officer.IsInVehicle(Cruiser, false) || elapsed > 8000)
                         {
-                            BlipService.SafeDeleteBlip(ref OfficerFootBlip);
+                            BlipService.HandleOfficerRemount(Cruiser, Officer, ref RadarBlip, ref OfficerFootBlip, Callsign, "PATROL", Settings.PatrolBlipColor);
 
                             // Pack K9 into cruiser if present
                             if (K9Dog != null && K9Dog.Exists())
@@ -1169,6 +1141,10 @@ namespace Cadence.Features
                             NativeFunction.Natives.SET_VEHICLE_FORWARD_SPEED(Cruiser, 6.0f);
                             Officer.Tasks.CruiseWithVehicle(Cruiser, 18.0f, NativeTasks.CruisingFlags);
                             BlipService.TransitionToPatrol(RadarBlip, Callsign);
+
+                            // Release claims in UnitRegistry immediately so BackupFeature/PursuitFeature can draft them
+                            UnitRegistry.Release(Cruiser);
+                            UnitRegistry.Release(Officer);
                         }
 
                         // Complete stop only after units have cleanly driven away down the street
@@ -1352,7 +1328,9 @@ namespace Cadence.Features
                     if (Cruiser != null && Cruiser.Exists())
                     {
                         try { NativeTasks.SetSilentSiren(Cruiser, false); } catch { }
-                        TeardownHelper.SafeDismissVehicle(Cruiser, delete: immediateDelete);
+                        bool hasLivingOfficer = Officer != null && Officer.Exists() && Officer.IsAlive;
+                        bool shouldDeleteCruiser = immediateDelete || !hasLivingOfficer;
+                        TeardownHelper.SafeDismissVehicle(Cruiser, delete: shouldDeleteCruiser);
                     }
                 }
                 catch (Exception ex)

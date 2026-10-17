@@ -194,7 +194,23 @@ namespace Cadence.Services
         /// </summary>
         public static Blip AttachPursuitBlip(Vehicle vehicle, string callsign)
         {
-            return CreateOrUpdateBlip(vehicle, callsign, "PURSUIT", spriteId: Settings.PursuitBlipSprite, colorId: Settings.PursuitBlipColor, isShortRange: false, flashIntervalMs: 400, alternateFlash: false, scaleOverride: Settings.PursuitBlipScale);
+            return CreateOrUpdateBlip(vehicle, callsign, "PURSUIT", spriteId: Settings.PursuitBlipSprite, colorId: Settings.PursuitBlipColor, isShortRange: false, flashIntervalMs: 400, alternateFlash: true, scaleOverride: Settings.PursuitBlipScale);
+        }
+
+        /// <summary>
+        /// Group Backup Unit: Configurable from INI (Default: Sprite 56, Color 4 Yellow, Flashing 400ms, {Callsign} [GROUP]).
+        /// </summary>
+        public static Blip AttachGroupBackupBlip(Vehicle vehicle, string callsign)
+        {
+            return CreateOrUpdateBlip(vehicle, callsign, "GROUP", spriteId: Settings.GroupBackupBlipSprite, colorId: Settings.GroupBackupBlipColor, isShortRange: false, flashIntervalMs: 400, alternateFlash: false, scaleOverride: Settings.GroupBackupBlipScale);
+        }
+
+        /// <summary>
+        /// Lean Backup Menu Response: Configurable from INI (Default: Sprite 56, Color 18 Cyan/Light Blue, Flashing 500ms, {Callsign} [BACKUP]).
+        /// </summary>
+        public static Blip AttachBackupResponseBlip(Vehicle vehicle, string callsign)
+        {
+            return CreateOrUpdateBlip(vehicle, callsign, "BACKUP", spriteId: Settings.BackupResponseBlipSprite, colorId: Settings.BackupResponseBlipColor, isShortRange: false, flashIntervalMs: 500, alternateFlash: false, scaleOverride: Settings.BackupResponseBlipScale);
         }
 
         /// <summary>
@@ -256,11 +272,75 @@ namespace Cadence.Services
         }
 
         /// <summary>
+        /// Dismounted Group Backup Officer Ped: Configurable from INI (Default: Sprite 58 Badge, Color 4 Yellow, Solid, {Callsign} [GROUP ON FOOT]).
+        /// </summary>
+        public static Blip AttachGroupOfficerFootBlip(Ped officer, string callsign)
+        {
+            if (!Settings.ShowRadarBlips || officer == null || !officer.Exists()) return null;
+
+            try
+            {
+                Blip blip = SafeGetAttachedBlip(officer);
+                if (blip == null || !blip.Exists())
+                {
+                    blip = officer.AttachBlip();
+                }
+                if (blip == null || !blip.Exists()) return null;
+
+                blip.Sprite = (BlipSprite)Settings.GroupOfficerFootBlipSprite;
+                NativeFunction.Natives.SET_BLIP_COLOUR(blip, Settings.GroupOfficerFootBlipColor);
+                blip.Scale = Settings.GroupOfficerFootBlipScale;
+                NativeFunction.Natives.SET_BLIP_AS_SHORT_RANGE(blip, Settings.ShortRangeBlips);
+                NativeFunction.Natives.SET_BLIP_FLASHES(blip, false);
+                NativeFunction.Natives.SET_BLIP_FLASHES_ALTERNATE(blip, false);
+                NativeFunction.Natives.SET_BLIP_FLASH_INTERVAL(blip, 0);
+                NativeFunction.Natives.SET_BLIP_FLASH_TIMER(blip, 0);
+                try { blip.StopFlashing(); } catch { }
+
+                string tag = SanitizeCallsign(callsign);
+                blip.Name = $"{tag} [GROUP ON FOOT]";
+                return blip;
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug($"AttachGroupOfficerFootBlip error: {ex.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>
         /// Parked Cruiser (dismounted / empty): Configurable from INI (Default: Sprite 56, Color 0 White, Solid, {Callsign} [PARKED]).
         /// </summary>
         public static Blip AttachParkedCruiserBlip(Vehicle vehicle, string callsign)
         {
             return CreateOrUpdateBlip(vehicle, callsign, "PARKED", spriteId: Settings.ParkedCruiserBlipSprite, colorId: Settings.ParkedCruiserBlipColor, isShortRange: Settings.ShortRangeBlips, flashIntervalMs: 0, alternateFlash: false, scaleOverride: Settings.ParkedCruiserBlipScale);
+        }
+
+        /// <summary>
+        /// Group Officer Dismount Protocol:
+        /// Empty cruiser turns White (Color 0, Sprite 56, [PARKED]).
+        /// Dismounted group officer ped receives Yellow Badge blip (Sprite 58, Color 4 Yellow, [GROUP ON FOOT]).
+        /// </summary>
+        public static void HandleGroupOfficerDismount(Vehicle cruiser, Ped officer, ref Blip cruiserBlip, ref Blip officerBadgeBlip, string callsign)
+        {
+            try
+            {
+                SafeDeleteBlip(ref cruiserBlip);
+                if (cruiser != null && cruiser.Exists())
+                {
+                    cruiserBlip = AttachParkedCruiserBlip(cruiser, callsign);
+                }
+
+                if (officer != null && officer.Exists())
+                {
+                    SafeDeleteBlip(ref officerBadgeBlip);
+                    officerBadgeBlip = AttachGroupOfficerFootBlip(officer, callsign);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug($"HandleGroupOfficerDismount error: {ex.Message}");
+            }
         }
 
         /// <summary>
@@ -648,7 +728,7 @@ namespace Cadence.Services
                 if (flashIntervalMs > 0)
                 {
                     NativeFunction.Natives.SET_BLIP_FLASHES(blip, true);
-                    bool canAlternate = alternateFlash && spriteId != 56;
+                    bool canAlternate = alternateFlash;
                     NativeFunction.Natives.SET_BLIP_FLASHES_ALTERNATE(blip, canAlternate);
                     NativeFunction.Natives.SET_BLIP_FLASH_INTERVAL(blip, flashIntervalMs);
                 }

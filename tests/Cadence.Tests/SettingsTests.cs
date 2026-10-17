@@ -25,6 +25,8 @@ namespace Cadence.Tests
             TestApplyPresetHighway();
             TestApplyPresetRural();
             TestApplyPresetWarzone();
+            TestApplyPresetNumbered();
+            TestNewSettingsRoundtrip();
 
             Console.WriteLine("[PASSED] All SettingsTests passed successfully.");
         }
@@ -381,6 +383,73 @@ RequireLightsForSiren = true
             Assert.AreEqual(4, Settings.MaxStationaryUnits, "MaxStationaryUnits should be 4");
             Assert.AreEqual(6, Settings.MaxEmergencyRuns, "MaxEmergencyRuns should be 6");
             Assert.AreEqual(8, Settings.MaxPursuitUnits, "MaxPursuitUnits should be 8");
+        }
+
+        private static void TestApplyPresetNumbered()
+        {
+            Settings.ApplyPreset("1");
+            Assert.AreEqual("Rural", Settings.Preset, "Preset 1 should map to Rural");
+
+            Settings.ApplyPreset("2 - Authentic Realistic (Balanced)");
+            Assert.AreEqual("Realistic", Settings.Preset, "Preset 2 label should map to Realistic");
+
+            Settings.ApplyPreset("3");
+            Assert.AreEqual("Metro", Settings.Preset, "Preset 3 should map to Metro");
+
+            Settings.ApplyPreset("4");
+            Assert.AreEqual("Highway", Settings.Preset, "Preset 4 should map to Highway");
+
+            Settings.ApplyPreset("5");
+            Assert.AreEqual("Chaos", Settings.Preset, "Preset 5 should map to Chaos");
+
+            Settings.ApplyPreset("6 - Warzone Lockdown (Maximum Tactical)");
+            Assert.AreEqual("Warzone", Settings.Preset, "Preset 6 label should map to Warzone");
+        }
+
+        private static void TestNewSettingsRoundtrip()
+        {
+            string tempIni = Path.Combine(Path.GetTempPath(), $"Cadence_Test_NewSettings_{Guid.NewGuid():N}.ini");
+            try
+            {
+                Settings.GroupBackupBlipColor = 4;
+                Settings.GroupOfficerFootBlipColor = 4;
+                Settings.BackupResponseBlipColor = 18;
+                Settings.MaxPoliceRuns = 3;
+                Settings.MaxFireRuns = 2;
+                Settings.MaxAmbulanceRuns = 2;
+                Settings.EmergencyRunPoliceWeight = 2;
+                Settings.EmergencyRunFireWeight = 1;
+                Settings.EmergencyRunAmbulanceWeight = 1;
+                Settings.EnableSirenToneVariation = true;
+                Settings.AllowFallback = false;
+
+                Settings.Save(tempIni);
+                Assert.IsTrue(File.Exists(tempIni));
+
+                Settings.GroupBackupBlipColor = 99;
+                Settings.BackupResponseBlipColor = 99;
+                Settings.MaxPoliceRuns = 99;
+                Settings.EnableSirenToneVariation = false;
+                Settings.AllowFallback = true;
+
+                Settings.Load(tempIni);
+
+                Assert.AreEqual(4, Settings.GroupBackupBlipColor, "GroupBackupBlipColor should be 4");
+                Assert.AreEqual(4, Settings.GroupOfficerFootBlipColor, "GroupOfficerFootBlipColor should be 4");
+                Assert.AreEqual(18, Settings.BackupResponseBlipColor, "BackupResponseBlipColor should be 18");
+                Assert.AreEqual(3, Settings.MaxPoliceRuns, "MaxPoliceRuns should be 3");
+                Assert.AreEqual(2, Settings.MaxFireRuns, "MaxFireRuns should be 2");
+                Assert.AreEqual(2, Settings.MaxAmbulanceRuns, "MaxAmbulanceRuns should be 2");
+                Assert.AreEqual(2, Settings.EmergencyRunPoliceWeight, "EmergencyRunPoliceWeight should be 2");
+                Assert.AreEqual(1, Settings.EmergencyRunFireWeight, "EmergencyRunFireWeight should be 1");
+                Assert.AreEqual(1, Settings.EmergencyRunAmbulanceWeight, "EmergencyRunAmbulanceWeight should be 1");
+                Assert.IsTrue(Settings.EnableSirenToneVariation, "EnableSirenToneVariation should be true");
+                Assert.IsFalse(Settings.AllowFallback, "AllowFallback should be false");
+            }
+            finally
+            {
+                if (File.Exists(tempIni)) File.Delete(tempIni);
+            }
         }
     }
 }

@@ -547,7 +547,7 @@ namespace Cadence.Features
                 {
                     if (unit == null || !unit.IsValid())
                     {
-                        if (unit != null) unit.Dispose(immediateDelete: false);
+                        if (unit != null) unit.Dispose(immediateDelete: true);
                         toRemove.Add(unit);
                         continue;
                     }
@@ -858,7 +858,7 @@ namespace Cadence.Features
                             PlayPanicButtonSound();
                             AudioHelper.SafePlayPoliceAssistance(playerPos);
 
-                            // Priority 0: Re-engage existing units already on scene or dismissing nearby (< 120m)
+                            // Priority 0: Re-engage existing units dismissing nearby (< 120m) or upgrading from routine to panic
                             List<BackupUnitSession> nearbyPanicCandidates;
                             lock (_syncLock)
                             {
@@ -866,7 +866,7 @@ namespace Cadence.Features
                                     u.ServiceType != BackupType.AmbulanceCode2 && u.ServiceType != BackupType.AmbulanceCode3 &&
                                     u.ServiceType != BackupType.FireDeptCode2 && u.ServiceType != BackupType.FireDeptCode3 &&
                                     u.Cruiser != null && u.Cruiser.Exists() && u.Cruiser.Position.DistanceTo(playerPos) <= 120.0f &&
-                                    (u.State == BackupUnitSession.UnitState.Dismissing || u.State == BackupUnitSession.UnitState.ArrivedOnScene)).ToList();
+                                    (u.State == BackupUnitSession.UnitState.Dismissing || (u.State == BackupUnitSession.UnitState.ArrivedOnScene && u.ServiceType != BackupType.PanicButton))).ToList();
                             }
 
                             int reengagedPanicCount = 0;
@@ -914,7 +914,7 @@ namespace Cadence.Features
 
                             AudioHelper.SafePlayPoliceAssistance(playerPos);
 
-                            // Priority 0: Re-engage existing units already on scene or dismissing nearby (< 120m)
+                            // Priority 0: Only re-engage units currently dismissing nearby (< 120m)
                             List<BackupUnitSession> nearbyGroupCandidates;
                             lock (_syncLock)
                             {
@@ -922,7 +922,7 @@ namespace Cadence.Features
                                     u.ServiceType != BackupType.AmbulanceCode2 && u.ServiceType != BackupType.AmbulanceCode3 &&
                                     u.ServiceType != BackupType.FireDeptCode2 && u.ServiceType != BackupType.FireDeptCode3 &&
                                     u.Cruiser != null && u.Cruiser.Exists() && u.Cruiser.Position.DistanceTo(playerPos) <= 120.0f &&
-                                    (u.State == BackupUnitSession.UnitState.Dismissing || u.State == BackupUnitSession.UnitState.ArrivedOnScene)).ToList();
+                                    u.State == BackupUnitSession.UnitState.Dismissing).ToList();
                             }
 
                             int reengagedGroupCount = 0;
@@ -1876,17 +1876,19 @@ namespace Cadence.Features
                     string vName = veh.Model.Name.ToLowerInvariant();
                     if (isAmbulance)
                     {
-                        if (!veh.Model.IsEmergencyVehicle && !vName.Contains("ambu") && !vName.Contains("medic") && !vName.Contains("ems")) continue;
+                        bool isAmbModel = vName.Contains("ambu") || vName.Contains("medic") || vName.Contains("ems");
+                        if (!isAmbModel) continue;
                     }
                     else if (isFire)
                     {
-                        if (!veh.Model.IsEmergencyVehicle && !vName.Contains("fire") && !vName.Contains("engine") && !vName.Contains("truk") && !vName.Contains("truck")) continue;
+                        bool isFireModel = vName.Contains("fire") || vName.Contains("engine") || vName.Contains("truk") || vName.Contains("truck");
+                        if (!isFireModel) continue;
                     }
                     else
                     {
                         // Strict Law Enforcement Vehicle Verification
                         // Vehicle MUST be an authentic police vehicle - under NO circumstances allow civilian vehicles!
-                        bool isPolice = veh.IsPoliceVehicle || veh.Model.IsLawEnforcementVehicle;
+                        bool isPolice = (veh.IsPoliceVehicle || veh.Model.IsLawEnforcementVehicle) && !vName.Contains("ambu") && !vName.Contains("fire");
                         if (!isPolice) continue;
                     }
 
@@ -1962,9 +1964,10 @@ namespace Cadence.Features
                         try { inPursuit = Functions.IsPedInPursuit(driver); } catch { }
                         if (inPursuit || driver.IsInCombat) continue;
 
+                        bool isPanic = (type == BackupType.PanicButton);
                         bool isBusy = false;
                         try { isBusy = Functions.IsCopBusy(driver, false); } catch { }
-                        if (isBusy) continue;
+                        if (isBusy && !isPanic) continue;
 
                         targetDriver = driver;
                     }
@@ -2559,11 +2562,24 @@ namespace Cadence.Features
                 BlipService.SafeDeleteEntityBlip(driver);
                 if (passenger != null) BlipService.SafeDeleteEntityBlip(passenger);
 
-                // Attach flashing emergency blip or purple callout response blip
+                // Attach appropriate blip (Callout = Purple, Group = Yellow, Panic = Red, Backup = Cyan/Light Blue)
                 string labelSuffix = isCode3 ? "CODE 3" : "CODE 2";
-                blip = isCallout
-                    ? BlipService.AttachCalloutResponseBlip(cruiser, callsign)
-                    : BlipService.AttachEmergencyBlip(cruiser, $"{callsign} [{labelSuffix}]");
+                if (isCallout)
+                {
+                    blip = BlipService.AttachCalloutResponseBlip(cruiser, callsign);
+                }
+                else if (type == BackupType.GroupBackup || type == BackupType.GroupPursuit)
+                {
+                    blip = BlipService.AttachGroupBackupBlip(cruiser, callsign);
+                }
+                else if (type == BackupType.PanicButton)
+                {
+                    blip = BlipService.AttachEmergencyBlip(cruiser, $"{callsign} [PANIC]");
+                }
+                else
+                {
+                    blip = BlipService.AttachBackupResponseBlip(cruiser, $"{callsign} [{labelSuffix}]");
+                }
 
                 var session = new BackupUnitSession(cruiser, driver, passenger, destination, blip, callsign, type, isCode3, isCommandeer, additionalOfficers, isAlreadyOnScene, isCallout: isCallout);
 
@@ -4104,10 +4120,12 @@ namespace Cadence.Features
                         else
                         {
                             // Officer is outside cruiser on foot during on-scene, engaging threat, or dismissing:
-                            // Ensure single Badge blip (Sprite 58, Color 38) is tracked in _officerFootBlips
+                            // Ensure single Badge blip (Sprite 58, Color 4 for Group or Color 38) is tracked in _officerFootBlips
                             if (!_officerFootBlips.TryGetValue(ofc.Handle, out Blip fb) || fb == null || !fb.Exists())
                             {
-                                fb = BlipService.AttachOfficerFootBlip(ofc, Callsign);
+                                fb = (ServiceType == BackupType.GroupBackup || ServiceType == BackupType.GroupPursuit)
+                                    ? BlipService.AttachGroupOfficerFootBlip(ofc, Callsign)
+                                    : BlipService.AttachOfficerFootBlip(ofc, Callsign);
                                 if (fb != null && fb.Exists())
                                 {
                                     _officerFootBlips[ofc.Handle] = fb;
@@ -4173,9 +4191,17 @@ namespace Cadence.Features
                         {
                             RadarBlip = BlipService.AttachCalloutResponseBlip(Cruiser, Callsign);
                         }
-                        else if (IsCode3 && State == UnitState.EnRoute)
+                        else if ((ServiceType == BackupType.GroupBackup || ServiceType == BackupType.GroupPursuit) && State == UnitState.EnRoute)
+                        {
+                            RadarBlip = BlipService.AttachGroupBackupBlip(Cruiser, Callsign);
+                        }
+                        else if (ServiceType == BackupType.PanicButton && State == UnitState.EnRoute)
                         {
                             RadarBlip = BlipService.AttachEmergencyBlip(Cruiser, Callsign);
+                        }
+                        else if (State == UnitState.EnRoute)
+                        {
+                            RadarBlip = BlipService.AttachBackupResponseBlip(Cruiser, Callsign);
                         }
                         else
                         {
@@ -4211,9 +4237,13 @@ namespace Cadence.Features
                 BlipService.SafeDeleteBlip(ref RadarBlip);
                 ClearFootBlips();
 
+                bool hasLivingOfficers = Officers != null && Officers.Any(o => o != null && o.Exists() && o.IsAlive);
+                bool shouldDeleteCruiser = immediateDelete || !hasLivingOfficers;
+
                 if (Cruiser != null && Cruiser.Exists())
                 {
-                    TeardownHelper.SafeDismissVehicle(Cruiser, immediateDelete);
+                    NativeTasks.EnforceSteadyCruiserSirenPolicy(Cruiser);
+                    TeardownHelper.SafeDismissVehicle(Cruiser, shouldDeleteCruiser);
                 }
                 if (Officers != null)
                 {
@@ -4221,7 +4251,7 @@ namespace Cadence.Features
                     {
                         if (ofc != null && ofc.Exists())
                         {
-                            TeardownHelper.SafeDismissPed(ofc, immediateDelete);
+                            TeardownHelper.SafeDismissPed(ofc, immediateDelete || !ofc.IsAlive);
                         }
                     }
                 }

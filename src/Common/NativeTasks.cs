@@ -336,6 +336,90 @@ namespace Cadence.Common
         }
 
         /// <summary>
+        /// Siren Policy Enforcer:
+        /// Ensures steady cruisers (routine ambient, patrol, stationary, or standby units) NEVER have sirens or emergency lights active.
+        /// Only active pursuits (alternating red/blue), emergency runs (flashing red), callout responses (purple), or emergency backup
+        /// are permitted to run sirens. Mutes sirens and disables emergency lighting immediately if found on steady cruisers.
+        /// </summary>
+        public static void EnforceSteadyCruiserSirenPolicy(Vehicle vehicle)
+        {
+            if (vehicle == null || !vehicle.Exists()) return;
+
+            try
+            {
+                if (vehicle.IsSirenOn)
+                {
+                    vehicle.IsSirenOn = false;
+                }
+                if (vehicle.IsSirenSilent)
+                {
+                    vehicle.IsSirenSilent = false;
+                }
+                NativeFunction.Natives.SET_VEHICLE_SIREN(vehicle, false);
+                NativeFunction.Natives.SET_VEHICLE_HAS_MUTED_SIRENS(vehicle, true);
+                NativeFunction.Natives.SET_SIREN_WITH_NO_DRIVER(vehicle, false);
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Cycles the vehicle's siren tone (yelp, wail, priority/phaser) via native BLIP_SIREN.
+        /// Avoids horn locking and adds authentic variety to Code 3 and pursuit runs.
+        /// </summary>
+        public static void CycleSirenTone(Vehicle vehicle)
+        {
+            if (vehicle == null || !vehicle.Exists() || !vehicle.IsSirenOn) return;
+
+            try
+            {
+                NativeFunction.Natives.BLIP_SIREN(vehicle);
+            }
+            catch (Exception ex)
+            {
+                Core.Logger.Debug($"CycleSirenTone error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Commands an officer to calmly secure a post-pursuit scene perimeter.
+        /// Clears conflicting AI driving/wander tasks and engages TASK_STAND_GUARD to prevent erratic circular walking.
+        /// </summary>
+        public static void TaskCalmSceneGuard(Ped officer, Vehicle cruiser, Vector3 sceneCenter)
+        {
+            if (officer == null || !officer.Exists() || !officer.IsAlive) return;
+
+            try
+            {
+                // If officer is currently inside cruiser, exit calmly
+                if (officer.IsInAnyVehicle(false) || officer.CurrentVehicle != null)
+                {
+                    NativeFunction.Natives.TASK_LEAVE_ANY_VEHICLE(officer, 0, 0);
+                    return;
+                }
+
+                officer.BlockPermanentEvents = true;
+                officer.KeepTasks = true;
+
+                // Face toward scene center or away from cruiser
+                Vector3 officerPos = officer.Position;
+                Vector3 dir = (sceneCenter - officerPos);
+                float heading = officer.Heading;
+                if (dir.Length() > 1.0f)
+                {
+                    heading = (float)(Math.Atan2(-dir.X, dir.Y) * (180.0 / Math.PI));
+                    if (heading < 0f) heading += 360f;
+                }
+
+                NativeFunction.Natives.CLEAR_PED_TASKS(officer);
+                NativeFunction.Natives.TASK_STAND_GUARD(officer, officerPos.X, officerPos.Y, officerPos.Z, heading, "WORLD_HUMAN_GUARD_STAND");
+            }
+            catch (Exception ex)
+            {
+                Core.Logger.Debug($"TaskCalmSceneGuard error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
         /// Streams an animation dictionary into memory with timeout protection.
         /// </summary>
         public static bool RequestAnimDict(string animDict, int timeoutMs = 3000)

@@ -693,7 +693,7 @@ namespace Cadence.Features
                     {
                         if (s != null)
                         {
-                            s.Dispose(immediateDelete: false);
+                            s.Dispose(immediateDelete: true);
                         }
                         _activeSessions.RemoveAt(i);
                         continue;
@@ -1311,6 +1311,8 @@ namespace Cadence.Features
                 State = SessionState.InPursuit;
             }
 
+            private uint _lastSirenCycleTime;
+
             public void UpdatePursuitBlip(Vector3 targetPos)
             {
                 if (Cruiser == null || !Cruiser.Exists() || State != SessionState.InPursuit) return;
@@ -1318,6 +1320,17 @@ namespace Cadence.Features
                 if (RadarBlip == null || !RadarBlip.Exists())
                 {
                     RadarBlip = BlipService.AttachPursuitBlip(Cruiser, Callsign);
+                }
+
+                // Dynamic siren tone variation
+                if (Settings.EnableSirenToneVariation && Cruiser.IsSirenOn)
+                {
+                    uint now = Game.GameTime;
+                    if (now - _lastSirenCycleTime >= 8500)
+                    {
+                        _lastSirenCycleTime = now;
+                        NativeTasks.CycleSirenTone(Cruiser);
+                    }
                 }
             }
 
@@ -1400,17 +1413,17 @@ namespace Cadence.Features
 
                 try
                 {
-                    // Siren sound OFF, silent emergency lightbar stays active
+                    // Siren sound completely OFF, silent emergency lightbars stay active
                     if (Cruiser != null && Cruiser.Exists())
                     {
+                        NativeTasks.EnforceSteadyCruiserSirenPolicy(Cruiser);
                         NativeTasks.SetSilentEmergencyLights(Cruiser, true);
-                        NativeTasks.EnforceSirenLightbarPolicy(Cruiser);
                     }
 
                     // Sweep nearby police vehicles within 60m of this cruiser to mute audible sirens
                     MuteNearbyPoliceSirens(Cruiser.Position, 60.0f);
 
-                    // Order all seated officers to exit vehicle immediately and take defensive tactical perimeter
+                    // Order all seated officers to exit vehicle immediately and take calm, stationary perimeter guard
                     if (Driver != null && Driver.Exists() && Driver.IsAlive)
                     {
                         Driver.BlockPermanentEvents = true; // Hold until player explicitly dismisses!
@@ -1420,14 +1433,7 @@ namespace Cadence.Features
                         }
                         else if (!Driver.IsInCombat && !Driver.IsCuffed)
                         {
-                            try
-                            {
-                                if (!NativeFunction.Natives.IS_PED_USING_ANY_SCENARIO<bool>(Driver))
-                                {
-                                    NativeFunction.Natives.TASK_START_SCENARIO_IN_PLACE(Driver, "WORLD_HUMAN_COP_IDLES", 0, true);
-                                }
-                            }
-                            catch { }
+                            NativeTasks.TaskCalmSceneGuard(Driver, Cruiser, Cruiser.Position);
                         }
 
                         try
@@ -1447,14 +1453,7 @@ namespace Cadence.Features
                         }
                         else if (!Passenger.IsInCombat && !Passenger.IsCuffed)
                         {
-                            try
-                            {
-                                if (!NativeFunction.Natives.IS_PED_USING_ANY_SCENARIO<bool>(Passenger))
-                                {
-                                    NativeFunction.Natives.TASK_START_SCENARIO_IN_PLACE(Passenger, "WORLD_HUMAN_COP_IDLES", 0, true);
-                                }
-                            }
-                            catch { }
+                            NativeTasks.TaskCalmSceneGuard(Passenger, Cruiser, Cruiser.Position);
                         }
 
                         try
@@ -1522,26 +1521,42 @@ namespace Cadence.Features
                             Passenger.Tasks.EnterVehicle(Cruiser, 0);
                         }
 
-                        // Wait up to 6 seconds for driver to enter cruiser
+                        // Wait up to 6 seconds for driver to enter cruiser (with warp fallback)
                         uint enterStart = Game.GameTime;
                         while (Driver != null && Driver.Exists() && Driver.IsAlive && !Driver.IsInVehicle(Cruiser, false) && (Game.GameTime - enterStart < 6000))
                         {
                             GameFiber.Sleep(250);
                         }
 
-                        // Completely shut off emergency sirens and lightbars
+                        if (Driver != null && Driver.Exists() && Driver.IsAlive && Cruiser != null && Cruiser.Exists() && !Driver.IsInVehicle(Cruiser, false))
+                        {
+                            Driver.WarpIntoVehicle(Cruiser, -1);
+                        }
+
+                        if (Passenger != null && Passenger.Exists() && Passenger.IsAlive && Cruiser != null && Cruiser.Exists() && !Passenger.IsInVehicle(Cruiser, false))
+                        {
+                            Passenger.WarpIntoVehicle(Cruiser, 0);
+                        }
+
+                        // Strictly enforce silent cruising siren policy so sirens don't turn on upon entering!
                         if (Cruiser != null && Cruiser.Exists())
                         {
+                            NativeTasks.EnforceSteadyCruiserSirenPolicy(Cruiser);
                             NativeTasks.ShutOffSirenAndLights(Cruiser);
                         }
 
-                        // Cruise away smoothly
-                        if (Driver != null && Driver.Exists() && Driver.IsAlive)
+                        // Cruise away smoothly to safe street node (off train tracks / curbs)
+                        if (Driver != null && Driver.Exists() && Driver.IsAlive && Cruiser != null && Cruiser.Exists())
                         {
                             Driver.BlockPermanentEvents = false;
-                            if (Cruiser != null && Cruiser.Exists())
+                            NativeTasks.ConfigurePatrolDriver(Driver, Cruiser);
+
+                            if (WorldUtils.GetSafeStreetPosition(Cruiser.Position, 0, out Vector3 roadPos, out _))
                             {
-                                NativeTasks.ConfigurePatrolDriver(Driver, Cruiser);
+                                NativeTasks.DriveToPositionLongRange(Driver, Cruiser, roadPos, 12.0f, NativeTasks.NormalDrivingFlag, 5.0f);
+                            }
+                            else
+                            {
                                 Driver.Tasks.CruiseWithVehicle(Cruiser, 16.0f, NativeTasks.CruisingFlags);
                             }
                         }
@@ -1645,22 +1660,26 @@ namespace Cadence.Features
                 BlipService.SafeDeleteEntityBlip(Driver);
                 BlipService.SafeDeleteEntityBlip(Passenger);
 
+                bool hasLivingDriver = Driver != null && Driver.Exists() && Driver.IsAlive;
+                bool shouldDeleteCruiser = immediateDelete || !hasLivingDriver;
+
                 // 2. Safe entity dismissals via TeardownHelper
                 try
                 {
                     if (Passenger != null)
                     {
-                        TeardownHelper.SafeDismissPed(Passenger, delete: immediateDelete);
+                        TeardownHelper.SafeDismissPed(Passenger, delete: immediateDelete || !Passenger.IsAlive);
                     }
 
                     if (Driver != null)
                     {
-                        TeardownHelper.SafeDismissPed(Driver, delete: immediateDelete);
+                        TeardownHelper.SafeDismissPed(Driver, delete: immediateDelete || !Driver.IsAlive);
                     }
 
                     if (Cruiser != null)
                     {
-                        TeardownHelper.SafeDismissVehicle(Cruiser, delete: immediateDelete);
+                        NativeTasks.EnforceSteadyCruiserSirenPolicy(Cruiser);
+                        TeardownHelper.SafeDismissVehicle(Cruiser, delete: shouldDeleteCruiser);
                     }
                 }
                 catch (Exception ex)

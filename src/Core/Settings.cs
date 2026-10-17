@@ -175,11 +175,32 @@ namespace Cadence.Core
         public static float ParkedCruiserBlipScale { get; set; } = 0.45f;
         public static int ParkedCruiserBlipSprite { get; set; } = 56;
 
+        public static int GroupBackupBlipColor { get; set; } = 4; // Yellow
+        public static float GroupBackupBlipScale { get; set; } = 0.45f;
+        public static int GroupBackupBlipSprite { get; set; } = 56;
+
+        public static int GroupOfficerFootBlipColor { get; set; } = 4; // Yellow
+        public static float GroupOfficerFootBlipScale { get; set; } = 0.40f;
+        public static int GroupOfficerFootBlipSprite { get; set; } = 58;
+
+        public static int BackupResponseBlipColor { get; set; } = 18; // Cyan / Light Blue
+        public static float BackupResponseBlipScale { get; set; } = 0.45f;
+        public static int BackupResponseBlipSprite { get; set; } = 56;
+
+        // Emergency Run Fine-Grained Customization
+        public static int EmergencyRunPoliceWeight { get; set; } = 50;
+        public static int EmergencyRunFireWeight { get; set; } = 25;
+        public static int EmergencyRunAmbulanceWeight { get; set; } = 25;
+        public static int MaxPoliceRuns { get; set; } = 2;
+        public static int MaxFireRuns { get; set; } = 1;
+        public static int MaxAmbulanceRuns { get; set; } = 1;
+
         // Integration
         public static bool UseUltimateBackup { get; set; } = true;
         public static bool EnableEupOutfits { get; set; } = true;
         public static bool MuteTrafficStopSiren { get; set; } = true;
         public static bool RequireLightsForSiren { get; set; } = true;
+        public static bool EnableSirenToneVariation { get; set; } = true;
 
         /// <summary>
         /// Validates relational distance invariants per CODING_STANDARDS.md [A9]:
@@ -210,63 +231,7 @@ namespace Cadence.Core
 
             string p = presetName.Trim().ToLowerInvariant();
 
-            if (p.Contains("chaos") || p.Contains("la") || p.Contains("livingcity"))
-            {
-                Preset = "Chaos";
-                ChaosMode = true;
-                MaxPatrolUnits = 8;
-                MaxTrafficStops = 4;
-                MaxStationaryUnits = 4;
-                MaxEmergencyRuns = 4;
-                MaxPursuitUnits = 6;
-                SpawnDistanceMin = 70.0f;
-                SpawnDistanceMax = 220.0f;
-                DespawnDistance = 480.0f;
-                HighwayPatrolRatio = 50;
-            }
-            else if (p.Contains("metro") || p.Contains("urban") || p.Contains("downtown"))
-            {
-                Preset = "Metro";
-                ChaosMode = true;
-                MaxPatrolUnits = 6;
-                MaxTrafficStops = 3;
-                MaxStationaryUnits = 2;
-                MaxEmergencyRuns = 3;
-                MaxPursuitUnits = 5;
-                SpawnDistanceMin = 75.0f;
-                SpawnDistanceMax = 240.0f;
-                DespawnDistance = 450.0f;
-                HighwayPatrolRatio = 40;
-            }
-            else if (p.Contains("highway") || p.Contains("sahp") || p.Contains("freeway") || p.Contains("state"))
-            {
-                Preset = "Highway";
-                ChaosMode = false;
-                MaxPatrolUnits = 5;
-                MaxTrafficStops = 3;
-                MaxStationaryUnits = 5;
-                MaxEmergencyRuns = 2;
-                MaxPursuitUnits = 6;
-                SpawnDistanceMin = 90.0f;
-                SpawnDistanceMax = 300.0f;
-                DespawnDistance = 600.0f;
-                HighwayPatrolRatio = 80;
-            }
-            else if (p.Contains("rural") || p.Contains("sheriff") || p.Contains("county") || p.Contains("blaine"))
-            {
-                Preset = "Rural";
-                ChaosMode = false;
-                MaxPatrolUnits = 2;
-                MaxTrafficStops = 1;
-                MaxStationaryUnits = 1;
-                MaxEmergencyRuns = 1;
-                MaxPursuitUnits = 3;
-                SpawnDistanceMin = 100.0f;
-                SpawnDistanceMax = 350.0f;
-                DespawnDistance = 650.0f;
-                HighwayPatrolRatio = 25;
-            }
-            else if (p.Contains("warzone") || p.Contains("lockdown") || p.Contains("extreme"))
+            if (p.StartsWith("6") || p == "6" || p.Contains("warzone") || p.Contains("lockdown"))
             {
                 Preset = "Warzone";
                 ChaosMode = true;
@@ -280,7 +245,63 @@ namespace Cadence.Core
                 DespawnDistance = 450.0f;
                 HighwayPatrolRatio = 50;
             }
-            else // "Realistic" or standard baseline
+            else if (p.StartsWith("5") || p == "5" || p.Contains("chaos") || p.Contains("metropolis") || p.Contains("livingcity"))
+            {
+                Preset = "Chaos";
+                ChaosMode = true;
+                MaxPatrolUnits = 8;
+                MaxTrafficStops = 4;
+                MaxStationaryUnits = 4;
+                MaxEmergencyRuns = 4;
+                MaxPursuitUnits = 6;
+                SpawnDistanceMin = 70.0f;
+                SpawnDistanceMax = 220.0f;
+                DespawnDistance = 480.0f;
+                HighwayPatrolRatio = 50;
+            }
+            else if (p.StartsWith("4") || p == "4" || p.Contains("highway") || p.Contains("interdiction") || p.Contains("sahp"))
+            {
+                Preset = "Highway";
+                ChaosMode = false;
+                MaxPatrolUnits = 5;
+                MaxTrafficStops = 3;
+                MaxStationaryUnits = 5;
+                MaxEmergencyRuns = 2;
+                MaxPursuitUnits = 6;
+                SpawnDistanceMin = 90.0f;
+                SpawnDistanceMax = 300.0f;
+                DespawnDistance = 600.0f;
+                HighwayPatrolRatio = 80;
+            }
+            else if (p.StartsWith("3") || p == "3" || p.Contains("metro") || p.Contains("downtown"))
+            {
+                Preset = "Metro";
+                ChaosMode = true;
+                MaxPatrolUnits = 6;
+                MaxTrafficStops = 3;
+                MaxStationaryUnits = 2;
+                MaxEmergencyRuns = 3;
+                MaxPursuitUnits = 5;
+                SpawnDistanceMin = 75.0f;
+                SpawnDistanceMax = 240.0f;
+                DespawnDistance = 450.0f;
+                HighwayPatrolRatio = 40;
+            }
+            else if (p.StartsWith("1") || p == "1" || p.Contains("rural") || p.Contains("blaine"))
+            {
+                Preset = "Rural";
+                ChaosMode = false;
+                MaxPatrolUnits = 2;
+                MaxTrafficStops = 1;
+                MaxStationaryUnits = 1;
+                MaxEmergencyRuns = 1;
+                MaxPursuitUnits = 3;
+                SpawnDistanceMin = 100.0f;
+                SpawnDistanceMax = 350.0f;
+                DespawnDistance = 650.0f;
+                HighwayPatrolRatio = 25;
+            }
+            else // "Realistic", "2", "2 - authentic realistic (balanced)", or standard baseline
             {
                 Preset = "Realistic";
                 ChaosMode = false;
@@ -406,10 +427,30 @@ namespace Cadence.Core
             ParkedCruiserBlipScale = 0.45f;
             ParkedCruiserBlipSprite = 56;
 
+            GroupBackupBlipColor = 4;
+            GroupBackupBlipScale = 0.45f;
+            GroupBackupBlipSprite = 56;
+
+            GroupOfficerFootBlipColor = 4;
+            GroupOfficerFootBlipScale = 0.40f;
+            GroupOfficerFootBlipSprite = 58;
+
+            BackupResponseBlipColor = 18;
+            BackupResponseBlipScale = 0.45f;
+            BackupResponseBlipSprite = 56;
+
+            EmergencyRunPoliceWeight = 50;
+            EmergencyRunFireWeight = 25;
+            EmergencyRunAmbulanceWeight = 25;
+            MaxPoliceRuns = 2;
+            MaxFireRuns = 1;
+            MaxAmbulanceRuns = 1;
+
             UseUltimateBackup = true;
             EnableEupOutfits = true;
             MuteTrafficStopSiren = true;
             RequireLightsForSiren = true;
+            EnableSirenToneVariation = true;
         }
 
         public static void Load(string customPath = null)
@@ -572,6 +613,12 @@ namespace Cadence.Core
                     sb.AppendLine($"AllowPoliceRuns = {AllowPoliceRuns.ToString().ToLowerInvariant()}");
                     sb.AppendLine($"AllowFireRuns = {AllowFireRuns.ToString().ToLowerInvariant()}");
                     sb.AppendLine($"AllowAmbulanceRuns = {AllowAmbulanceRuns.ToString().ToLowerInvariant()}");
+                    sb.AppendLine($"EmergencyRunPoliceWeight = {EmergencyRunPoliceWeight}");
+                    sb.AppendLine($"EmergencyRunFireWeight = {EmergencyRunFireWeight}");
+                    sb.AppendLine($"EmergencyRunAmbulanceWeight = {EmergencyRunAmbulanceWeight}");
+                    sb.AppendLine($"MaxPoliceRuns = {MaxPoliceRuns}");
+                    sb.AppendLine($"MaxFireRuns = {MaxFireRuns}");
+                    sb.AppendLine($"MaxAmbulanceRuns = {MaxAmbulanceRuns}");
                     sb.AppendLine();
 
                     // [Jurisdiction]
@@ -615,6 +662,15 @@ namespace Cadence.Core
                     sb.AppendLine($"ParkedCruiserBlipColor = {ParkedCruiserBlipColor}");
                     sb.AppendLine($"ParkedCruiserBlipScale = {ParkedCruiserBlipScale:F2}");
                     sb.AppendLine($"ParkedCruiserBlipSprite = {ParkedCruiserBlipSprite}");
+                    sb.AppendLine($"GroupBackupBlipColor = {GroupBackupBlipColor}");
+                    sb.AppendLine($"GroupBackupBlipScale = {GroupBackupBlipScale:F2}");
+                    sb.AppendLine($"GroupBackupBlipSprite = {GroupBackupBlipSprite}");
+                    sb.AppendLine($"GroupOfficerFootBlipColor = {GroupOfficerFootBlipColor}");
+                    sb.AppendLine($"GroupOfficerFootBlipScale = {GroupOfficerFootBlipScale:F2}");
+                    sb.AppendLine($"GroupOfficerFootBlipSprite = {GroupOfficerFootBlipSprite}");
+                    sb.AppendLine($"BackupResponseBlipColor = {BackupResponseBlipColor}");
+                    sb.AppendLine($"BackupResponseBlipScale = {BackupResponseBlipScale:F2}");
+                    sb.AppendLine($"BackupResponseBlipSprite = {BackupResponseBlipSprite}");
                     sb.AppendLine();
 
                     // [Integration]
@@ -625,6 +681,7 @@ namespace Cadence.Core
                     sb.AppendLine($"EnableEupOutfits = {EnableEupOutfits.ToString().ToLowerInvariant()}");
                     sb.AppendLine($"MuteTrafficStopSiren = {MuteTrafficStopSiren.ToString().ToLowerInvariant()}");
                     sb.AppendLine($"RequireLightsForSiren = {RequireLightsForSiren.ToString().ToLowerInvariant()}");
+                    sb.AppendLine($"EnableSirenToneVariation = {EnableSirenToneVariation.ToString().ToLowerInvariant()}");
                     sb.AppendLine();
 
                     // [Backup]
@@ -747,6 +804,12 @@ namespace Cadence.Core
                     if (k == "allowpoliceruns" || k == "policeruns") { AllowPoliceRuns = ParseBool(value, AllowPoliceRuns); return true; }
                     if (k == "allowfireruns" || k == "fireruns") { AllowFireRuns = ParseBool(value, AllowFireRuns); return true; }
                     if (k == "allowambulanceruns" || k == "ambulanceruns") { AllowAmbulanceRuns = ParseBool(value, AllowAmbulanceRuns); return true; }
+                    if (k == "emergencyrunpoliceweight" || k == "policeweight") { EmergencyRunPoliceWeight = Math.Max(0, ParseInt(value, EmergencyRunPoliceWeight)); return true; }
+                    if (k == "emergencyrunfireweight" || k == "fireweight") { EmergencyRunFireWeight = Math.Max(0, ParseInt(value, EmergencyRunFireWeight)); return true; }
+                    if (k == "emergencyrunambulanceweight" || k == "ambulanceweight") { EmergencyRunAmbulanceWeight = Math.Max(0, ParseInt(value, EmergencyRunAmbulanceWeight)); return true; }
+                    if (k == "maxpoliceruns") { MaxPoliceRuns = Math.Max(0, ParseInt(value, MaxPoliceRuns)); return true; }
+                    if (k == "maxfireruns") { MaxFireRuns = Math.Max(0, ParseInt(value, MaxFireRuns)); return true; }
+                    if (k == "maxambulanceruns") { MaxAmbulanceRuns = Math.Max(0, ParseInt(value, MaxAmbulanceRuns)); return true; }
                     return false;
 
                 case "jurisdiction":
@@ -797,6 +860,18 @@ namespace Cadence.Core
                     if (k == "parkedcruiserblipcolor") { ParkedCruiserBlipColor = ParseInt(value, ParkedCruiserBlipColor); return true; }
                     if (k == "parkedcruiserblipscale") { ParkedCruiserBlipScale = Math.Max(0.1f, Math.Min(2.0f, ParseFloat(value, ParkedCruiserBlipScale))); return true; }
                     if (k == "parkedcruiserblipsprite") { ParkedCruiserBlipSprite = ParseInt(value, ParkedCruiserBlipSprite); return true; }
+
+                    if (k == "groupbackupblipcolor") { GroupBackupBlipColor = ParseInt(value, GroupBackupBlipColor); return true; }
+                    if (k == "groupbackupblipscale") { GroupBackupBlipScale = Math.Max(0.1f, Math.Min(2.0f, ParseFloat(value, GroupBackupBlipScale))); return true; }
+                    if (k == "groupbackupblipsprite") { GroupBackupBlipSprite = ParseInt(value, GroupBackupBlipSprite); return true; }
+
+                    if (k == "groupofficerfootblipcolor") { GroupOfficerFootBlipColor = ParseInt(value, GroupOfficerFootBlipColor); return true; }
+                    if (k == "groupofficerfootblipscale") { GroupOfficerFootBlipScale = Math.Max(0.1f, Math.Min(2.0f, ParseFloat(value, GroupOfficerFootBlipScale))); return true; }
+                    if (k == "groupofficerfootblipsprite") { GroupOfficerFootBlipSprite = ParseInt(value, GroupOfficerFootBlipSprite); return true; }
+
+                    if (k == "backupresponseblipcolor") { BackupResponseBlipColor = ParseInt(value, BackupResponseBlipColor); return true; }
+                    if (k == "backupresponseblipscale") { BackupResponseBlipScale = Math.Max(0.1f, Math.Min(2.0f, ParseFloat(value, BackupResponseBlipScale))); return true; }
+                    if (k == "backupresponseblipsprite") { BackupResponseBlipSprite = ParseInt(value, BackupResponseBlipSprite); return true; }
                     return false;
 
                 case "integration":
@@ -809,6 +884,7 @@ namespace Cadence.Core
                     if (k == "enableeupoutfits" || k == "enableeup" || k == "eupoutfits") { EnableEupOutfits = ParseBool(value, EnableEupOutfits); return true; }
                     if (k == "mutetrafficstopsiren" || k == "mutesiren") { MuteTrafficStopSiren = ParseBool(value, MuteTrafficStopSiren); return true; }
                     if (k == "requirelightsforsiren" || k == "requirelights") { RequireLightsForSiren = ParseBool(value, RequireLightsForSiren); return true; }
+                    if (k == "enablesirentonevariation" || k == "sirentonevariation" || k == "cyclesirens") { EnableSirenToneVariation = ParseBool(value, EnableSirenToneVariation); return true; }
                     return false;
             }
 
