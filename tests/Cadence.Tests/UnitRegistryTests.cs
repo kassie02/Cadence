@@ -21,6 +21,7 @@ namespace Cadence.Tests
             TestReleaseAll();
             TestConcurrentAtomicClaimContention();
             TestHighThroughputConcurrency();
+            TestCrossFeatureDraftingAndRelinquishGuards();
 
             UnitRegistry.Clear();
             Console.WriteLine("[PASSED] All UnitRegistryTests passed successfully.");
@@ -228,6 +229,67 @@ namespace Cadence.Tests
             }
 
             Assert.AreEqual(0, UnitRegistry.Count, "All claims should be cleaned up after high throughput test");
+        }
+
+        private static void TestCrossFeatureDraftingAndRelinquishGuards()
+        {
+            UnitRegistry.Clear();
+
+            const uint patrolCruiser = 2001u;
+            const uint patrolDriver = 2002u;
+            const uint patrolPassenger = 2003u;
+
+            const uint trafficStopCruiser = 3001u;
+            const uint stationaryCruiser = 3002u;
+            const uint responseCruiser = 3003u;
+            const uint assistCruiser = 3004u;
+
+            // Register units
+            Assert.IsTrue(UnitRegistry.TryClaim(patrolCruiser, UnitRegistry.OwnerPatrol));
+            Assert.IsTrue(UnitRegistry.TryClaim(patrolDriver, UnitRegistry.OwnerPatrol));
+            Assert.IsTrue(UnitRegistry.TryClaim(patrolPassenger, UnitRegistry.OwnerPatrol));
+
+            Assert.IsTrue(UnitRegistry.TryClaim(trafficStopCruiser, UnitRegistry.OwnerTrafficStop));
+            Assert.IsTrue(UnitRegistry.TryClaim(stationaryCruiser, UnitRegistry.OwnerStationary));
+            Assert.IsTrue(UnitRegistry.TryClaim(responseCruiser, UnitRegistry.OwnerResponse));
+            Assert.IsTrue(UnitRegistry.TryClaim(assistCruiser, UnitRegistry.OwnerAssist));
+
+            // Pursuit drafting screening: allows drafting patrol units
+            Assert.IsFalse(UnitRegistry.IsClaimedByOthers(patrolCruiser, UnitRegistry.OwnerPatrol), "Patrol cruiser should not be claimed by others relative to OwnerPatrol");
+            Assert.IsFalse(UnitRegistry.IsClaimedByOthers(patrolDriver, UnitRegistry.OwnerPatrol), "Patrol driver should not be claimed by others relative to OwnerPatrol");
+
+            // Pursuit drafting screening: rejects traffic stop, stationary, response, assist
+            Assert.IsTrue(UnitRegistry.IsClaimedByOthers(trafficStopCruiser, UnitRegistry.OwnerPatrol), "Traffic stop must be rejected by pursuit drafting screen");
+            Assert.IsTrue(UnitRegistry.IsClaimedByOthers(stationaryCruiser, UnitRegistry.OwnerPatrol), "Stationary must be rejected by pursuit drafting screen");
+            Assert.IsTrue(UnitRegistry.IsClaimedByOthers(responseCruiser, UnitRegistry.OwnerPatrol), "Response must be rejected by pursuit drafting screen");
+            Assert.IsTrue(UnitRegistry.IsClaimedByOthers(assistCruiser, UnitRegistry.OwnerPatrol), "Assist must be rejected by pursuit drafting screen");
+
+            // Backup drafting screening: only ambient patrol units drafted, others protected
+            bool CanDraftIntoBackup(uint v)
+            {
+                if (UnitRegistry.IsClaimedBy(v, UnitRegistry.OwnerBackup)) return false;
+                if (UnitRegistry.IsClaimedByOthers(v, UnitRegistry.OwnerBackup))
+                {
+                    string owner = UnitRegistry.GetOwner(v);
+                    if (!string.Equals(owner, UnitRegistry.OwnerPatrol, StringComparison.OrdinalIgnoreCase)) return false;
+                }
+                return true;
+            }
+
+            Assert.IsTrue(CanDraftIntoBackup(patrolCruiser), "Patrol unit must be eligible for backup drafting");
+            Assert.IsFalse(CanDraftIntoBackup(trafficStopCruiser), "TrafficStop unit must NEVER be drafted into backup");
+            Assert.IsFalse(CanDraftIntoBackup(stationaryCruiser), "Stationary unit must NEVER be drafted into backup");
+            Assert.IsFalse(CanDraftIntoBackup(responseCruiser), "Response unit must NEVER be drafted into backup");
+            Assert.IsFalse(CanDraftIntoBackup(assistCruiser), "Assist unit must NEVER be drafted into backup");
+
+            // Multi-entity Relinquish protocol: cruiser, driver, passenger released cleanly
+            UnitRegistry.Release(patrolDriver);
+            UnitRegistry.Release(patrolPassenger);
+            UnitRegistry.Release(patrolCruiser);
+
+            Assert.IsFalse(UnitRegistry.IsClaimed(patrolCruiser), "Patrol cruiser must be unclaimed after relinquish");
+            Assert.IsFalse(UnitRegistry.IsClaimed(patrolDriver), "Patrol driver must be unclaimed after relinquish");
+            Assert.IsFalse(UnitRegistry.IsClaimed(patrolPassenger), "Patrol passenger must be unclaimed after relinquish");
         }
     }
 }

@@ -723,14 +723,9 @@ namespace Cadence.Features
                 }
 
                 // 4. Attach Mint Green Radar or Chilling Patrol Blip
-                if (scenario == 0 || scenario == 4)
-                {
-                    blip = BlipService.AttachRadarWatchBlip(cruiser, callsign);
-                }
-                else
-                {
-                    blip = BlipService.AttachChillingBlip(cruiser, callsign);
-                }
+                blip = BlipService.SetUnitState(cruiser, (scenario == 0 || scenario == 4)
+                    ? EntityBlipState.StationaryRadar
+                    : EntityBlipState.StationaryChilling, callsign);
 
                 string scName = scenario == 0 ? "RadarWatch" : scenario == 1 ? "Leaning" : scenario == 2 ? "Coffee" : scenario == 3 ? "Phone" : "SpeedGunLidar";
                 Logger.Debug("StationaryFeature", $"Configured stationary unit {callsign} [{scName}]: Cruiser={cruiser.Model.Name} (0x{cruiser.Handle:X}), Officer={officer.Model.Name} (0x{officer.Handle:X}), Pos={spawnPos}");
@@ -921,7 +916,8 @@ namespace Cadence.Features
                         Officer.Tasks.CruiseWithVehicle(Cruiser, 18.0f, NativeTasks.CruisingFlags);
 
                         // Transition blip to normal patrol radar blip and clean up officer foot blip
-                        BlipService.HandleOfficerRemount(Cruiser, Officer, ref RadarBlip, ref OfficerFootBlip, Callsign, "PATROL", Settings.PatrolBlipColor);
+                        BlipService.SafeDeleteBlip(ref OfficerFootBlip);
+                        RadarBlip = BlipService.SetUnitState(Cruiser, EntityBlipState.Patrol, Callsign);
                         UnitRegistry.Release(Cruiser);
                         UnitRegistry.Release(Officer);
 
@@ -984,7 +980,8 @@ namespace Cadence.Features
                     case 1:
                         // Scenario 1: Leaning against cruiser passenger fender (off-road / curb side)
                         Officer.Tasks.LeaveVehicle(Cruiser, LeaveVehicleFlags.None);
-                        BlipService.HandleOfficerDismount(Cruiser, Officer, ref RadarBlip, ref OfficerFootBlip, Callsign);
+                        OfficerFootBlip = BlipService.AttachOfficerFootBlip(Officer, Callsign);
+                        RadarBlip = BlipService.SetUnitState(Cruiser, EntityBlipState.Parked, Callsign);
                         _scenarioFiber = GameFiber.StartNew(() =>
                         {
                             GameFiber.Sleep(2000);
@@ -1004,7 +1001,8 @@ namespace Cadence.Features
                     case 2:
                         // Scenario 2: Coffee break on curb / passenger side
                         Officer.Tasks.LeaveVehicle(Cruiser, LeaveVehicleFlags.None);
-                        BlipService.HandleOfficerDismount(Cruiser, Officer, ref RadarBlip, ref OfficerFootBlip, Callsign);
+                        OfficerFootBlip = BlipService.AttachOfficerFootBlip(Officer, Callsign);
+                        RadarBlip = BlipService.SetUnitState(Cruiser, EntityBlipState.Parked, Callsign);
                         _scenarioFiber = GameFiber.StartNew(() =>
                         {
                             GameFiber.Sleep(2000);
@@ -1029,7 +1027,8 @@ namespace Cadence.Features
                     case 3:
                         // Scenario 3: Phone call on passenger side / curb
                         Officer.Tasks.LeaveVehicle(Cruiser, LeaveVehicleFlags.None);
-                        BlipService.HandleOfficerDismount(Cruiser, Officer, ref RadarBlip, ref OfficerFootBlip, Callsign);
+                        OfficerFootBlip = BlipService.AttachOfficerFootBlip(Officer, Callsign);
+                        RadarBlip = BlipService.SetUnitState(Cruiser, EntityBlipState.Parked, Callsign);
                         _scenarioFiber = GameFiber.StartNew(() =>
                         {
                             GameFiber.Sleep(2000);
@@ -1050,7 +1049,8 @@ namespace Cadence.Features
                     case 4:
                         // Scenario 4: Radar gun / lidar observation at passenger front bumper corner
                         Officer.Tasks.LeaveVehicle(Cruiser, LeaveVehicleFlags.None);
-                        BlipService.HandleOfficerDismount(Cruiser, Officer, ref RadarBlip, ref OfficerFootBlip, Callsign);
+                        OfficerFootBlip = BlipService.AttachOfficerFootBlip(Officer, Callsign);
+                        RadarBlip = BlipService.SetUnitState(Cruiser, EntityBlipState.Parked, Callsign);
                         _scenarioFiber = GameFiber.StartNew(() =>
                         {
                             GameFiber.Sleep(2000);

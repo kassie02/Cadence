@@ -211,6 +211,8 @@ namespace Cadence.Features
             {
                 Logger.Info($"[PatrolFeature] Relinquishing cruiser 0x{cruiser.Handle:X} ({unitToRelinquish.Callsign}) to external feature.");
                 unitToRelinquish.Relinquish();
+                if (unitToRelinquish.Driver != null) UnitRegistry.Release(unitToRelinquish.Driver);
+                if (unitToRelinquish.Passenger != null) UnitRegistry.Release(unitToRelinquish.Passenger);
                 UnitRegistry.Release(cruiser);
                 return true;
             }
@@ -338,6 +340,28 @@ namespace Cadence.Features
                     Logger.Debug("PatrolFeature", $"Unit {unit.Callsign} exceeded despawn distance ({dist:F0}m > {Settings.DespawnDistance:F0}m). Cleaning up.");
                     unit.Dispose(immediateDelete: false);
                     toRemove.Add(unit);
+                    continue;
+                }
+
+                if (UnitRegistry.IsClaimedByOthers(unit.Cruiser, UnitRegistry.OwnerPatrol))
+                {
+                    toRemove.Add(unit);
+                    continue;
+                }
+
+                bool isBusyOrPursuit = false;
+                try
+                {
+                    if (unit.Driver != null && unit.Driver.Exists())
+                    {
+                        isBusyOrPursuit = Functions.IsCopBusy(unit.Driver, false) || Functions.IsPedInPursuit(unit.Driver);
+                    }
+                }
+                catch { }
+
+                if (isBusyOrPursuit)
+                {
+                    // Unit was commandeered by an LSPDFR callout or pursuit; do NOT stomp tasks, blips, or sirens!
                     continue;
                 }
 
@@ -600,7 +624,7 @@ namespace Cadence.Features
                 driver.Tasks.CruiseWithVehicle(cruiser, cruisingSpeed, NativeTasks.CruisingFlags);
 
                 // Attach Navy Blue radar blip
-                blip = BlipService.AttachPatrolBlip(cruiser, callsign);
+                blip = BlipService.SetUnitState(cruiser, EntityBlipState.Patrol, callsign);
 
                 Logger.Debug("PatrolFeature", $"Configured patrol unit {callsign}: Cruiser={cruiser.Model.Name} (0x{cruiser.Handle:X}), Driver={driver.Model.Name} (0x{driver.Handle:X}), CruisingSpeed={cruisingSpeed:F1}m/s");
 
@@ -693,13 +717,16 @@ namespace Cadence.Features
             {
                 if (!Settings.ShowRadarBlips || Cruiser == null || !Cruiser.Exists()) return;
 
-                // Never stomp on active pursuits or LSPDFR pursuits
-                if (PursuitFeature.IsPursuitCruiser(Cruiser)) return;
                 try
                 {
-                    if (Driver != null && Driver.Exists() && Functions.IsPedInPursuit(Driver)) return;
+                    if (UnitRegistry.IsClaimedByOthers(Cruiser, UnitRegistry.OwnerPatrol)) return;
+                    if (Driver != null && Driver.Exists() && (Functions.IsCopBusy(Driver, false) || Functions.IsPedInPursuit(Driver))) return;
+                    if (Passenger != null && Passenger.Exists() && Functions.IsPedInPursuit(Passenger)) return;
                 }
                 catch { }
+
+                // Never stomp on active pursuits or LSPDFR pursuits
+                if (PursuitFeature.IsPursuitCruiser(Cruiser)) return;
 
                 bool driverOutside = Driver != null && Driver.Exists() && Driver.IsAlive && !Driver.IsInVehicle(Cruiser, false);
                 bool passengerOutside = Passenger != null && Passenger.Exists() && Passenger.IsAlive && !Passenger.IsInVehicle(Cruiser, false);
@@ -742,7 +769,7 @@ namespace Cadence.Features
                     {
                         _isParkedBlip = true;
                         BlipService.SafeDeleteBlip(ref RadarBlip);
-                        RadarBlip = BlipService.AttachParkedCruiserBlip(Cruiser, Callsign);
+                        RadarBlip = BlipService.SetUnitState(Cruiser, EntityBlipState.Parked, Callsign);
                     }
                 }
                 else
@@ -751,7 +778,7 @@ namespace Cadence.Features
                     {
                         _isParkedBlip = false;
                         BlipService.SafeDeleteBlip(ref RadarBlip);
-                        RadarBlip = BlipService.AttachPatrolBlip(Cruiser, Callsign);
+                        RadarBlip = BlipService.SetUnitState(Cruiser, EntityBlipState.Patrol, Callsign);
                     }
                     // Steady blue cruiser: enforce zero siren and light leakage
                     NativeTasks.EnforceSteadyCruiserSirenPolicy(Cruiser);
@@ -818,21 +845,24 @@ namespace Cadence.Features
                         try { if (Functions.IsPedInPursuit(Driver)) Functions.RemovePedFromPursuit(Driver); } catch { }
                         Driver.Tasks.Clear();
                         Driver.BlockPermanentEvents = false;
-                        UnitRegistry.Release(Driver);
                     }
+                }
+                catch { }
+
+                try
+                {
                     if (Passenger != null && Passenger.Exists())
                     {
                         try { if (Functions.IsPedInPursuit(Passenger)) Functions.RemovePedFromPursuit(Passenger); } catch { }
                         Passenger.Tasks.Clear();
                         Passenger.BlockPermanentEvents = false;
-                        UnitRegistry.Release(Passenger);
-                    }
-                    if (Cruiser != null)
-                    {
-                        UnitRegistry.Release(Cruiser);
                     }
                 }
                 catch { }
+
+                if (Driver != null) UnitRegistry.Release(Driver);
+                if (Passenger != null) UnitRegistry.Release(Passenger);
+                if (Cruiser != null) UnitRegistry.Release(Cruiser);
             }
 
             public void Dispose(bool immediateDelete)

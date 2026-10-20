@@ -33,6 +33,7 @@ namespace Cadence.Features
         private static readonly object _syncLock = new object();
         private static readonly List<PursuitUnitSession> _activeSessions = new List<PursuitUnitSession>();
         private static readonly Dictionary<PoolHandle, Blip> _trackedSuspectBlips = new Dictionary<PoolHandle, Blip>();
+        private static readonly Dictionary<PoolHandle, PoolHandle> _trackedSuspectAttachedEntities = new Dictionary<PoolHandle, PoolHandle>();
         private static readonly List<GameFiber> _trackedFibers = new List<GameFiber>();
         private static readonly Random _rand = new Random();
         private const uint WeaponCombatPistol = 0x5EF9FEC4;
@@ -390,7 +391,7 @@ namespace Cadence.Features
                     // Update pursuit blips and dismount states for all active pursuit sessions
                     lock (_syncLock)
                     {
-                        foreach (var s in _activeSessions)
+                        foreach (var s in _activeSessions.ToList())
                         {
                             if (s != null && s.IsValid())
                             {
@@ -431,7 +432,7 @@ namespace Cadence.Features
                         MuteNearbyPoliceSirens(targetPos, 60.0f);
                         lock (_syncLock)
                         {
-                            foreach (var s in _activeSessions)
+                            foreach (var s in _activeSessions.ToList())
                             {
                                 if (s != null && s.IsValid() && s.Cruiser != null && s.Cruiser.Exists() && s.Cruiser.Position.DistanceTo(targetPos) <= 75.0f)
                                 {
@@ -535,7 +536,7 @@ namespace Cadence.Features
 
                 // Clean up blips for suspects no longer alive, cuffed, arrested, getting arrested, or no longer in pursuit
                 var toRemove = new List<PoolHandle>();
-                foreach (var kvp in _trackedSuspectBlips)
+                foreach (var kvp in _trackedSuspectBlips.ToList())
                 {
                     PoolHandle handle = kvp.Key;
                     Blip b = kvp.Value;
@@ -563,6 +564,41 @@ namespace Cadence.Features
                         }
                     }
 
+                    // Check if suspect bailed out on foot or carjacked/switched vehicles
+                    if (!shouldRemove && p != null && p.Exists())
+                    {
+                        Entity targetEntity = (p.IsInAnyVehicle(false) && p.CurrentVehicle != null && p.CurrentVehicle.Exists())
+                            ? (Entity)p.CurrentVehicle
+                            : (Entity)p;
+
+                        if (_trackedSuspectAttachedEntities.TryGetValue(handle, out PoolHandle attachedHandle))
+                        {
+                            if (attachedHandle != targetEntity.Handle)
+                            {
+                                // Suspect bailed out or switched vehicles: cleanly delete previous blip and re-attach to new entity
+                                BlipService.SafeDeleteBlip(ref b);
+                                if (!BlipService.HasAnyActiveRadarMarker(targetEntity))
+                                {
+                                    Blip freshBlip = BlipService.AttachSuspectBlip(targetEntity, "SUSPECT");
+                                    if (freshBlip != null && freshBlip.Exists())
+                                    {
+                                        _trackedSuspectBlips[handle] = freshBlip;
+                                        _trackedSuspectAttachedEntities[handle] = targetEntity.Handle;
+                                        Logger.Debug($"[PursuitFeature] Transitioned suspect blip for {p.Model.Name} (0x{handle:X}) to entity 0x{targetEntity.Handle:X}.");
+                                    }
+                                    else
+                                    {
+                                        shouldRemove = true;
+                                    }
+                                }
+                                else
+                                {
+                                    shouldRemove = true;
+                                }
+                            }
+                        }
+                    }
+
                     if (shouldRemove)
                     {
                         BlipService.SafeDeleteBlip(ref b);
@@ -572,6 +608,7 @@ namespace Cadence.Features
                 foreach (var handle in toRemove)
                 {
                     _trackedSuspectBlips.Remove(handle);
+                    _trackedSuspectAttachedEntities.Remove(handle);
                 }
 
                 // Check active fleeing suspects: if they have no attached blip, attach one!
@@ -600,27 +637,23 @@ namespace Cadence.Features
                     }
                     catch { }
 
-                    // Check if suspect already has ANY active radar marker (from LSPDFR or vanilla GTA V)
-                    if (BlipService.HasAnyActiveRadarMarker(suspect))
+                    Entity targetEntity = (suspect.IsInAnyVehicle(false) && suspect.CurrentVehicle != null && suspect.CurrentVehicle.Exists())
+                        ? (Entity)suspect.CurrentVehicle
+                        : (Entity)suspect;
+
+                    // Check if target entity already has ANY active radar marker (from LSPDFR or vanilla GTA V)
+                    if (BlipService.HasAnyActiveRadarMarker(targetEntity))
                     {
                         continue;
                     }
 
                     // Suspect does not have any blip! Attach fallback watchdog suspect blip
-                    Blip newBlip;
-                    if (suspect.IsInAnyVehicle(false) && suspect.CurrentVehicle != null && suspect.CurrentVehicle.Exists())
-                    {
-                        newBlip = BlipService.AttachSuspectBlip(suspect.CurrentVehicle, "SUSPECT");
-                    }
-                    else
-                    {
-                        newBlip = BlipService.AttachSuspectBlip(suspect, "SUSPECT");
-                    }
-
+                    Blip newBlip = BlipService.AttachSuspectBlip(targetEntity, "SUSPECT");
                     if (newBlip != null && newBlip.Exists())
                     {
                         _trackedSuspectBlips[suspect.Handle] = newBlip;
-                        Logger.Debug($"[PursuitFeature] Attached watchdog suspect blip to {suspect.Model.Name} (0x{suspect.Handle:X}).");
+                        _trackedSuspectAttachedEntities[suspect.Handle] = targetEntity.Handle;
+                        Logger.Debug($"[PursuitFeature] Attached watchdog suspect blip to {suspect.Model.Name} (0x{suspect.Handle:X}) on entity 0x{targetEntity.Handle:X}.");
                     }
                 }
             }
@@ -634,12 +667,13 @@ namespace Cadence.Features
         {
             try
             {
-                foreach (var kvp in _trackedSuspectBlips)
+                foreach (var kvp in _trackedSuspectBlips.ToList())
                 {
                     Blip b = kvp.Value;
                     BlipService.SafeDeleteBlip(ref b);
                 }
                 _trackedSuspectBlips.Clear();
+                _trackedSuspectAttachedEntities.Clear();
             }
             catch { }
         }
@@ -702,6 +736,12 @@ namespace Cadence.Features
                     if (s.State == PursuitUnitSession.SessionState.OnSceneStandby)
                     {
                         s.UpdateBlipStates();
+                        if (s.Cruiser == null || !s.Cruiser.Exists())
+                        {
+                            s.Dispose(immediateDelete: true);
+                            _activeSessions.RemoveAt(i);
+                            continue;
+                        }
                         float dist = s.Cruiser.Position.DistanceTo(playerPos);
                         // Hold officers on scene standby until player explicitly dismisses them (Enter/menu), or player leaves the area (> DespawnDistance)
                         if (dist > Settings.DespawnDistance)
@@ -711,7 +751,7 @@ namespace Cadence.Features
                     }
                     else if (s.State == PursuitUnitSession.SessionState.StandingDown)
                     {
-                        float dist = s.Cruiser.Position.DistanceTo(playerPos);
+                        float dist = (s.Cruiser != null && s.Cruiser.Exists()) ? s.Cruiser.Position.DistanceTo(playerPos) : float.MaxValue;
                         if (now - s.StandDownStartTime > 15000 || dist > Settings.DespawnDistance)
                         {
                             s.Dispose(immediateDelete: false);
@@ -819,7 +859,7 @@ namespace Cadence.Features
             lock (_syncLock)
             {
                 bool anyDismissed = false;
-                foreach (var s in _activeSessions)
+                foreach (var s in _activeSessions.ToList())
                 {
                     if (s != null && s.IsValid() && s.State == PursuitUnitSession.SessionState.OnSceneStandby)
                     {
@@ -1088,9 +1128,9 @@ namespace Cadence.Features
                         // Never draft cruisers managed by BackupFeature (responding, on scene, or dismissing)
                         if (BackupFeature.IsBackupCruiser(v)) return false;
 
-                        // Central UnitRegistry claim screening
-                        if (UnitRegistry.IsClaimed(v)) return false;
-                        if (v.Driver != null && UnitRegistry.IsClaimed(v.Driver)) return false;
+                        // Central UnitRegistry claim screening: allow drafting ambient patrol units, protect all others
+                        if (UnitRegistry.IsClaimedByOthers(v, UnitRegistry.OwnerPatrol)) return false;
+                        if (v.Driver != null && UnitRegistry.IsClaimedByOthers(v.Driver, UnitRegistry.OwnerPatrol)) return false;
 
                         bool isPolice = v.IsPoliceVehicle || v.Model.IsLawEnforcementVehicle ||
                                         PatrolFeature.IsActiveCruiser(v) || StationaryFeature.IsActiveCruiser(v) ||
@@ -1164,22 +1204,19 @@ namespace Cadence.Features
                 cruiser.IsSirenSilent = false;
                 NativeTasks.ConfigureEmergencyDriver(driver, cruiser);
 
-                // Add driver and passenger to pursuit AI (purging old ambient cruising tasks first)
-                driver.Tasks.Clear();
+                // Add driver and passenger to pursuit AI
                 driver.BlockPermanentEvents = false;
                 Functions.SetPedAsCop(driver);
                 Functions.AddCopToPursuit(activePursuit, driver);
 
                 if (passenger != null && passenger.Exists() && passenger.IsAlive)
                 {
-                    passenger.Tasks.Clear();
                     passenger.BlockPermanentEvents = false;
                     Functions.SetPedAsCop(passenger);
                     Functions.AddCopToPursuit(activePursuit, passenger);
                 }
 
-                // Native Red & Blue alternating flashing pursuit blip (Sprite 1, Color 38, alternating red/blue)
-                Blip blip = BlipService.AttachPursuitBlip(cruiser, callsign);
+                Blip blip = null; // Yield to LSPDFR's native Sprite 3 (radar_police_ped)
 
                 var session = new PursuitUnitSession(cruiser, driver, passenger, blip, callsign, wasSpawned);
 
@@ -1317,11 +1354,6 @@ namespace Cadence.Features
             {
                 if (Cruiser == null || !Cruiser.Exists() || State != SessionState.InPursuit) return;
 
-                if (RadarBlip == null || !RadarBlip.Exists())
-                {
-                    RadarBlip = BlipService.AttachPursuitBlip(Cruiser, Callsign);
-                }
-
                 // Dynamic siren tone variation
                 if (Settings.EnableSirenToneVariation && Cruiser.IsSirenOn)
                 {
@@ -1380,11 +1412,11 @@ namespace Cadence.Features
                 // 3. Cruiser radar blip: turns White [PARKED] when empty / all living officers are outside
                 if (allLivingOutside && anyOutside && State != SessionState.StandingDown && State != SessionState.Completed)
                 {
-                    if (!_isParkedBlip)
+                    if (!_isParkedBlip || RadarBlip == null || !RadarBlip.Exists())
                     {
                         _isParkedBlip = true;
                         BlipService.SafeDeleteBlip(ref RadarBlip);
-                        RadarBlip = BlipService.AttachParkedCruiserBlip(Cruiser, Callsign);
+                        RadarBlip = BlipService.SetUnitState(Cruiser, EntityBlipState.Parked, Callsign);
                     }
                 }
                 else
@@ -1393,17 +1425,45 @@ namespace Cadence.Features
                     {
                         _isParkedBlip = false;
                         BlipService.SafeDeleteBlip(ref RadarBlip);
-                        RadarBlip = (State == SessionState.InPursuit)
-                            ? BlipService.AttachPursuitBlip(Cruiser, Callsign)
-                            : BlipService.AttachPatrolBlip(Cruiser, Callsign);
+                        if (State == SessionState.InPursuit)
+                        {
+                            // Suppress cruiser blip when officers remount inside pursuit
+                            BlipService.SafeDeleteBlip(ref RadarBlip);
+                        }
+                        else
+                        {
+                            RadarBlip = BlipService.SetUnitState(Cruiser, EntityBlipState.Patrol, Callsign);
+                        }
+                    }
+                    else if (State == SessionState.InPursuit)
+                    {
+                        // Maintain cruiser blip suppression as long as officers are inside the vehicle
+                        if (RadarBlip != null)
+                        {
+                            BlipService.SafeDeleteBlip(ref RadarBlip);
+                        }
                     }
                 }
             }
 
             public bool IsValid()
             {
-                return Cruiser != null && Cruiser.Exists() && Cruiser.IsDriveable &&
-                       Driver != null && Driver.Exists() && Driver.IsAlive;
+                if (Cruiser == null || !Cruiser.Exists() || !Cruiser.IsDriveable) return false;
+                if (Driver == null || !Driver.Exists() || !Driver.IsAlive || Driver.IsDead) return false;
+
+                try
+                {
+                    if (Driver.IsCuffed) return false;
+                    if (Functions.IsPedArrested(Driver) || Functions.IsPedGettingArrested(Driver) ||
+                        Functions.IsPedBeingCuffed(Driver) || Functions.IsPedKneelingTaskActive(Driver) ||
+                        Functions.IsPedCuffedTaskActive(Driver))
+                    {
+                        return false;
+                    }
+                }
+                catch { }
+
+                return true;
             }
 
             public void BeginSceneStandby()
@@ -1567,13 +1627,11 @@ namespace Cadence.Features
                         }
 
                         // Recreate radar blip cleanly as a steady patrol blip to eradicate any sticky native flash timers or intervals
-                        if (RadarBlip != null && RadarBlip.Exists())
+                        BlipService.SafeDeleteBlip(ref RadarBlip);
+                        if (Cruiser != null && Cruiser.Exists())
                         {
-                            BlipService.SafeDeleteBlip(ref RadarBlip);
-                            if (Cruiser != null && Cruiser.Exists())
-                            {
-                                RadarBlip = BlipService.AttachPatrolBlip(Cruiser, Callsign);
-                            }
+                            RadarBlip = BlipService.SetUnitState(Cruiser, EntityBlipState.Patrol, Callsign);
+                            UnitRegistry.Release(Cruiser, UnitRegistry.OwnerPursuit);
                         }
                     }
                     catch (Exception ex)
@@ -1659,6 +1717,19 @@ namespace Cadence.Features
                 BlipService.SafeDeleteEntityBlip(Cruiser);
                 BlipService.SafeDeleteEntityBlip(Driver);
                 BlipService.SafeDeleteEntityBlip(Passenger);
+
+                if (Cruiser != null)
+                {
+                    UnitRegistry.Release(Cruiser, UnitRegistry.OwnerPursuit);
+                }
+                if (Driver != null)
+                {
+                    UnitRegistry.Release(Driver, UnitRegistry.OwnerPursuit);
+                }
+                if (Passenger != null)
+                {
+                    UnitRegistry.Release(Passenger, UnitRegistry.OwnerPursuit);
+                }
 
                 bool hasLivingDriver = Driver != null && Driver.Exists() && Driver.IsAlive;
                 bool shouldDeleteCruiser = immediateDelete || !hasLivingDriver;
