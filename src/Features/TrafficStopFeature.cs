@@ -519,7 +519,7 @@ namespace Cadence.Features
             int scenario;
             lock (_rand)
             {
-                scenario = _rand.Next(1, 4); // 1 = Citation, 2 = Pat-Down, 3 = K9 Search (Scenario 0 removed)
+                scenario = _rand.Next(0, 4); // 0 = Observation, 1 = Citation, 2 = Pat-Down, 3 = K9 Search
             }
 
             try
@@ -737,7 +737,7 @@ namespace Cadence.Features
                 }
 
                 // 4. Attach Yellow Traffic Stop Radar Blip
-                blip = BlipService.AttachTrafficStopBlip(cruiser, callsign);
+                blip = BlipService.SetUnitState(cruiser, EntityBlipState.TrafficStop, callsign);
 
                 string scName = scenario == 0 ? "Observation" : scenario == 1 ? "Citation" : scenario == 2 ? "PatDown" : "K9Sniff";
                 Logger.Debug("TrafficStopFeature", $"Configured traffic stop {callsign} [{scName}]: Cruiser={cruiser.Model.Name} (0x{cruiser.Handle:X}), Officer={officer.Model.Name} (0x{officer.Handle:X}), CivVeh={civilianVehicle.Model.Name} (0x{civilianVehicle.Handle:X}), CivDriver={civilianDriver.Model.Name} (0x{civilianDriver.Handle:X}), K9={(k9Dog != null ? "Active" : "None")}");
@@ -800,6 +800,7 @@ namespace Cadence.Features
 
         private enum StopState
         {
+            ObservationMdtCheck,
             InitialExiting,
             ApproachPassengerWindow,
             WindowContact,
@@ -854,7 +855,7 @@ namespace Cadence.Features
                 Scenario = scenario;
                 OriginPosition = origin;
 
-                _state = StopState.InitialExiting;
+                _state = scenario == 0 ? StopState.ObservationMdtCheck : StopState.InitialExiting;
                 _stateStartTime = Game.GameTime;
                 _lastSirenReinforceTime = Game.GameTime;
             }
@@ -896,10 +897,50 @@ namespace Cadence.Features
                     NativeTasks.SetSilentSiren(Cruiser, true);
                 }
 
+                // If civilian vehicle or driver despawned or drove away, clean up props, reset flags, and mobilize officer back to cruiser
+                if (CivVehicle == null || !CivVehicle.Exists() || CivDriver == null || !CivDriver.Exists() || !CivDriver.IsAlive ||
+                    (Cruiser != null && Cruiser.Exists() && CivVehicle.Position.DistanceTo(Cruiser.Position) > 40.0f &&
+                     _state != StopState.ReleasingVehicles && _state != StopState.Completed))
+                {
+                    CleanupProp();
+                    _k9SearchStage = 0;
+                    _patDownAnimStage = 0;
+                    if (Officer != null && Officer.Exists() && Officer.IsAlive && Cruiser != null && Cruiser.Exists() && !Officer.IsInVehicle(Cruiser, false))
+                    {
+                        _state = StopState.OfficerReturningToCruiser;
+                        _stateStartTime = now;
+                        Officer.Tasks.Clear();
+                        TaskGoTo(Officer, Cruiser.Position);
+                    }
+                    else
+                    {
+                        IsCompleted = true;
+                        _state = StopState.Completed;
+                    }
+                    return;
+                }
+
                 uint elapsed = now - _stateStartTime;
 
                 switch (_state)
                 {
+                    case StopState.ObservationMdtCheck:
+                        // Scenario 0: Officer remains in cruiser performing MDT/radio observation checks
+                        // Yellow [TRAFFIC STOP] blip remains active on cruiser without dismounting
+                        if (RadarBlip == null || !RadarBlip.Exists())
+                        {
+                            RadarBlip = BlipService.SetUnitState(Cruiser, EntityBlipState.TrafficStop, Callsign);
+                        }
+
+                        // Smooth transition to releasing vehicles after observational checks (20 seconds)
+                        if (elapsed > 20000)
+                        {
+                            Officer.Tasks.Clear();
+                            _state = StopState.ReleasingVehicles;
+                            _stateStartTime = now;
+                        }
+                        break;
+
                     case StopState.InitialExiting:
                         Officer.Tasks.LeaveVehicle(Cruiser, LeaveVehicleFlags.None);
                         BlipService.HandleOfficerDismount(Cruiser, Officer, ref RadarBlip, ref OfficerFootBlip, Callsign);
@@ -927,9 +968,13 @@ namespace Cadence.Features
                                 {
                                     _state = StopState.PatDownDriverExiting;
                                 }
-                                else
+                                else if (Scenario == 3 && K9Dog != null && K9Dog.Exists())
                                 {
                                     _state = StopState.K9DriverExiting;
+                                }
+                                else
+                                {
+                                    _state = StopState.WindowContact;
                                 }
                             }
                         }
@@ -1089,7 +1134,8 @@ namespace Cadence.Features
                     case StopState.OfficerEnteringCruiser:
                         if (Officer.IsInVehicle(Cruiser, false) || elapsed > 8000)
                         {
-                            BlipService.HandleOfficerRemount(Cruiser, Officer, ref RadarBlip, ref OfficerFootBlip, Callsign, "PATROL", Settings.PatrolBlipColor);
+                            BlipService.SafeDeleteBlip(ref OfficerFootBlip);
+                            RadarBlip = BlipService.SetUnitState(Cruiser, EntityBlipState.TrafficStop, Callsign);
 
                             // Pack K9 into cruiser if present
                             if (K9Dog != null && K9Dog.Exists())
@@ -1140,7 +1186,7 @@ namespace Cadence.Features
                             }
                             NativeFunction.Natives.SET_VEHICLE_FORWARD_SPEED(Cruiser, 6.0f);
                             Officer.Tasks.CruiseWithVehicle(Cruiser, 18.0f, NativeTasks.CruisingFlags);
-                            BlipService.TransitionToPatrol(RadarBlip, Callsign);
+                            RadarBlip = BlipService.SetUnitState(Cruiser, EntityBlipState.Patrol, Callsign);
 
                             // Release claims in UnitRegistry immediately so BackupFeature/PursuitFeature can draft them
                             UnitRegistry.Release(Cruiser);

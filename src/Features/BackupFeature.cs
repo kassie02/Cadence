@@ -296,6 +296,16 @@ namespace Cadence.Features
             if (sessionToDispose != null)
             {
                 sessionToDispose.Dispose(immediateDelete: false);
+                if (sessionToDispose.Officers != null)
+                {
+                    foreach (var ofc in sessionToDispose.Officers)
+                    {
+                        if (ofc != null && ofc.Exists())
+                        {
+                            UnitRegistry.Release(ofc);
+                        }
+                    }
+                }
             }
             UnitRegistry.Release(cruiser);
         }
@@ -1865,7 +1875,12 @@ namespace Cadence.Features
 
                     // Screen out vehicles already in pursuit or claimed by other owners
                     if (PursuitFeature.IsPursuitCruiser(veh)) continue;
-                    if (UnitRegistry.IsClaimedBy(veh, UnitRegistry.OwnerBackup) || UnitRegistry.IsClaimedBy(veh, UnitRegistry.OwnerPursuit)) continue;
+                    if (UnitRegistry.IsClaimedBy(veh, UnitRegistry.OwnerBackup)) continue;
+                    if (UnitRegistry.IsClaimedByOthers(veh, UnitRegistry.OwnerBackup))
+                    {
+                        string owner = UnitRegistry.GetOwner(veh);
+                        if (!string.Equals(owner, UnitRegistry.OwnerPatrol, StringComparison.OrdinalIgnoreCase)) continue;
+                    }
 
                     // Ensure not already tracked or reserved in active backup units
                     lock (_syncLock)
@@ -2563,22 +2578,21 @@ namespace Cadence.Features
                 if (passenger != null) BlipService.SafeDeleteEntityBlip(passenger);
 
                 // Attach appropriate blip (Callout = Purple, Group = Yellow, Panic = Red, Backup = Cyan/Light Blue)
-                string labelSuffix = isCode3 ? "CODE 3" : "CODE 2";
                 if (isCallout)
                 {
-                    blip = BlipService.AttachCalloutResponseBlip(cruiser, callsign);
+                    blip = BlipService.SetUnitState(cruiser, EntityBlipState.BackupCallout, callsign);
                 }
                 else if (type == BackupType.GroupBackup || type == BackupType.GroupPursuit)
                 {
-                    blip = BlipService.AttachGroupBackupBlip(cruiser, callsign);
+                    blip = BlipService.SetUnitState(cruiser, EntityBlipState.BackupGroup, callsign);
                 }
                 else if (type == BackupType.PanicButton)
                 {
-                    blip = BlipService.AttachEmergencyBlip(cruiser, $"{callsign} [PANIC]");
+                    blip = BlipService.SetUnitState(cruiser, EntityBlipState.EmergencyCode3, callsign);
                 }
                 else
                 {
-                    blip = BlipService.AttachBackupResponseBlip(cruiser, $"{callsign} [{labelSuffix}]");
+                    blip = BlipService.SetUnitState(cruiser, EntityBlipState.BackupMenu, callsign);
                 }
 
                 var session = new BackupUnitSession(cruiser, driver, passenger, destination, blip, callsign, type, isCode3, isCommandeer, additionalOfficers, isAlreadyOnScene, isCallout: isCallout);
@@ -3211,19 +3225,20 @@ namespace Cadence.Features
                 try { activePursuit = Functions.GetActivePursuit(); } catch { }
                 bool isPursuitRunning = activePursuit != null && Functions.IsPursuitStillRunning(activePursuit);
 
-                // Dynamic pursuit blip: transition cleanly to native pursuit blip once during pursuit
+                // Dynamic pursuit blip: suppress Cadence blip so LSPDFR native pursuit blip is the only marker visible
                 if (isPursuitRunning)
                 {
                     if (!_isPursuitOrangeBlip)
                     {
                         _isPursuitOrangeBlip = true;
-                        BlipService.TransitionToPursuit(RadarBlip, Callsign);
+                        BlipService.SafeDeleteBlip(ref RadarBlip);
                     }
                 }
                 else if (_isPursuitOrangeBlip)
                 {
                     _isPursuitOrangeBlip = false;
-                    BlipService.TransitionToEmergency(RadarBlip, Callsign);
+                    BlipService.SafeDeleteBlip(ref RadarBlip);
+                    RadarBlip = BlipService.AttachEmergencyBlip(Cruiser, Callsign);
                 }
 
                 // Periodic course recalculation:
@@ -3609,11 +3624,11 @@ namespace Cadence.Features
                             UpdateBlipStates();
                         }
 
-                        // Maintain native pursuit blip during pursuit
+                        // Maintain native pursuit blip during pursuit: suppress Cadence blip
                         if (!_isPursuitOrangeBlip)
                         {
                             _isPursuitOrangeBlip = true;
-                            BlipService.TransitionToPursuit(RadarBlip, Callsign);
+                            BlipService.SafeDeleteBlip(ref RadarBlip);
                         }
 
                         // CRITICAL: Do NOT execute UpdateBuddyFollowing during an active pursuit!
@@ -3625,7 +3640,8 @@ namespace Cadence.Features
                     if (_isPursuitOrangeBlip)
                     {
                         _isPursuitOrangeBlip = false;
-                        BlipService.TransitionToEmergency(RadarBlip, Callsign);
+                        BlipService.SafeDeleteBlip(ref RadarBlip);
+                        RadarBlip = BlipService.AttachEmergencyBlip(Cruiser, Callsign);
                     }
 
                     // 2. Scan for hostile peds targeting player or officers within 40m
@@ -4166,7 +4182,7 @@ namespace Cadence.Features
                     {
                         _isParkedBlip = true;
                         BlipService.SafeDeleteBlip(ref RadarBlip);
-                        RadarBlip = BlipService.AttachParkedCruiserBlip(Cruiser, Callsign);
+                        RadarBlip = BlipService.SetUnitState(Cruiser, EntityBlipState.Parked, Callsign);
                     }
                 }
                 else
@@ -4177,35 +4193,45 @@ namespace Cadence.Features
                         BlipService.SafeDeleteBlip(ref RadarBlip);
                         if (State == UnitState.Dismissing)
                         {
-                            RadarBlip = BlipService.AttachPatrolBlip(Cruiser, Callsign);
+                            RadarBlip = BlipService.SetUnitState(Cruiser, EntityBlipState.Patrol, Callsign);
                         }
                         else if (State == UnitState.EngagingThreat)
                         {
-                            RadarBlip = BlipService.AttachCombatBlip(Cruiser, Callsign);
+                            RadarBlip = BlipService.SetUnitState(Cruiser, EntityBlipState.CombatEngaging, Callsign);
                         }
                         else if (_isPursuitOrangeBlip)
                         {
-                            RadarBlip = BlipService.AttachPursuitBlip(Cruiser, Callsign);
+                            // Enrolled in an active pursuit and officers are inside the cruiser:
+                            // Suppress RadarBlip so LSPDFR's native pursuit blip is the only marker visible.
+                            BlipService.SafeDeleteBlip(ref RadarBlip);
                         }
                         else if (IsCalloutResponse && State == UnitState.EnRoute)
                         {
-                            RadarBlip = BlipService.AttachCalloutResponseBlip(Cruiser, Callsign);
+                            RadarBlip = BlipService.SetUnitState(Cruiser, EntityBlipState.BackupCallout, Callsign);
                         }
                         else if ((ServiceType == BackupType.GroupBackup || ServiceType == BackupType.GroupPursuit) && State == UnitState.EnRoute)
                         {
-                            RadarBlip = BlipService.AttachGroupBackupBlip(Cruiser, Callsign);
+                            RadarBlip = BlipService.SetUnitState(Cruiser, EntityBlipState.BackupGroup, Callsign);
                         }
                         else if (ServiceType == BackupType.PanicButton && State == UnitState.EnRoute)
                         {
-                            RadarBlip = BlipService.AttachEmergencyBlip(Cruiser, Callsign);
+                            RadarBlip = BlipService.SetUnitState(Cruiser, EntityBlipState.EmergencyCode3, Callsign);
                         }
                         else if (State == UnitState.EnRoute)
                         {
-                            RadarBlip = BlipService.AttachBackupResponseBlip(Cruiser, Callsign);
+                            RadarBlip = BlipService.SetUnitState(Cruiser, EntityBlipState.BackupMenu, Callsign);
                         }
                         else
                         {
-                            RadarBlip = BlipService.AttachPatrolBlip(Cruiser, Callsign);
+                            RadarBlip = BlipService.SetUnitState(Cruiser, EntityBlipState.Patrol, Callsign);
+                        }
+                    }
+                    else if (_isPursuitOrangeBlip)
+                    {
+                        // Maintain cruiser blip suppression while in pursuit and officers are inside
+                        if (RadarBlip != null)
+                        {
+                            BlipService.SafeDeleteBlip(ref RadarBlip);
                         }
                     }
                 }
@@ -4213,7 +4239,7 @@ namespace Cadence.Features
 
             private void ClearFootBlips()
             {
-                foreach (var kvp in _officerFootBlips)
+                foreach (var kvp in _officerFootBlips.ToList())
                 {
                     Blip temp = kvp.Value;
                     BlipService.SafeDeleteBlip(ref temp);
@@ -4236,6 +4262,20 @@ namespace Cadence.Features
             {
                 BlipService.SafeDeleteBlip(ref RadarBlip);
                 ClearFootBlips();
+                _enrolledPursuitOfficers.Clear();
+                _enrolledPursuitHandle = null;
+
+                if (Cruiser != null)
+                {
+                    UnitRegistry.Release(Cruiser, UnitRegistry.OwnerBackup);
+                }
+                if (Officers != null)
+                {
+                    foreach (var ofc in Officers)
+                    {
+                        if (ofc != null) UnitRegistry.Release(ofc, UnitRegistry.OwnerBackup);
+                    }
+                }
 
                 bool hasLivingOfficers = Officers != null && Officers.Any(o => o != null && o.Exists() && o.IsAlive);
                 bool shouldDeleteCruiser = immediateDelete || !hasLivingOfficers;

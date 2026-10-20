@@ -31,6 +31,12 @@
       "skillPath": "skills/engineering/improve-codebase-architecture/SKILL.md",
       "computedHash": "f74b0bf1be26220dd615523fc1c0562567f9c463d9e9b255d4031345ffb37cd3"
     },
+    "refactor-safely": {
+      "source": "buildmoonshot/skillpacks",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/expert/refactor-safely/SKILL.md",
+      "computedHash": "247ad0651e4254120eae59a438adb5dda7a2bd18e6fa34099a963f9ca7e935b3"
+    },
     "systematic-debugging": {
       "source": "obra/superpowers",
       "sourceType": "github",

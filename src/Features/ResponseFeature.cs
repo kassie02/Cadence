@@ -908,18 +908,23 @@ namespace Cadence.Features
                 NativeFunction.Natives.SET_VEHICLE_FORWARD_SPEED(cruiser, 12.0f);
                 NativeTasks.TaskLongRangeEmergencyDrive(driver, cruiser, destination, targetSpeed, 15.0f);
 
-                // Attach blip: Callout units get Purple Flashing (Color 27), Ambulance gets EMS, Fire gets Fire, generic police gets emergency blip
+                // Attach blip via authentic service type mapping via BlipService.SetUnitState
                 Blip blip;
-                if (serviceType == EmergencyServiceType.Police && isCalloutTakeover)
+                if (serviceType == EmergencyServiceType.Ambulance)
                 {
-                    blip = BlipService.AttachCalloutResponseBlip(cruiser, callsign);
+                    blip = BlipService.SetUnitState(cruiser, EntityBlipState.EmergencyEms, callsign);
+                }
+                else if (serviceType == EmergencyServiceType.Fire)
+                {
+                    blip = BlipService.SetUnitState(cruiser, EntityBlipState.EmergencyFire, callsign);
+                }
+                else if (serviceType == EmergencyServiceType.Police && isCalloutTakeover)
+                {
+                    blip = BlipService.SetUnitState(cruiser, EntityBlipState.BackupCallout, callsign);
                 }
                 else
                 {
-                    string blipLabel = serviceType == EmergencyServiceType.Ambulance ? $"{callsign} [EMS]" :
-                                       serviceType == EmergencyServiceType.Fire ? $"{callsign} [FIRE]" :
-                                       callsign;
-                    blip = BlipService.AttachEmergencyBlip(cruiser, blipLabel);
+                    blip = BlipService.SetUnitState(cruiser, EntityBlipState.EmergencyCode3, callsign);
                 }
 
                 Logger.Debug("ResponseFeature", $"Configured {serviceType} response unit {callsign} [{(isCode3 ? "Code 3" : "Code 2")}] (CalloutTakeover={isCalloutTakeover}): Cruiser={cruiser.Model.Name} (0x{cruiser.Handle:X}), Driver={driver.Model.Name} (0x{driver.Handle:X}), Target={destination}");
@@ -1208,6 +1213,12 @@ namespace Cadence.Features
                         break;
 
                     case ResponseState.Arrived:
+                        // Reinforce silent lightbars and muted sirens during holding on scene
+                        if (Cruiser != null && Cruiser.Exists())
+                        {
+                            NativeTasks.SetSilentEmergencyLights(Cruiser, true);
+                        }
+
                         // Remain on scene with muted emergency lights for 18 seconds, then finish
                         if (now - _arrivedTime > 18000)
                         {
@@ -1225,19 +1236,25 @@ namespace Cadence.Features
                     NativeFunction.Natives.BRING_VEHICLE_TO_HALT(Cruiser, 2.0f, 0, false);
                     NativeFunction.Natives.SET_VEHICLE_HANDBRAKE(Cruiser, true);
 
-                    // Mute siren on arrival, keep flashing lights active on scene
-                    try
-                    {
-                        Cruiser.IsSirenOn = false;
-                        Cruiser.IsSirenSilent = true;
-                        NativeFunction.Natives.SET_VEHICLE_SIREN(Cruiser, false);
-                    }
-                    catch { }
-
+                    // Enforce silent lightbar on arrival and mute sirens
                     NativeTasks.SetSilentEmergencyLights(Cruiser, true);
 
                     // Switch radar blip to standby on scene
                     BlipService.TransitionToStationary(RadarBlip, Callsign);
+
+                    // Release cruiser, driver, and passenger upon arrival hand-off so other features can claim them
+                    if (Cruiser != null)
+                    {
+                        UnitRegistry.Release(Cruiser, UnitRegistry.OwnerResponse);
+                    }
+                    if (Driver != null)
+                    {
+                        UnitRegistry.Release(Driver, UnitRegistry.OwnerResponse);
+                    }
+                    if (Passenger != null)
+                    {
+                        UnitRegistry.Release(Passenger, UnitRegistry.OwnerResponse);
+                    }
                 }
                 catch { }
             }
@@ -1342,6 +1359,18 @@ namespace Cadence.Features
                 }
                 finally
                 {
+                    if (Cruiser != null && Cruiser.Exists())
+                    {
+                        UnitRegistry.Release(Cruiser, UnitRegistry.OwnerResponse);
+                    }
+                    if (Driver != null && Driver.Exists())
+                    {
+                        UnitRegistry.Release(Driver, UnitRegistry.OwnerResponse);
+                    }
+                    if (Passenger != null && Passenger.Exists())
+                    {
+                        UnitRegistry.Release(Passenger, UnitRegistry.OwnerResponse);
+                    }
                     State = ResponseState.Finished;
                 }
             }

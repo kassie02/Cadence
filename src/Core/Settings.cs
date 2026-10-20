@@ -138,6 +138,7 @@ namespace Cadence.Core
         public static int PlayerVehicleBlipColor { get; set; } = 27; // Purple
         public static float PlayerVehicleBlipScale { get; set; } = 0.38f; // Compact: smaller than AI (0.45f) and much smaller than LSPDFR (1.0f)
         public static int PlayerVehicleBlipSprite { get; set; } = 56; // PoliceCar icon
+        public static string PlayerVehicleBlipName { get; set; } = "Personal Cruiser";
 
         public static int PatrolBlipColor { get; set; } = 38;
         public static float PatrolBlipScale { get; set; } = 0.45f;
@@ -154,6 +155,14 @@ namespace Cadence.Core
         public static int EmergencyBlipColor { get; set; } = 1;
         public static float EmergencyBlipScale { get; set; } = 0.45f;
         public static int EmergencyBlipSprite { get; set; } = 56;
+
+        public static int EmsBlipColor { get; set; } = 1;
+        public static float EmsBlipScale { get; set; } = 0.45f;
+        public static int EmsBlipSprite { get; set; } = 61;
+
+        public static int FireBlipColor { get; set; } = 1;
+        public static float FireBlipScale { get; set; } = 0.45f;
+        public static int FireBlipSprite { get; set; } = 60;
 
         public static int PursuitBlipColor { get; set; } = 38;
         public static float PursuitBlipScale { get; set; } = 0.45f;
@@ -186,6 +195,10 @@ namespace Cadence.Core
         public static int BackupResponseBlipColor { get; set; } = 18; // Cyan / Light Blue
         public static float BackupResponseBlipScale { get; set; } = 0.45f;
         public static int BackupResponseBlipSprite { get; set; } = 56;
+
+        public static int SuspectBlipColor { get; set; } = 1;
+        public static float SuspectBlipScale { get; set; } = 0.45f;
+        public static int SuspectBlipSprite { get; set; } = 1;
 
         // Emergency Run Fine-Grained Customization
         public static int EmergencyRunPoliceWeight { get; set; } = 50;
@@ -390,6 +403,7 @@ namespace Cadence.Core
             PlayerVehicleBlipColor = 27;
             PlayerVehicleBlipScale = 0.38f;
             PlayerVehicleBlipSprite = 56;
+            PlayerVehicleBlipName = "Personal Cruiser";
 
             PatrolBlipColor = 38;
             PatrolBlipScale = 0.45f;
@@ -406,6 +420,14 @@ namespace Cadence.Core
             EmergencyBlipColor = 1;
             EmergencyBlipScale = 0.45f;
             EmergencyBlipSprite = 56;
+
+            EmsBlipColor = 1;
+            EmsBlipScale = 0.45f;
+            EmsBlipSprite = 61;
+
+            FireBlipColor = 1;
+            FireBlipScale = 0.45f;
+            FireBlipSprite = 60;
 
             PursuitBlipColor = 38;
             PursuitBlipScale = 0.45f;
@@ -438,6 +460,10 @@ namespace Cadence.Core
             BackupResponseBlipColor = 18;
             BackupResponseBlipScale = 0.45f;
             BackupResponseBlipSprite = 56;
+
+            SuspectBlipColor = 1;
+            SuspectBlipScale = 0.45f;
+            SuspectBlipSprite = 1;
 
             EmergencyRunPoliceWeight = 50;
             EmergencyRunFireWeight = 25;
@@ -635,6 +661,7 @@ namespace Cadence.Core
                     sb.AppendLine($"PlayerVehicleBlipColor = {PlayerVehicleBlipColor}");
                     sb.AppendLine($"PlayerVehicleBlipScale = {PlayerVehicleBlipScale:F2}");
                     sb.AppendLine($"PlayerVehicleBlipSprite = {PlayerVehicleBlipSprite}");
+                    sb.AppendLine($"PlayerVehicleBlipName = {PlayerVehicleBlipName}");
                     sb.AppendLine($"PatrolBlipColor = {PatrolBlipColor}");
                     sb.AppendLine($"PatrolBlipScale = {PatrolBlipScale:F2}");
                     sb.AppendLine($"PatrolBlipSprite = {PatrolBlipSprite}");
@@ -647,6 +674,12 @@ namespace Cadence.Core
                     sb.AppendLine($"EmergencyBlipColor = {EmergencyBlipColor}");
                     sb.AppendLine($"EmergencyBlipScale = {EmergencyBlipScale:F2}");
                     sb.AppendLine($"EmergencyBlipSprite = {EmergencyBlipSprite}");
+                    sb.AppendLine($"EmsBlipColor = {EmsBlipColor}");
+                    sb.AppendLine($"EmsBlipScale = {EmsBlipScale:F2}");
+                    sb.AppendLine($"EmsBlipSprite = {EmsBlipSprite}");
+                    sb.AppendLine($"FireBlipColor = {FireBlipColor}");
+                    sb.AppendLine($"FireBlipScale = {FireBlipScale:F2}");
+                    sb.AppendLine($"FireBlipSprite = {FireBlipSprite}");
                     sb.AppendLine($"PursuitBlipColor = {PursuitBlipColor}");
                     sb.AppendLine($"PursuitBlipScale = {PursuitBlipScale:F2}");
                     sb.AppendLine($"PursuitBlipSprite = {PursuitBlipSprite}");
@@ -671,6 +704,9 @@ namespace Cadence.Core
                     sb.AppendLine($"BackupResponseBlipColor = {BackupResponseBlipColor}");
                     sb.AppendLine($"BackupResponseBlipScale = {BackupResponseBlipScale:F2}");
                     sb.AppendLine($"BackupResponseBlipSprite = {BackupResponseBlipSprite}");
+                    sb.AppendLine($"SuspectBlipColor = {SuspectBlipColor}");
+                    sb.AppendLine($"SuspectBlipScale = {SuspectBlipScale:F2}");
+                    sb.AppendLine($"SuspectBlipSprite = {SuspectBlipSprite}");
                     sb.AppendLine();
 
                     // [Integration]
@@ -824,6 +860,7 @@ namespace Cadence.Core
                     if (k == "playervehicleblipcolor") { PlayerVehicleBlipColor = ParseInt(value, PlayerVehicleBlipColor); return true; }
                     if (k == "playervehicleblipscale") { PlayerVehicleBlipScale = Math.Max(0.1f, Math.Min(2.0f, ParseFloat(value, PlayerVehicleBlipScale))); return true; }
                     if (k == "playervehicleblipsprite") { PlayerVehicleBlipSprite = ParseInt(value, PlayerVehicleBlipSprite); return true; }
+                    if (k == "playervehicleblipname") { PlayerVehicleBlipName = string.IsNullOrWhiteSpace(value) ? "Personal Cruiser" : value.Trim(); return true; }
 
                     if (k == "patrolblipcolor") { PatrolBlipColor = ParseInt(value, PatrolBlipColor); return true; }
                     if (k == "patrolblipscale") { PatrolBlipScale = Math.Max(0.1f, Math.Min(2.0f, ParseFloat(value, PatrolBlipScale))); return true; }
@@ -840,6 +877,14 @@ namespace Cadence.Core
                     if (k == "emergencyblipcolor") { EmergencyBlipColor = ParseInt(value, EmergencyBlipColor); return true; }
                     if (k == "emergencyblipscale") { EmergencyBlipScale = Math.Max(0.1f, Math.Min(2.0f, ParseFloat(value, EmergencyBlipScale))); return true; }
                     if (k == "emergencyblipsprite") { EmergencyBlipSprite = ParseInt(value, EmergencyBlipSprite); return true; }
+
+                    if (k == "emsblipcolor") { EmsBlipColor = ParseInt(value, EmsBlipColor); return true; }
+                    if (k == "emsblipscale") { EmsBlipScale = Math.Max(0.1f, Math.Min(2.0f, ParseFloat(value, EmsBlipScale))); return true; }
+                    if (k == "emsblipsprite") { EmsBlipSprite = ParseInt(value, EmsBlipSprite); return true; }
+
+                    if (k == "fireblipcolor") { FireBlipColor = ParseInt(value, FireBlipColor); return true; }
+                    if (k == "fireblipscale") { FireBlipScale = Math.Max(0.1f, Math.Min(2.0f, ParseFloat(value, FireBlipScale))); return true; }
+                    if (k == "fireblipsprite") { FireBlipSprite = ParseInt(value, FireBlipSprite); return true; }
 
                     if (k == "pursuitblipcolor") { PursuitBlipColor = ParseInt(value, PursuitBlipColor); return true; }
                     if (k == "pursuitblipscale") { PursuitBlipScale = Math.Max(0.1f, Math.Min(2.0f, ParseFloat(value, PursuitBlipScale))); return true; }
@@ -872,6 +917,10 @@ namespace Cadence.Core
                     if (k == "backupresponseblipcolor") { BackupResponseBlipColor = ParseInt(value, BackupResponseBlipColor); return true; }
                     if (k == "backupresponseblipscale") { BackupResponseBlipScale = Math.Max(0.1f, Math.Min(2.0f, ParseFloat(value, BackupResponseBlipScale))); return true; }
                     if (k == "backupresponseblipsprite") { BackupResponseBlipSprite = ParseInt(value, BackupResponseBlipSprite); return true; }
+
+                    if (k == "suspectblipcolor") { SuspectBlipColor = ParseInt(value, SuspectBlipColor); return true; }
+                    if (k == "suspectblipscale") { SuspectBlipScale = Math.Max(0.1f, Math.Min(2.0f, ParseFloat(value, SuspectBlipScale))); return true; }
+                    if (k == "suspectblipsprite") { SuspectBlipSprite = ParseInt(value, SuspectBlipSprite); return true; }
                     return false;
 
                 case "integration":

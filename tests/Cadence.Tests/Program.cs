@@ -47,7 +47,7 @@ namespace Cadence.Tests
 
             var stopwatch = Stopwatch.StartNew();
             int failedSuites = 0;
-            int totalSuites = 3;
+            int totalSuites = 4;
 
             // 1. Settings Tests
             try
@@ -77,7 +77,21 @@ namespace Cadence.Tests
                 Console.ResetColor();
             }
 
-            // 3. Packaging Tests
+            // 3. BlipService Tests
+            try
+            {
+                BlipServiceTests.RunAll();
+            }
+            catch (Exception ex)
+            {
+                failedSuites++;
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"[FAILED] BlipServiceTests Suite threw: {ex.Message}");
+                Console.WriteLine(ex.StackTrace);
+                Console.ResetColor();
+            }
+
+            // 4. Packaging Tests
             try
             {
                 PackagingTests.RunAll();

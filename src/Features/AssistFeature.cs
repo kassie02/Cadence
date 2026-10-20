@@ -159,6 +159,13 @@ namespace Cadence.Features
             }
             if (sessionToDispose != null)
             {
+                if (sessionToDispose.Officers != null)
+                {
+                    foreach (var ofc in sessionToDispose.Officers)
+                    {
+                        if (ofc != null) UnitRegistry.Release(ofc);
+                    }
+                }
                 sessionToDispose.Dispose(immediateDelete: false);
             }
             UnitRegistry.Release(cruiser);
@@ -453,7 +460,7 @@ namespace Cadence.Features
                 }
 
                 // 4. Update radar blip to Dark Orange combat blip
-                Blip blip = BlipService.AttachCombatBlip(cruiser, callsign);
+                Blip blip = BlipService.SetUnitState(cruiser, EntityBlipState.CombatEngaging, callsign);
 
                 var session = new CombatDefenseSession(cruiser, officers, threat, blip, callsign);
 
@@ -525,6 +532,7 @@ namespace Cadence.Features
             private uint _standDownStartTime;
             private uint _standDownPatrolStartTime;
             private uint _lastCoverCheckTime;
+            private readonly Dictionary<Ped, Blip> _officerFootBlips = new Dictionary<Ped, Blip>();
 
             public CombatDefenseSession(Vehicle cruiser, List<Ped> officers, Ped threat, Blip blip, string callsign)
             {
@@ -580,6 +588,26 @@ namespace Cadence.Features
                             isThreatNeutralized = true;
                         }
 
+                        // Track dismounted officers engaging on foot outside cruiser
+                        foreach (var ofc in Officers)
+                        {
+                            if (ofc != null && ofc.Exists() && ofc.IsAlive && ofc.IsOnFoot)
+                            {
+                                if (!_officerFootBlips.TryGetValue(ofc, out Blip fb) || fb == null || !fb.Exists())
+                                {
+                                    _officerFootBlips[ofc] = BlipService.AttachOfficerFootBlip(ofc, Callsign);
+                                }
+                            }
+                            else if (ofc != null && ofc.Exists() && ofc.IsInVehicle(Cruiser, false))
+                            {
+                                if (_officerFootBlips.TryGetValue(ofc, out Blip fb))
+                                {
+                                    BlipService.SafeDeleteBlip(ref fb);
+                                    _officerFootBlips.Remove(ofc);
+                                }
+                            }
+                        }
+
                         if (isThreatNeutralized)
                         {
                             InitiateStandDown();
@@ -602,6 +630,19 @@ namespace Cadence.Features
                         break;
 
                     case CombatState.MountingCruiser:
+                        // As officers mount cruiser, clean up their foot blips
+                        foreach (var ofc in Officers)
+                        {
+                            if (ofc != null && ofc.Exists() && ofc.IsInVehicle(Cruiser, false))
+                            {
+                                if (_officerFootBlips.TryGetValue(ofc, out Blip fb))
+                                {
+                                    BlipService.SafeDeleteBlip(ref fb);
+                                    _officerFootBlips.Remove(ofc);
+                                }
+                            }
+                        }
+
                         // Wait for officers to mount cruiser, with timeout of 12 seconds
                         bool allMounted = Officers.Where(o => o != null && o.Exists() && o.IsAlive).All(o => o.IsInVehicle(Cruiser, false));
                         if (allMounted || (now - _standDownStartTime > 12000))
@@ -622,6 +663,16 @@ namespace Cadence.Features
                 }
             }
 
+            private void ClearOfficerFootBlips()
+            {
+                foreach (var kvp in _officerFootBlips.ToList())
+                {
+                    Blip b = kvp.Value;
+                    BlipService.SafeDeleteBlip(ref b);
+                }
+                _officerFootBlips.Clear();
+            }
+
             private void InitiateStandDown()
             {
                 State = CombatState.MountingCruiser;
@@ -636,6 +687,13 @@ namespace Cadence.Features
 
                     try
                     {
+                        // Safely delete foot blip on stand down
+                        if (_officerFootBlips.TryGetValue(officer, out Blip fb))
+                        {
+                            BlipService.SafeDeleteBlip(ref fb);
+                            _officerFootBlips.Remove(officer);
+                        }
+
                         // 1. LSPDFR pursuit disenrollment before clearing tasks
                         if (Functions.IsPedInPursuit(officer))
                         {
@@ -694,8 +752,12 @@ namespace Cadence.Features
                         driver.Tasks.CruiseWithVehicle(Cruiser, 16.0f, NativeTasks.CruisingFlags);
                     }
 
+                    // Clear any remaining officer foot blips
+                    ClearOfficerFootBlips();
+
                     // Restore Navy Blue routine patrol blip
-                    BlipService.TransitionToPatrol(RadarBlip, Callsign);
+                    RadarBlip = BlipService.SetUnitState(Cruiser, EntityBlipState.Patrol, Callsign);
+                    UnitRegistry.Release(Cruiser, UnitRegistry.OwnerAssist);
 
                     _standDownPatrolStartTime = Game.GameTime;
                     State = CombatState.StandingDownPatrol;
@@ -716,7 +778,20 @@ namespace Cadence.Features
 
                 // 1. Zero-leak blip destructor (4-step protocol)
                 BlipService.SafeDeleteBlip(ref RadarBlip);
+                ClearOfficerFootBlips();
                 BlipService.SafeDeleteEntityBlip(Cruiser);
+
+                if (Cruiser != null)
+                {
+                    UnitRegistry.Release(Cruiser, UnitRegistry.OwnerAssist);
+                }
+                if (Officers != null)
+                {
+                    foreach (var ofc in Officers)
+                    {
+                        if (ofc != null) UnitRegistry.Release(ofc, UnitRegistry.OwnerAssist);
+                    }
+                }
 
                 // 2. Entities clean up safely using TeardownHelper
                 try

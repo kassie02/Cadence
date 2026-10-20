@@ -1,10 +1,52 @@
 using System;
+using System.Text.RegularExpressions;
 using Rage;
 using Rage.Native;
 using Cadence.Core;
 
 namespace Cadence.Services
 {
+    public enum EntityBlipState
+    {
+        None,
+        Patrol,
+        TrafficStop,
+        StationaryRadar,
+        StationaryChilling,
+        EmergencyCode3,
+        EmergencyEms,
+        EmergencyFire,
+        Pursuit,
+        BackupCallout,
+        BackupGroup,
+        BackupMenu,
+        CombatEngaging,
+        Suspect,
+        Parked
+    }
+
+    public struct BlipStateConfig
+    {
+        public int Sprite { get; }
+        public int Color { get; }
+        public float Scale { get; }
+        public string Label { get; }
+        public bool IsShortRange { get; }
+        public int FlashIntervalMs { get; }
+        public bool AlternateFlash { get; }
+
+        public BlipStateConfig(int sprite, int color, float scale, string label, bool isShortRange = false, int flashIntervalMs = 0, bool alternateFlash = false)
+        {
+            Sprite = sprite;
+            Color = color;
+            Scale = scale;
+            Label = label;
+            IsShortRange = isShortRange;
+            FlashIntervalMs = flashIntervalMs;
+            AlternateFlash = alternateFlash;
+        }
+    }
+
     public static class BlipService
     {
         // ====================================================================
@@ -126,6 +168,101 @@ namespace Cadence.Services
         }
 
         // ====================================================================
+        // Centralized EntityBlipState Architecture
+        // ====================================================================
+
+        /// <summary>
+        /// Unified state mapping method that fetches the sprite, color, scale, and label
+        /// directly from Settings for the given EntityBlipState.
+        /// </summary>
+        public static BlipStateConfig GetStateConfig(EntityBlipState state)
+        {
+            switch (state)
+            {
+                case EntityBlipState.Patrol:
+                    return new BlipStateConfig(Settings.PatrolBlipSprite, Settings.PatrolBlipColor, Settings.PatrolBlipScale, "PATROL", Settings.ShortRangeBlips, 0, false);
+                case EntityBlipState.TrafficStop:
+                    return new BlipStateConfig(Settings.TrafficStopBlipSprite, Settings.TrafficStopBlipColor, Settings.TrafficStopBlipScale, "TRAFFIC STOP", Settings.ShortRangeBlips, 0, false);
+                case EntityBlipState.StationaryRadar:
+                    return new BlipStateConfig(Settings.StationaryBlipSprite, Settings.StationaryBlipColor, Settings.StationaryBlipScale, "RADAR", Settings.ShortRangeBlips, 0, false);
+                case EntityBlipState.StationaryChilling:
+                    return new BlipStateConfig(Settings.StationaryBlipSprite, Settings.StationaryBlipColor, Settings.StationaryBlipScale, "CHILLING PATROL", Settings.ShortRangeBlips, 0, false);
+                case EntityBlipState.EmergencyCode3:
+                    return new BlipStateConfig(Settings.EmergencyBlipSprite, Settings.EmergencyBlipColor, Settings.EmergencyBlipScale, "CODE 3", false, 600, false);
+                case EntityBlipState.EmergencyEms:
+                    return new BlipStateConfig(Settings.EmsBlipSprite, Settings.EmsBlipColor, Settings.EmsBlipScale, "EMS", false, 600, false);
+                case EntityBlipState.EmergencyFire:
+                    return new BlipStateConfig(Settings.FireBlipSprite, Settings.FireBlipColor, Settings.FireBlipScale, "FIRE", false, 600, false);
+                case EntityBlipState.Pursuit:
+                    return new BlipStateConfig(Settings.PursuitBlipSprite, Settings.PursuitBlipColor, Settings.PursuitBlipScale, "PURSUIT", false, 400, false);
+                case EntityBlipState.BackupCallout:
+                    return new BlipStateConfig(Settings.CalloutResponseBlipSprite, Settings.CalloutResponseBlipColor, Settings.CalloutResponseBlipScale, "CALLOUT", false, 600, false);
+                case EntityBlipState.BackupGroup:
+                    return new BlipStateConfig(Settings.GroupBackupBlipSprite, Settings.GroupBackupBlipColor, Settings.GroupBackupBlipScale, "GROUP", false, 400, false);
+                case EntityBlipState.BackupMenu:
+                    return new BlipStateConfig(Settings.BackupResponseBlipSprite, Settings.BackupResponseBlipColor, Settings.BackupResponseBlipScale, "BACKUP", false, 500, false);
+                case EntityBlipState.CombatEngaging:
+                    return new BlipStateConfig(Settings.CombatBlipSprite, Settings.CombatBlipColor, Settings.CombatBlipScale, "ENGAGING", false, 300, false);
+                case EntityBlipState.Suspect:
+                    return new BlipStateConfig(Settings.SuspectBlipSprite, Settings.SuspectBlipColor, Settings.SuspectBlipScale, "SUSPECT", false, 0, false);
+                case EntityBlipState.Parked:
+                    return new BlipStateConfig(Settings.ParkedCruiserBlipSprite, Settings.ParkedCruiserBlipColor, Settings.ParkedCruiserBlipScale, "PARKED", Settings.ShortRangeBlips, 0, false);
+                case EntityBlipState.None:
+                default:
+                    return new BlipStateConfig(0, 0, Settings.BlipScale, string.Empty, false, 0, false);
+            }
+        }
+
+        /// <summary>
+        /// Evaluates whether blips are suppressed for the specified state or configuration.
+        /// Returns true if radar blips are globally disabled or if the state is EntityBlipState.None.
+        /// </summary>
+        public static bool IsStateSuppressed(EntityBlipState state)
+        {
+            return !Settings.ShowRadarBlips || state == EntityBlipState.None;
+        }
+
+        /// <summary>
+        /// Unified registration and declaration method for vehicle radar blips.
+        /// Resolves configuration directly from Settings via GetStateConfig and safely manages blip lifecycle.
+        /// </summary>
+        public static Blip SetUnitState(Vehicle vehicle, EntityBlipState state, string callsign)
+        {
+            if (vehicle == null || !vehicle.Exists() || !vehicle.IsValid())
+            {
+                return null;
+            }
+
+            if (IsStateSuppressed(state))
+            {
+                SafeDeleteEntityBlip(vehicle);
+                return null;
+            }
+
+            if (state == EntityBlipState.Suspect)
+            {
+                Blip attached = SafeGetAttachedBlip(vehicle);
+                if (attached == null && HasAnyActiveRadarMarker(vehicle))
+                {
+                    return null;
+                }
+            }
+
+            BlipStateConfig cfg = GetStateConfig(state);
+            return CreateOrUpdateBlip(
+                vehicle,
+                callsign,
+                cfg.Label,
+                spriteId: cfg.Sprite,
+                colorId: cfg.Color,
+                isShortRange: cfg.IsShortRange,
+                flashIntervalMs: cfg.FlashIntervalMs,
+                alternateFlash: cfg.AlternateFlash,
+                scaleOverride: cfg.Scale
+            );
+        }
+
+        // ====================================================================
         // Universal Blip Attachment Engine
         // ====================================================================
 
@@ -194,7 +331,7 @@ namespace Cadence.Services
         /// </summary>
         public static Blip AttachPursuitBlip(Vehicle vehicle, string callsign)
         {
-            return CreateOrUpdateBlip(vehicle, callsign, "PURSUIT", spriteId: Settings.PursuitBlipSprite, colorId: Settings.PursuitBlipColor, isShortRange: false, flashIntervalMs: 400, alternateFlash: true, scaleOverride: Settings.PursuitBlipScale);
+            return CreateOrUpdateBlip(vehicle, callsign, "PURSUIT", spriteId: Settings.PursuitBlipSprite, colorId: Settings.PursuitBlipColor, isShortRange: false, flashIntervalMs: 400, alternateFlash: false, scaleOverride: Settings.PursuitBlipScale);
         }
 
         /// <summary>
@@ -425,9 +562,9 @@ namespace Cadence.Services
                 }
                 if (blip == null || !blip.Exists()) return null;
 
-                blip.Sprite = (BlipSprite)1;
-                NativeFunction.Natives.SET_BLIP_COLOUR(blip, 1);
-                blip.Scale = 0.45f;
+                blip.Sprite = (BlipSprite)Settings.SuspectBlipSprite;
+                NativeFunction.Natives.SET_BLIP_COLOUR(blip, Settings.SuspectBlipColor);
+                blip.Scale = Settings.SuspectBlipScale;
                 NativeFunction.Natives.SET_BLIP_AS_SHORT_RANGE(blip, false);
                 NativeFunction.Natives.SET_BLIP_FLASHES(blip, false);
                 NativeFunction.Natives.SET_BLIP_FLASHES_ALTERNATE(blip, false);
@@ -453,7 +590,7 @@ namespace Cadence.Services
         /// </summary>
         public static Blip AttachEmsBlip(Vehicle vehicle, string callsign)
         {
-            return CreateOrUpdateBlip(vehicle, callsign, "EMS", spriteId: 61, colorId: 1, isShortRange: false, flashIntervalMs: 600, alternateFlash: false, scaleOverride: Settings.EmergencyBlipScale);
+            return CreateOrUpdateBlip(vehicle, callsign, "EMS", spriteId: Settings.EmsBlipSprite, colorId: Settings.EmsBlipColor, isShortRange: false, flashIntervalMs: 600, alternateFlash: false, scaleOverride: Settings.EmsBlipScale);
         }
 
         /// <summary>
@@ -461,7 +598,7 @@ namespace Cadence.Services
         /// </summary>
         public static Blip AttachFireBlip(Vehicle vehicle, string callsign)
         {
-            return CreateOrUpdateBlip(vehicle, callsign, "FIRE", spriteId: 60, colorId: 1, isShortRange: false, flashIntervalMs: 600, alternateFlash: false, scaleOverride: Settings.EmergencyBlipScale);
+            return CreateOrUpdateBlip(vehicle, callsign, "FIRE", spriteId: Settings.FireBlipSprite, colorId: Settings.FireBlipColor, isShortRange: false, flashIntervalMs: 600, alternateFlash: false, scaleOverride: Settings.FireBlipScale);
         }
 
         // ====================================================================
@@ -500,12 +637,12 @@ namespace Cadence.Services
 
         public static void TransitionToEms(Blip blip, string callsign)
         {
-            ApplyBlipState(blip, callsign, "EMS", spriteId: 61, colorId: 1, isShortRange: false, flashIntervalMs: 600, alternateFlash: false, scaleOverride: Settings.EmergencyBlipScale);
+            ApplyBlipState(blip, callsign, "EMS", spriteId: Settings.EmsBlipSprite, colorId: Settings.EmsBlipColor, isShortRange: false, flashIntervalMs: 600, alternateFlash: false, scaleOverride: Settings.EmsBlipScale);
         }
 
         public static void TransitionToFire(Blip blip, string callsign)
         {
-            ApplyBlipState(blip, callsign, "FIRE", spriteId: 60, colorId: 1, isShortRange: false, flashIntervalMs: 600, alternateFlash: false, scaleOverride: Settings.EmergencyBlipScale);
+            ApplyBlipState(blip, callsign, "FIRE", spriteId: Settings.FireBlipSprite, colorId: Settings.FireBlipColor, isShortRange: false, flashIntervalMs: 600, alternateFlash: false, scaleOverride: Settings.FireBlipScale);
         }
 
         public static void TransitionToPursuit(Blip blip, string callsign)
@@ -663,7 +800,7 @@ namespace Cadence.Services
                 NativeFunction.Natives.SET_BLIP_COLOUR(_playerVehicleBlip, customColor);
                 _playerVehicleBlip.Scale = customScale;
                 NativeFunction.Natives.SET_BLIP_AS_SHORT_RANGE(_playerVehicleBlip, false);
-                _playerVehicleBlip.Name = "Personal Cruiser";
+                _playerVehicleBlip.Name = string.IsNullOrWhiteSpace(Settings.PlayerVehicleBlipName) ? "Personal Cruiser" : Settings.PlayerVehicleBlipName;
             }
         }
 
@@ -742,7 +879,27 @@ namespace Cadence.Services
                 }
 
                 string tag = SanitizeCallsign(callsign);
-                blip.Name = $"{tag} [{suffix}]";
+                if (!string.IsNullOrWhiteSpace(suffix))
+                {
+                    string suffixTag = $"[{suffix}]";
+                    if (tag.EndsWith(suffixTag, StringComparison.OrdinalIgnoreCase))
+                    {
+                        blip.Name = tag;
+                    }
+                    else if (suffix.Equals("SUSPECT", StringComparison.OrdinalIgnoreCase) &&
+                             (string.IsNullOrWhiteSpace(callsign) || tag.Equals("Police", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        blip.Name = "SUSPECT";
+                    }
+                    else
+                    {
+                        blip.Name = $"{tag} {suffixTag}";
+                    }
+                }
+                else
+                {
+                    blip.Name = tag;
+                }
             }
             catch (Exception ex)
             {
@@ -750,15 +907,28 @@ namespace Cadence.Services
             }
         }
 
-        private static string SanitizeCallsign(string callsign)
+        /// <summary>
+        /// Sanitizes a callsign string by stripping transient status tags (e.g. [PATROL], [CODE 3])
+        /// while preserving specialized emergency service tags like [EMS] and [FIRE].
+        /// </summary>
+        public static string SanitizeCallsign(string callsign)
         {
             if (string.IsNullOrWhiteSpace(callsign)) return "Police";
             string clean = callsign.Trim();
-            int bracketIdx = clean.IndexOf('[');
-            if (bracketIdx > 0)
+
+            clean = Regex.Replace(clean, @"\[([^\]]+)\]", match =>
             {
-                clean = clean.Substring(0, bracketIdx).Trim();
-            }
+                string tag = match.Groups[1].Value.Trim();
+                if (tag.Equals("EMS", StringComparison.OrdinalIgnoreCase) ||
+                    tag.Equals("FIRE", StringComparison.OrdinalIgnoreCase) ||
+                    tag.Equals("AMBULANCE", StringComparison.OrdinalIgnoreCase))
+                {
+                    return match.Value;
+                }
+                return string.Empty;
+            });
+
+            clean = Regex.Replace(clean, @"\s+", " ").Trim();
             return string.IsNullOrWhiteSpace(clean) ? "Police" : clean;
         }
     }
